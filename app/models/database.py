@@ -1,7 +1,25 @@
+import os
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey
-from sqlalchemy.orm import declarative_base
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+# Get DATABASE_URL from environment, fallback to SQLite for local development
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./grumium.db")
+
+# Handle Supabase PostgreSQL connection with psycopg3
+if DATABASE_URL.startswith("postgresql"):
+    # psycopg3 uses postgresql:// directly (no driver specified needed)
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+
+engine = create_engine(
+    DATABASE_URL,
+    echo=False,
+    pool_pre_ping=True,  # Verify connections before using them
+    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
