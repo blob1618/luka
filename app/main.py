@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, Request, HTTPException, Query
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -14,7 +14,8 @@ from app.services.finance import FinanceService
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    start_scheduler()
+    if not os.getenv("VERCEL"):
+        start_scheduler()
     yield
     # Shutdown logic if needed
 
@@ -28,16 +29,26 @@ def read_root():
     return {"message": "Grumium API is running"}
 
 @app.get("/webhook")
-def verify_webhook(
-    hub_mode: str = Query(None, alias="hub.mode"),
-    hub_challenge: str = Query(None, alias="hub.challenge"),
-    hub_verify_token: str = Query(None, alias="hub.verify_token"),
-):
+async def verify_webhook(request: Request):
     """
     Required for Meta WhatsApp verification
     """
-    if hub_mode == "subscribe" and hub_verify_token == VERIFY_TOKEN:
-        return PlainTextResponse(content=hub_challenge)
+    query_params = request.query_params
+    hub_mode = query_params.get("hub.mode") or query_params.get("hub_mode")
+    hub_challenge = query_params.get("hub.challenge") or query_params.get("hub_challenge")
+    hub_verify_token = query_params.get("hub.verify_token") or query_params.get("hub_verify_token")
+
+    print(
+        "[WEBHOOK VERIFY] ",
+        f"path={request.url.path}",
+        f"mode={hub_mode}",
+        f"challenge={hub_challenge}",
+        f"token={hub_verify_token}",
+        f"expected={VERIFY_TOKEN}",
+    )
+
+    if hub_mode == "subscribe" and hub_verify_token == VERIFY_TOKEN and hub_challenge is not None:
+        return PlainTextResponse(content=str(hub_challenge), media_type="text/plain")
     raise HTTPException(status_code=403, detail="Verification failed")
 
 @app.post("/webhook")
