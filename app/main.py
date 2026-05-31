@@ -14,8 +14,7 @@ from app.services.finance import FinanceService
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if not os.getenv("VERCEL"):
-        start_scheduler()
+    start_scheduler()
     yield
     # Shutdown logic if needed
 

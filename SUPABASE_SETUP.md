@@ -57,14 +57,18 @@ Test the connection works:
 python -c "from app.models.database import SessionLocal; db = SessionLocal(); print('✓ Connected to Supabase!')"
 ```
 
-## Step 6: For Vercel Deployment
+## Step 6: Deploy to Render
 
-1. Go to your Vercel project → **Settings → Environment Variables**
-2. Add a new variable:
-   - **Name:** `DATABASE_URL`
-   - **Value:** `postgresql://postgres:YOUR_PASSWORD@YOUR_HOST:5432/postgres`
-3. Click "Save"
-4. Redeploy your project
+1. Create a Render account and add a new **Web Service**.
+2. Connect your Git repository and select the branch to deploy.
+3. Choose the environment: use **Docker** (recommended) or **Python**.
+   - If using Docker: include the provided `Dockerfile` in the repo — Render will build the image automatically.
+   - If using Python (no Docker): set the build command to `pip install -r requirements.txt` and the start command to:
+     ```bash
+     gunicorn -w 4 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:$PORT
+     ```
+4. In Render's dashboard, add required environment variables: `WHATSAPP_VERIFY_TOKEN`, `DATABASE_URL`, and any API keys.
+5. Deploy. Render provides a persistent server, so the app's internal scheduler will run as expected.
 
 ## ⚠️ Important Notes
 
