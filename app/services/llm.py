@@ -1,39 +1,144 @@
-from typing import Dict, Any
+import json
+import os
+import re
+from typing import Any, Dict
+
+import httpx
+
 
 class LLMService:
+    GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    DEFAULT_MODEL = "gemini-1.5-flash"
+
+    @staticmethod
+    def _get_gemini_config() -> tuple[str, str] | tuple[None, None]:
+        api_key = os.getenv("GEMINI_API_KEY")
+        model = os.getenv("GEMINI_MODEL", LLMService.DEFAULT_MODEL)
+
+        if not api_key:
+            print("Missing GEMINI_API_KEY. Cannot call Gemini.")
+            return None, None
+
+        return api_key, model
+
+    @staticmethod
+    def _safe_json_loads(raw_text: str) -> Dict[str, Any]:
+        try:
+            return json.loads(raw_text)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+            if match:
+                return json.loads(match.group(0))
+            raise
+
     @staticmethod
     async def process_text_expense(text: str) -> Dict[str, Any]:
         """
-        Stub for processing colloquial text via LLM.
-        Expected to extract: amount, category, description
+        Sends the user message to Gemini and asks for expense extraction only.
+        The model must reply in very formal, literary Spanish and return JSON.
         """
-        # TODO: Integrate with OpenAI/Gemini structured outputs
-        return {
-            "amount": 100.0,
-            "category": "comida",
-            "description": "Mocked LLM extraction"
+        api_key, model = LLMService._get_gemini_config()
+        if not api_key or not model:
+            return {
+                "is_expense": False,
+                "amount": None,
+                "expense": None,
+                "reply_text": "No puedo procesar tu mensaje en este momento porque falta configurar Gemini.",
+            }
+
+        system_instruction = (
+            "Eres un asistente estrictamente limitado al registro de gastos del usuario. "
+            "Tu unica tarea es analizar el mensaje y decidir si contiene un gasto y un monto. "
+            "Debes responder en espanol muy formal, con tono literario, y solo devolver JSON valido. "
+            "No mantengas conversacion general, no des consejos y no inventes datos. "
+            "Si detectas un gasto con su monto, marca is_expense como true y redacta un mensaje de exito breve, "
+            "muy formal y, si encaja de forma natural, con emojis discretos. "
+            "El mensaje debe repetir el gasto y el monto. "
+            "Si no detectas un gasto con monto claro, marca is_expense como false y redacta una respuesta formal "
+            "indicando que solo registras gastos. "
+            "Devuelve exactamente este esquema JSON: "
+            '{"is_expense": true, "expense": "cadena o null", "amount": 0.0, "currency": "ARS", "reply_text": "cadena"}'
+        )
+
+        request_body = {
+            "systemInstruction": {
+                "parts": [{"text": system_instruction}],
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": text}],
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.1,
+                "responseMimeType": "application/json",
+            },
         }
+
+        url = LLMService.GEMINI_API_URL.format(model=model)
+        params = {"key": api_key}
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, params=params, json=request_body)
+                response.raise_for_status()
+
+            payload = response.json()
+            candidates = payload.get("candidates", [])
+            if not candidates:
+                raise ValueError("Gemini returned no candidates")
+
+            content = candidates[0].get("content", {})
+            parts = content.get("parts", [])
+            if not parts:
+                raise ValueError("Gemini returned an empty content payload")
+
+            raw_text = parts[0].get("text", "")
+            parsed = LLMService._safe_json_loads(raw_text)
+
+            amount = parsed.get("amount")
+            try:
+                amount = float(amount) if amount is not None else None
+            except (TypeError, ValueError):
+                amount = None
+
+            return {
+                "is_expense": bool(parsed.get("is_expense", False)) and amount is not None,
+                "expense": parsed.get("expense"),
+                "amount": amount,
+                "currency": parsed.get("currency", "ARS"),
+                "reply_text": parsed.get("reply_text") or "",
+            }
+        except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
+            print(f"Gemini processing failed: {exc}")
+            return {
+                "is_expense": False,
+                "amount": None,
+                "expense": None,
+                "reply_text": "No he podido analizar tu mensaje en este momento.",
+            }
 
     @staticmethod
     async def process_audio_expense(audio_bytes: bytes) -> Dict[str, Any]:
         """
-        Stub for transcribing audio and then extracting data.
+        Placeholder for voice note processing.
         """
-        # TODO: Call Whisper API, then pass to LLM
         return {
-            "amount": 200.0,
-            "category": "transporte",
-            "description": "Mocked Audio extraction"
+            "is_expense": False,
+            "amount": None,
+            "expense": None,
+            "reply_text": "Aun no proceso notas de voz.",
         }
 
     @staticmethod
     async def process_image_receipt(image_bytes: bytes) -> Dict[str, Any]:
         """
-        Stub for performing OCR on an image.
+        Placeholder for receipt image processing.
         """
-        # TODO: Pass image to Vision model
         return {
-            "amount": 500.0,
-            "category": "ocio",
-            "description": "Mocked OCR extraction"
+            "is_expense": False,
+            "amount": None,
+            "expense": None,
+            "reply_text": "Aun no proceso imagenes de comprobantes.",
         }

@@ -10,7 +10,6 @@ load_dotenv()
 from app.scheduler import start_scheduler
 from app.api.whatsapp import send_whatsapp_message
 from app.services.llm import LLMService
-from app.services.finance import FinanceService
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -72,21 +71,22 @@ async def handle_webhook(request: Request):
                         if message_type == "text":
                             text_body = message["text"]["body"]
                             
-                            # Use our LLM stub
                             extracted_data = await LLMService.process_text_expense(text_body)
-                            
-                            # Use our Finance stub to get a positive response
-                            reallocation_msg = FinanceService.check_dynamic_budget(
-                                user_id=1, 
-                                new_expense=extracted_data["amount"], 
-                                category=extracted_data["category"]
-                            )
-                            
-                            reply_text = (
-                                f"Registré tu gasto: ${extracted_data['amount']} en '{extracted_data['category']}'.\n\n"
-                                f"{reallocation_msg}"
-                            )
-                            
+
+                            if extracted_data.get("is_expense"):
+                                amount = extracted_data.get("amount")
+                                expense = extracted_data.get("expense") or "gasto"
+                                currency = extracted_data.get("currency") or "ARS"
+
+                                amount_text = f"{amount:.2f}" if isinstance(amount, (int, float)) else str(amount)
+                                reply_text = extracted_data.get("reply_text") or (
+                                    f"✅✨ Gasto registrado con éxito: {expense} por {amount_text} {currency}."
+                                )
+                            else:
+                                reply_text = extracted_data.get("reply_text") or (
+                                    "📌 Este bot solo registra gastos. Por favor, envíe un gasto con su monto para continuar."
+                                )
+
                             await send_whatsapp_message(sender_phone, reply_text)
                             
     return {"status": "ok"}
