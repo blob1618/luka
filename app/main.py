@@ -55,15 +55,24 @@ async def handle_webhook(request: Request):
     Handles incoming messages from WhatsApp Meta API
     """
     data = await request.json()
-    print(f"Received webhook: {data}")
+    print("Received webhook event")
     
     if data.get("object") == "whatsapp_business_account":
         for entry in data.get("entry", []):
             for change in entry.get("changes", []):
                 value = change.get("value", {})
                 messages = value.get("messages", [])
+                statuses = value.get("statuses", [])
+
+                for status_event in statuses:
+                    print(
+                        "WhatsApp status update",
+                        f"message_id={status_event.get('id')}",
+                        f"status={status_event.get('status')}",
+                    )
                 
                 if messages:
+                    print(f"Incoming user message count: {len(messages)}")
                     for message in messages:
                         sender_phone = message.get("from")
                         message_type = message.get("type")

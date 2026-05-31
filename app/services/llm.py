@@ -147,6 +147,8 @@ class LLMService:
                     last_error = exc
                     status_code = exc.response.status_code
 
+                    print(f"[Gemini Debug] model={model_name} status={status_code} body={exc.response.text}")
+
                     if status_code == 404:
                         break
 
@@ -166,8 +168,9 @@ class LLMService:
             if isinstance(last_error, httpx.HTTPStatusError):
                 print(
                     "Gemini processing failed",
-                    f"model={model}",
+                    f"url={last_error.request.url.path}",
                     f"status={last_error.response.status_code}",
+                    f"body={last_error.response.text}",
                 )
             else:
                 print(f"Gemini processing failed: {type(last_error).__name__}")
