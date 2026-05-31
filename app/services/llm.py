@@ -130,12 +130,12 @@ class LLMService:
                 break
 
         print(f"Gemini processing failed: {last_error}")
-            return {
-                "is_expense": False,
-                "amount": None,
-                "expense": None,
-                "reply_text": "No he podido analizar tu mensaje en este momento.",
-            }
+        return {
+            "is_expense": False,
+            "amount": None,
+            "expense": None,
+            "reply_text": "No he podido analizar tu mensaje en este momento.",
+        }
 
     @staticmethod
     async def process_audio_expense(audio_bytes: bytes) -> Dict[str, Any]:
