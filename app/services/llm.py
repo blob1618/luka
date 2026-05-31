@@ -8,7 +8,8 @@ import httpx
 
 class LLMService:
     GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    DEFAULT_MODEL = "gemini-1.5-flash"
+    DEFAULT_MODEL = "gemini-2.0-flash"
+    FALLBACK_MODELS = ("gemini-2.0-flash", "gemini-1.5-flash")
 
     @staticmethod
     def _get_gemini_config() -> tuple[str, str] | tuple[None, None]:
@@ -20,6 +21,14 @@ class LLMService:
             return None, None
 
         return api_key, model
+
+    @staticmethod
+    def _get_model_candidates(primary_model: str) -> list[str]:
+        model_candidates = [primary_model]
+        for fallback_model in LLMService.FALLBACK_MODELS:
+            if fallback_model not in model_candidates:
+                model_candidates.append(fallback_model)
+        return model_candidates
 
     @staticmethod
     def _safe_json_loads(raw_text: str) -> Dict[str, Any]:
@@ -76,42 +85,51 @@ class LLMService:
             },
         }
 
-        url = LLMService.GEMINI_API_URL.format(model=model)
         params = {"key": api_key}
 
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(url, params=params, json=request_body)
-                response.raise_for_status()
-
-            payload = response.json()
-            candidates = payload.get("candidates", [])
-            if not candidates:
-                raise ValueError("Gemini returned no candidates")
-
-            content = candidates[0].get("content", {})
-            parts = content.get("parts", [])
-            if not parts:
-                raise ValueError("Gemini returned an empty content payload")
-
-            raw_text = parts[0].get("text", "")
-            parsed = LLMService._safe_json_loads(raw_text)
-
-            amount = parsed.get("amount")
+        last_error: Exception | None = None
+        for model_name in LLMService._get_model_candidates(model):
+            url = LLMService.GEMINI_API_URL.format(model=model_name)
             try:
-                amount = float(amount) if amount is not None else None
-            except (TypeError, ValueError):
-                amount = None
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(url, params=params, json=request_body)
+                    response.raise_for_status()
 
-            return {
-                "is_expense": bool(parsed.get("is_expense", False)) and amount is not None,
-                "expense": parsed.get("expense"),
-                "amount": amount,
-                "currency": parsed.get("currency", "ARS"),
-                "reply_text": parsed.get("reply_text") or "",
-            }
-        except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
-            print(f"Gemini processing failed: {exc}")
+                payload = response.json()
+                candidates = payload.get("candidates", [])
+                if not candidates:
+                    raise ValueError("Gemini returned no candidates")
+
+                content = candidates[0].get("content", {})
+                parts = content.get("parts", [])
+                if not parts:
+                    raise ValueError("Gemini returned an empty content payload")
+
+                raw_text = parts[0].get("text", "")
+                parsed = LLMService._safe_json_loads(raw_text)
+
+                amount = parsed.get("amount")
+                try:
+                    amount = float(amount) if amount is not None else None
+                except (TypeError, ValueError):
+                    amount = None
+
+                return {
+                    "is_expense": bool(parsed.get("is_expense", False)) and amount is not None,
+                    "expense": parsed.get("expense"),
+                    "amount": amount,
+                    "currency": parsed.get("currency", "ARS"),
+                    "reply_text": parsed.get("reply_text") or "",
+                }
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                if exc.response.status_code != 404:
+                    break
+            except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
+                last_error = exc
+                break
+
+        print(f"Gemini processing failed: {last_error}")
             return {
                 "is_expense": False,
                 "amount": None,
