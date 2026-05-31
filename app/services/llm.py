@@ -9,14 +9,22 @@ import httpx
 
 class LLMService:
     GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    DEFAULT_MODEL = "gemini-2.0-flash"
-    FALLBACK_MODELS = ("gemini-2.0-flash", "gemini-1.5-flash")
+    DEFAULT_MODEL = "gemini-2.5-flash"
+    FALLBACK_MODELS = ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash")
     MAX_RETRIES_PER_MODEL = 2
+
+    @staticmethod
+    def _normalize_model_name(model_name: str) -> str:
+        normalized = model_name.strip()
+        normalized = normalized.strip('"').strip("'")
+        if normalized.startswith("models/"):
+            normalized = normalized[len("models/") :]
+        return normalized
 
     @staticmethod
     def _get_gemini_config() -> tuple[str, str] | tuple[None, None]:
         api_key = os.getenv("GEMINI_API_KEY")
-        model = os.getenv("GEMINI_MODEL", LLMService.DEFAULT_MODEL)
+        model = LLMService._normalize_model_name(os.getenv("GEMINI_MODEL", LLMService.DEFAULT_MODEL))
 
         if not api_key:
             print("Missing GEMINI_API_KEY. Cannot call Gemini.")
@@ -156,7 +164,11 @@ class LLMService:
 
         if last_error:
             if isinstance(last_error, httpx.HTTPStatusError):
-                print(f"Gemini processing failed with HTTP {last_error.response.status_code}")
+                print(
+                    "Gemini processing failed",
+                    f"model={model}",
+                    f"status={last_error.response.status_code}",
+                )
             else:
                 print(f"Gemini processing failed: {type(last_error).__name__}")
 
