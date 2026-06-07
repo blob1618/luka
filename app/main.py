@@ -7,9 +7,9 @@ from dotenv import load_dotenv
 # Load environment variables from .env file BEFORE importing submodules
 load_dotenv()
 
-from app.scheduler import start_scheduler
-from app.api.whatsapp import send_whatsapp_message
-from app.services.llm import LLMService
+from app.scheduler import start_scheduler  # noqa: E402
+from app.api.whatsapp import send_whatsapp_message  # noqa: E402
+from app.services.llm import LLMService  # noqa: E402
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

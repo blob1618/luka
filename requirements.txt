@@ -9,3 +9,6 @@ APScheduler==3.10.4
 matplotlib==3.8.3
 python-dotenv==1.0.1
 gunicorn==20.1.0
+pytest==8.0.0
+pytest-asyncio==0.23.5
+ruff==0.3.0
