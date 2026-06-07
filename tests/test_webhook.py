@@ -31,7 +31,7 @@ def test_verify_webhook_success():
         "/webhook",
         params={
             "hub.mode": "subscribe",
-            "hub.verify_token": VERIFY_TOKEN
+            "hub.verify_token": VERIFY_TOKEN,
             "hub.challenge": "1158201444"
         }
     )
