@@ -10,6 +10,7 @@ on:
 
 jobs:
   test:
+    name: Python Backend Tests
     runs-on: ubuntu-latest
     
     steps:
