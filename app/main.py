@@ -3,6 +3,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+import redis.asyncio as redis
 
 # Load environment variables from .env file BEFORE importing submodules
 load_dotenv()
@@ -11,11 +12,29 @@ from app.scheduler import start_scheduler  # noqa: E402
 from app.api.whatsapp import send_whatsapp_message  # noqa: E402
 from app.services.llm import LLMService  # noqa: E402
 
+# Global Redis client
+redis_client = None
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global redis_client
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+    
+    # Initialize Redis connection pool
+    redis_client = redis.from_url(redis_url, decode_responses=True)
+    
+    # Basic test to check if the connection works on startup
+    try:
+        await redis_client.ping()
+        print(f"✅ Redis connection successful to {redis_url}")
+    except Exception as e:
+        print(f"❌ Redis connection failed: {e}")
+
     start_scheduler()
     yield
-    # Shutdown logic if needed
+    # Shutdown logic
+    if redis_client:
+        await redis_client.close()
 
 app = FastAPI(title="Grumium WhatsApp FinBot", lifespan=lifespan)
 
@@ -25,6 +44,20 @@ VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "fallback_token")
 @app.get("/")
 def read_root():
     return {"message": "Grumium API is running"}
+
+@app.get("/redis-test")
+async def test_redis():
+    """
+    Basic test endpoint to verify Redis connectivity from Render.
+    """
+    if not redis_client:
+        raise HTTPException(status_code=500, detail="Redis client not initialized")
+    try:
+        await redis_client.set("test_key", "works", ex=60)
+        value = await redis_client.get("test_key")
+        return {"status": "ok", "redis_value": value}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Redis connection error: {str(e)}")
 
 @app.get("/webhook")
 async def verify_webhook(request: Request):
