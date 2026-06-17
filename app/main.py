@@ -42,7 +42,7 @@ app = FastAPI(title="Grumium WhatsApp FinBot", lifespan=lifespan)
 VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "fallback_token")
 
 @app.get("/")
-def read_root():
+def read_root()
     return {"message": "Grumium API is running"}
 
 @app.get("/redis-test")
