@@ -1,3 +1,4 @@
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/blob1618/luka)
 # Luka - WhatsApp FinBot
 
 Luka is a WhatsApp bot designed to help users track expenses, incomes, and budgets using natural language, voice notes, and receipt images.
