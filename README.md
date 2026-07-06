@@ -1,6 +1,6 @@
-# Grumium - WhatsApp FinBot
+# Luka - WhatsApp FinBot
 
-Grumium is a WhatsApp bot designed to help users track expenses, incomes, and budgets using natural language, voice notes, and receipt images.
+Luka is a WhatsApp bot designed to help users track expenses, incomes, and budgets using natural language, voice notes, and receipt images.
 
 ## Prerequisites
 
