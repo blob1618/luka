@@ -36,14 +36,14 @@ async def lifespan(app: FastAPI):
     if redis_client:
         await redis_client.close()
 
-app = FastAPI(title="Grumium WhatsApp FinBot", lifespan=lifespan)
+app = FastAPI(title="Luka WhatsApp FinBot", lifespan=lifespan)
 
 # In production, securely load these from environment
 VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "fallback_token")
 
 @app.get("/")
 def read_root():
-    return {"message": "Grumium API is running"}
+    return {"message": "Luka API is running"}
 
 @app.get("/redis-test")
 async def test_redis():

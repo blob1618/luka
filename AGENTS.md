@@ -1,6 +1,6 @@
-# Grumium AI Agent Instructions
+# Luka AI Agent Instructions
 
-Welcome to the Grumium project! Grumium is a WhatsApp-based financial assistant designed to help users manage their personal finances through natural language interaction.
+Welcome to the Luka project! Luka is a WhatsApp-based financial assistant designed to help users manage their personal finances through natural language interaction.
 
 ## High-Level Architecture and Stack
 
@@ -43,10 +43,10 @@ Welcome to the Grumium project! Grumium is a WhatsApp-based financial assistant 
 
 ## DeepWiki References
 When working on complex architectural portions, refer to the deepwiki references here:
-- Overview: https://deepwiki.com/blob1618/grumium/1-grumium-overview
-- Project Structure: https://deepwiki.com/blob1618/grumium/1.2-project-structure
-- Core Architecture: https://deepwiki.com/blob1618/grumium/2-core-architecture
-- LLM Service: https://deepwiki.com/blob1618/grumium/2.3-llm-service-(gemini-integration)
-- Finance Service: https://deepwiki.com/blob1618/grumium/3.1-finance-service
-- Database Models: https://deepwiki.com/blob1618/grumium/4.1-database-models
-- Deployment: https://deepwiki.com/blob1618/grumium/5-deployment
+- Overview: https://deepwiki.com/blob1618/luka/1-luka-overview
+- Project Structure: https://deepwiki.com/blob1618/luka/1.2-project-structure
+- Core Architecture: https://deepwiki.com/blob1618/luka/2-core-architecture
+- LLM Service: https://deepwiki.com/blob1618/luka/2.3-llm-service-(gemini-integration)
+- Finance Service: https://deepwiki.com/blob1618/luka/3.1-finance-service
+- Database Models: https://deepwiki.com/blob1618/luka/4.1-database-models
+- Deployment: https://deepwiki.com/blob1618/luka/5-deployment

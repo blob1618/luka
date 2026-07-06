@@ -4,7 +4,7 @@ from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, cre
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 # Get DATABASE_URL from environment, fallback to SQLite for local development
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./grumium.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./luka.db")
 
 # Handle Supabase PostgreSQL connection with psycopg3
 if DATABASE_URL.startswith("postgresql"):

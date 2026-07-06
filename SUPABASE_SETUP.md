@@ -6,7 +6,7 @@
 2. Sign up or log in
 3. Click "New Project"
 4. Fill in:
-   - **Project name:** `grumium` (or any name)
+   - **Project name:** `luka` (or any name)
    - **Database Password:** Create a strong password (save this!)
    - **Region:** Choose closest to you
 5. Click "Create new project" and wait ~2 minutes

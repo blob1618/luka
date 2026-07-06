@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: grumium-web
+    name: luka-web
     env: docker
     plan: free
     dockerfilePath: Dockerfile
