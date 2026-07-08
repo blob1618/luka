@@ -113,22 +113,50 @@ async def handle_webhook(request: Request):
                         if message_type == "text":
                             text_body = message["text"]["body"]
                             
-                            extracted_data = await LLMService.process_text_expense(text_body)
-
-                            if extracted_data.get("is_expense"):
+                            # Use process_message to get full intent analysis
+                            extracted_data = await LLMService.process_message(text_body)
+                            
+                            intent = extracted_data.get("intent", "out_of_scope")
+                            reply_text = extracted_data.get("reply_text", "")
+                            
+                            if intent == "expense":
                                 amount = extracted_data.get("amount")
                                 expense = extracted_data.get("expense") or "gasto"
                                 currency = extracted_data.get("currency") or "ARS"
-
+                                
                                 amount_text = f"{amount:.2f}" if isinstance(amount, (int, float)) else str(amount)
-                                reply_text = extracted_data.get("reply_text") or (
-                                    f"✅✨ Gasto registrado con éxito: {expense} por {amount_text} {currency}."
+                                print(
+                                    f"[EXPENSE] User {sender_phone}: "
+                                    f"{expense} por {amount_text} {currency}"
                                 )
-                            else:
-                                reply_text = extracted_data.get("reply_text") or (
-                                    "📌 Este bot solo registra gastos. Por favor, envíe un gasto con su monto para continuar."
+                                # TODO: Persist expense to database
+                                
+                            elif intent == "budget_query":
+                                print(f"[BUDGET_QUERY] User {sender_phone}: {text_body}")
+                                # TODO: Query budget from database
+                                
+                            elif intent == "reminder":
+                                reminder_title = extracted_data.get("reminder_title")
+                                reminder_date = extracted_data.get("reminder_date")
+                                print(
+                                    f"[REMINDER] User {sender_phone}: "
+                                    f"{reminder_title} - {reminder_date}"
                                 )
-
+                                # TODO: Create reminder in database
+                                
+                            elif intent == "expense_summary":
+                                print(f"[EXPENSE_SUMMARY] User {sender_phone}: {text_body}")
+                                # TODO: Query expense summary from database
+                                
+                            elif intent == "greeting":
+                                print(f"[GREETING] User {sender_phone}: {text_body}")
+                                
+                            elif intent == "out_of_scope":
+                                print(
+                                    f"[OUT_OF_SCOPE] User {sender_phone}: "
+                                    f"'{text_body}' → guardrail triggered"
+                                )
+                            
                             await send_whatsapp_message(sender_phone, reply_text)
                             
     return {"status": "ok"}

@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Context files
+Escenario.pdf
+Especificación de Requisitos.pdf

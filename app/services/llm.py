@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 from typing import Any, Dict
 
 from app.services.llm_providers import LLMProvider, create_provider
@@ -7,11 +9,48 @@ class LLMService:
     """
     Fachada pública para procesamiento LLM.
 
-    Delega toda la comunicación con el proveedor a un LLMProvider concreto
-    seleccionado por la env var LLM_PROVIDER (default: 'gemini').
+    Carga el system prompt desde prompt.md y delega la comunicación
+    con el proveedor a un LLMProvider concreto seleccionado por la
+    env var LLM_PROVIDER (default: 'gemini').
     """
 
     _provider: LLMProvider | None = None
+    _system_prompt: str | None = None
+    _prompt_path: str | None = None
+
+    @classmethod
+    def set_prompt_path(cls, path: str) -> None:
+        """Override the path to prompt.md (useful for tests)."""
+        cls._prompt_path = path
+        cls._system_prompt = None  # force reload
+
+    @classmethod
+    def _load_system_prompt(cls) -> str:
+        """
+        Loads the system prompt from prompt.md.
+        Cached in memory after first load.
+        """
+        if cls._system_prompt is not None:
+            return cls._system_prompt
+
+        path = cls._prompt_path or os.getenv(
+            "SYSTEM_PROMPT_PATH",
+            str(Path(__file__).resolve().parent.parent.parent / "prompt.md"),
+        )
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                cls._system_prompt = f.read()
+        except FileNotFoundError:
+            print(f"[LLMService] prompt.md not found at {path}, using fallback prompt.")
+            cls._system_prompt = (
+                "Eres LUKA, un asistente financiero personal que opera por WhatsApp. "
+                "Ayudas a los usuarios a registrar y gestionar sus gastos personales. "
+                "Responde siempre en español, de forma amable y concisa. "
+                "No des consejos financieros profesionales ni temas no relacionados."
+            )
+
+        return cls._system_prompt
 
     @classmethod
     def _get_provider(cls) -> LLMProvider:
@@ -31,31 +70,48 @@ class LLMService:
     @staticmethod
     async def process_text_expense(text: str) -> Dict[str, Any]:
         """
-        Sends the user message to the configured LLM provider and asks for 
-        expense extraction only.
-        The model must reply in very formal, literary Spanish and return JSON.
+        Legacy wrapper. Calls process_message and extracts expense fields.
+        Kept for backward compatibility.
         """
-        system_instruction = (
-            "Eres un asistente estrictamente limitado al registro de gastos del usuario. "
-            "Tu unica tarea es analizar el mensaje y decidir si contiene un gasto y un monto. "
-            "Debes responder en espanol muy formal, con tono literario, y solo devolver JSON valido. "
-            "No mantengas conversacion general, no des consejos y no inventes datos. "
-            "Si detectas un gasto con su monto, marca is_expense como true y redacta un mensaje de exito breve, "
-            "muy formal y, si encaja de forma natural, con emojis discretos. "
-            "El mensaje debe repetir el gasto y el monto. "
-            "Si no detectas un gasto con monto claro, marca is_expense como false y redacta una respuesta formal "
-            "indicando que solo registras gastos. "
-            "Devuelve exactamente este esquema JSON: "
-            '{"is_expense": true, "expense": "cadena o null", "amount": 0.0, "currency": "ARS", "reply_text": "cadena"}'
-        )
+        result = await LLMService.process_message(text)
+        return {
+            "is_expense": result.get("intent") == "expense" and result.get("amount") is not None,
+            "expense": result.get("expense"),
+            "amount": result.get("amount"),
+            "currency": result.get("currency") or "ARS",
+            "reply_text": result.get("reply_text") or "",
+        }
+
+    @classmethod
+    async def process_message(cls, text: str) -> Dict[str, Any]:
+        """
+        Procesa un mensaje de usuario usando el system prompt de prompt.md.
+        El LLM debe devolver un JSON estructurado con intent y datos asociados.
+
+        Args:
+            text: El mensaje de texto del usuario.
+
+        Returns:
+            Dict con los campos del JSON parseado (intent, is_expense, amount, etc.)
+        """
+        system_prompt = cls._load_system_prompt()
 
         try:
-            provider = LLMService._get_provider()
+            provider = cls._get_provider()
             parsed = await provider.generate_json(
-                system_prompt=system_instruction,
+                system_prompt=system_prompt,
                 user_message=text,
                 temperature=0.1,
             )
+
+            # Normalize and validate the response
+            intent = str(parsed.get("intent", "out_of_scope")).strip().lower()
+            allowed_intents = {
+                "expense", "budget_query", "reminder",
+                "expense_summary", "greeting", "out_of_scope",
+            }
+            if intent not in allowed_intents:
+                intent = "out_of_scope"
 
             amount = parsed.get("amount")
             try:
@@ -64,20 +120,34 @@ class LLMService:
                 amount = None
 
             return {
-                "is_expense": bool(parsed.get("is_expense", False)) and amount is not None,
+                "intent": intent,
+                "is_expense": intent == "expense" and amount is not None,
                 "expense": parsed.get("expense"),
                 "amount": amount,
-                "currency": parsed.get("currency", "ARS"),
-                "reply_text": parsed.get("reply_text") or "",
+                "currency": str(parsed.get("currency", "ARS")).upper() if parsed.get("currency") else "ARS",
+                "category": parsed.get("category"),
+                "description": parsed.get("description"),
+                "reminder_title": parsed.get("reminder_title"),
+                "reminder_date": parsed.get("reminder_date"),
+                "reply_text": str(parsed.get("reply_text", "")),
             }
 
         except Exception as exc:
-            print(f"[LLMService] process_text_expense failed: {type(exc).__name__}: {exc}")
+            print(f"[LLMService] process_message failed: {type(exc).__name__}: {exc}")
             return {
+                "intent": "out_of_scope",
                 "is_expense": False,
-                "amount": None,
                 "expense": None,
-            "reply_text": "No he podido analizar tu mensaje en este momento. Si deseas, puedes reenviarlo en unos instantes.",
+                "amount": None,
+                "currency": "ARS",
+                "category": None,
+                "description": None,
+                "reminder_title": None,
+                "reminder_date": None,
+                "reply_text": (
+                    "No he podido analizar tu mensaje en este momento. "
+                    "Si deseas, puedes reenviarlo en unos instantes."
+                ),
             }
 
     @staticmethod
