@@ -116,7 +116,7 @@ No hay herramienta de migraciones configurada todavía. Si un cambio toca los mo
 
 ## Verificar cambios
 
-GitHub Actions corre verificaciones automáticas. El workflow actual corre en pushes a `main` y en Pull Requests a `main`.
+GitHub Actions corre verificaciones automáticas. El workflow actual corre en pushes a cualquier rama y en Pull Requests a `main`.
 
 Si el equipo no está usando Pull Requests, la verificación automática ocurre cuando el cambio llega a `main`. En lo posible, correr las mismas verificaciones en local antes de integrar cambios:
 
