@@ -2,39 +2,39 @@
 
 # LUKA
 
-LUKA is a WhatsApp financial assistant that helps users register expenses from natural language messages. The product entry point is WhatsApp through the Meta WhatsApp Business API.
+LUKA es un asistente financiero por WhatsApp que ayuda a los usuarios a registrar gastos desde mensajes en lenguaje natural. El punto de entrada del producto es WhatsApp a través de la Meta WhatsApp Business API.
 
-Today the bot can receive text messages, ask an LLM provider to extract expense data, and answer back through WhatsApp. Voice notes and receipt images are planned in code but are not implemented yet.
+Por ahora el bot puede recibir mensajes de texto, pedirle a un proveedor LLM que extraiga los datos del gasto, y responder de vuelta por WhatsApp. Las notas de voz e imágenes de comprobantes están preparadas en el código pero todavía no están implementadas.
 
 ## Stack
 
 - Backend: Python 3.11, FastAPI, Uvicorn/Gunicorn.
-- Messaging: Meta WhatsApp Business API.
-- AI: Gemini or Mistral, selected with `LLM_PROVIDER`.
-- Database: SQLAlchemy ORM. Local dev uses SQLite by default. Production should use PostgreSQL, normally Supabase.
-- Background jobs/cache: APScheduler and Redis.
-- Deploy: Docker and Render.
-- Tests/quality: Pytest and Ruff.
-- Frontend: there is no web frontend in this repository yet. The user interface is WhatsApp.
+- Mensajería: Meta WhatsApp Business API.
+- IA: Gemini o Mistral, seleccionado con `LLM_PROVIDER`.
+- Base de datos: SQLAlchemy ORM. El desarrollo local usa SQLite por defecto. Producción debe usar PostgreSQL, normalmente Supabase.
+- Jobs en background / caché: APScheduler y Redis.
+- Deploy: Docker y Render.
+- Tests / calidad: Pytest y Ruff.
+- Frontend: no hay frontend web en este repositorio por ahora. La interfaz del producto es WhatsApp.
 
-## Repository map
+## Mapa del repositorio
 
-- `app/main.py`: FastAPI app, health endpoint, WhatsApp webhook verification and message ingestion.
-- `app/api/whatsapp.py`: outgoing WhatsApp API client.
-- `app/services/llm.py`: LLM facade used by the webhook flow.
-- `app/services/llm_providers/`: Gemini and Mistral provider implementations.
-- `app/services/finance.py`: finance/business logic helpers.
-- `app/models/database.py`: SQLAlchemy engine, session and models.
-- `tests/`: backend tests.
-- `docs/database.md`: current database state, target MVP schema, and pending decisions.
-- `docs/architecture.md`: MVP information flow and architecture summary.
-- `SUPABASE_SETUP.md`: database setup guide.
-- `RENDER_DEPLOYMENT.md`: deployment notes for Render.
-- `AGENTS.md`: engineering notes for AI/code agents.
+- `app/main.py`: app FastAPI, endpoint de health, verificación del webhook de WhatsApp e ingesta de mensajes.
+- `app/api/whatsapp.py`: cliente de salida hacia la API de WhatsApp.
+- `app/services/llm.py`: fachada LLM usada por el flujo del webhook.
+- `app/services/llm_providers/`: implementaciones de los providers Gemini y Mistral.
+- `app/services/finance.py`: helpers de lógica financiera y de negocio.
+- `app/models/database.py`: engine, sesión y modelos SQLAlchemy.
+- `tests/`: tests del backend.
+- `docs/database.md`: estado actual de la base de datos, esquema objetivo del MVP y decisiones pendientes.
+- `docs/architecture.md`: flujo de información y resumen de arquitectura del MVP.
+- `SUPABASE_SETUP.md`: guía de configuración de la base de datos.
+- `RENDER_DEPLOYMENT.md`: notas de despliegue en Render.
+- `AGENTS.md`: notas de ingeniería para agentes de IA.
 
-## Local backend setup
+## Configuración local del backend
 
-From the repository root:
+Desde la raíz del repositorio:
 
 ```powershell
 py -3.11 -m venv .venv
@@ -45,139 +45,139 @@ Copy-Item .env.example .env
 python -m uvicorn app.main:app --reload
 ```
 
-The API starts at `http://127.0.0.1:8000`.
+La API levanta en `http://127.0.0.1:8000`.
 
-Basic check:
+Verificación rápida:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8000/
 ```
 
-Expected response:
+Respuesta esperada:
 
 ```json
 {"message":"Luka API is running"}
 ```
 
-For macOS/Linux, use `python3 -m venv .venv`, `source .venv/bin/activate`, and `cp .env.example .env`.
+Para macOS/Linux, usar `python3 -m venv .venv`, `source .venv/bin/activate`, y `cp .env.example .env`.
 
-## Frontend setup
+## Frontend
 
-There is no frontend app to run right now. The only product interface is WhatsApp, so local work happens through the FastAPI backend and the `/webhook` endpoint.
+No hay frontend que levantar por ahora. La única interfaz del producto es WhatsApp, así que el trabajo local pasa por el backend FastAPI y el endpoint `/webhook`.
 
-To test real WhatsApp events, Meta needs a public HTTPS URL. Use Render or a local tunnel, then configure Meta to call:
+Para probar eventos reales de WhatsApp, Meta necesita una URL pública HTTPS. Usar Render o un túnel local, y luego configurar Meta para que llame a:
 
 ```text
-https://<public-url>/webhook
+https://<url-pública>/webhook
 ```
 
-## Environment variables
+## Variables de entorno
 
-Copy `.env.example` to `.env` and fill only what your task needs.
+Copiar `.env.example` a `.env` y completar solo lo que tu tarea necesite.
 
-| Variable | Required | Notes |
+| Variable | Requerida | Notas |
 | --- | --- | --- |
-| `WHATSAPP_VERIFY_TOKEN` | Yes for webhook verification | Token configured in Meta and checked by `GET /webhook`. |
-| `WHATSAPP_API_TOKEN` | Yes to send WhatsApp replies | Meta API bearer token. |
-| `WHATSAPP_PHONE_ID` | Yes to send WhatsApp replies | WhatsApp phone number ID from Meta. |
-| `LLM_PROVIDER` | Optional | `gemini` by default. Also supports `mistral`. |
-| `GEMINI_API_KEY` | Required if `LLM_PROVIDER=gemini` | Gemini API key. |
-| `GEMINI_MODEL` | Optional | Defaults in `.env.example` to `gemini-2.0-flash`. |
-| `MISTRAL_API_KEY` | Required if `LLM_PROVIDER=mistral` | Mistral API key. |
-| `MISTRAL_MODEL` | Optional | Defaults in `.env.example` to `mistral-small-latest`. |
-| `DATABASE_URL` | Optional locally, required in production | Defaults to `sqlite:///./luka.db`. Use Supabase/PostgreSQL for shared environments. |
-| `REDIS_URL` | Optional locally, recommended in production | Defaults to `redis://localhost:6379`. The app logs an error if Redis is unavailable but continues starting. |
+| `WHATSAPP_VERIFY_TOKEN` | Sí para verificación del webhook | Token configurado en Meta y verificado por `GET /webhook`. |
+| `WHATSAPP_API_TOKEN` | Sí para enviar respuestas por WhatsApp | Token bearer de la API de Meta. |
+| `WHATSAPP_PHONE_ID` | Sí para enviar respuestas por WhatsApp | ID del número de teléfono de WhatsApp en Meta. |
+| `LLM_PROVIDER` | Opcional | `gemini` por defecto. También soporta `mistral`. |
+| `GEMINI_API_KEY` | Requerido si `LLM_PROVIDER=gemini` | API key de Gemini. |
+| `GEMINI_MODEL` | Opcional | Por defecto en `.env.example` es `gemini-2.0-flash`. |
+| `MISTRAL_API_KEY` | Requerido si `LLM_PROVIDER=mistral` | API key de Mistral. |
+| `MISTRAL_MODEL` | Opcional | Por defecto en `.env.example` es `mistral-small-latest`. |
+| `DATABASE_URL` | Opcional en local, requerido en producción | Por defecto `sqlite:///./luka.db`. Usar Supabase/PostgreSQL para entornos compartidos. |
+| `REDIS_URL` | Opcional en local, recomendado en producción | Por defecto `redis://localhost:6379`. La app loguea un error si Redis no está disponible pero igual arranca. |
 
-Never commit `.env` or real secrets.
+Nunca subir `.env` ni secretos reales al repo.
 
-## Database
+## Base de datos
 
-Local default database:
+Base de datos local por defecto:
 
 ```text
 sqlite:///./luka.db
 ```
 
-Production/shared database:
+Base de datos de producción/compartida:
 
 ```text
 postgresql://...
 ```
 
-Use Supabase unless the team decides otherwise. Setup details are in `SUPABASE_SETUP.md`.
+Usar Supabase salvo que el equipo decida otra cosa. Los detalles de configuración están en `SUPABASE_SETUP.md`.
 
-To create the current tables from the SQLAlchemy models:
+Para crear las tablas actuales desde los modelos SQLAlchemy:
 
 ```powershell
 python -c "from app.models.database import engine, Base; Base.metadata.create_all(bind=engine)"
 ```
 
-There is no migration tool configured yet. If a change touches models, coordinate the schema update with the team and update `docs/database.md`.
+No hay herramienta de migraciones configurada todavía. Si un cambio toca los modelos, coordinar la actualización del esquema con el equipo y actualizar `docs/database.md`.
 
-## Verify changes
+## Verificar cambios
 
-GitHub Actions runs automated checks. The current workflow runs on pushes to `main` and Pull Requests to `main`.
+GitHub Actions corre verificaciones automáticas. El workflow actual corre en pushes a `main` y en Pull Requests a `main`.
 
-If the team is not using Pull Requests, the automatic check happens when the change reaches `main`. When possible, run the same checks locally before integrating changes:
+Si el equipo no está usando Pull Requests, la verificación automática ocurre cuando el cambio llega a `main`. En lo posible, correr las mismas verificaciones en local antes de integrar cambios:
 
 ```powershell
 python -m ruff check .
 python -m pytest -v
 ```
 
-Real WhatsApp testing happens after `main` is deployed by Render, because the project depends on the Meta phone number, webhook URL, and shared database.
+Las pruebas reales de WhatsApp ocurren después de que `main` esté desplegado en Render, porque el proyecto depende del número de teléfono de Meta, la URL del webhook y la base de datos compartida.
 
-## Jira and branch flow
+## Flujo Jira y ramas
 
-The shared deploy branch is `main`.
+La rama de despliegue compartida es `main`.
 
-Minimum workflow:
+Flujo mínimo:
 
-1. Take a Jira ticket.
-2. Use the Jira extension in VS Code to create or take the ticket branch.
-3. Develop the change.
-4. Push to GitHub.
-5. Let GitHub Actions run when applicable.
-6. Integrate to `main` according to the team's current agreement.
-7. Render deploys `main` automatically.
-8. Test the real flow in WhatsApp.
-9. If something fails, check Render logs and fix it.
-10. Confirm Jira moved the ticket status. If it did not, update it manually.
+1. Tomar un ticket de Jira.
+2. Usar la extensión de Jira en VS Code para crear o tomar la rama del ticket.
+3. Desarrollar el cambio.
+4. Pushear a GitHub.
+5. Dejar que GitHub Actions corra cuando aplique.
+6. Integrar a `main` según el acuerdo actual del equipo.
+7. Render despliega `main` automáticamente.
+8. Probar el flujo real en WhatsApp.
+9. Si algo falla, revisar los logs de Render y corregirlo.
+10. Confirmar que Jira movió el estado del ticket. Si no lo hizo, actualizarlo manualmente.
 
-Pull Requests are not mandatory in the current workflow.
+Los Pull Requests no son obligatorios en el flujo actual.
 
-More detail is in `CONTRIBUTING.md`.
+Más detalle en `CONTRIBUTING.md`.
 
-## Project links
+## Links del proyecto
 
 - GitHub: https://github.com/blob1618/luka
-- Render deploy: https://luka-f2nb.onrender.com
+- Deploy en Render: https://luka-f2nb.onrender.com
 - DeepWiki overview: https://deepwiki.com/blob1618/luka/1-luka-overview
-- DeepWiki architecture: https://deepwiki.com/blob1618/luka/2-core-architecture
-- MVP architecture: `docs/architecture.md`
-- Database setup: `SUPABASE_SETUP.md`
-- Database notes: `docs/database.md`
-- Render deployment: `RENDER_DEPLOYMENT.md`
-- Jira: pending team URL.
-- Confluence: pending team URL.
+- DeepWiki arquitectura: https://deepwiki.com/blob1618/luka/2-core-architecture
+- Arquitectura MVP: `docs/architecture.md`
+- Configuración de base de datos: `SUPABASE_SETUP.md`
+- Notas de base de datos: `docs/database.md`
+- Deploy en Render: `RENDER_DEPLOYMENT.md`
+- Jira: URL del equipo pendiente.
+- Confluence: URL del equipo pendiente.
 
-## Deploy / WhatsApp testing
+## Deploy / pruebas en WhatsApp
 
-Render can deploy this repo with the included `Dockerfile` and `render.yaml`.
+Render puede desplegar este repo con el `Dockerfile` y `render.yaml` incluidos.
 
-Current Render URL:
+URL actual en Render:
 
 ```text
 https://luka-f2nb.onrender.com
 ```
 
-Quick Render setup:
+Configuración rápida en Render:
 
-1. Create a Render Web Service.
-2. Connect this GitHub repository.
-3. Use Docker.
-4. Add environment variables from `.env`.
-5. Deploy.
-6. Configure Meta's webhook callback URL as `https://luka-f2nb.onrender.com/webhook` for the current deploy, or `https://<render-app>.onrender.com/webhook` for a new service.
+1. Crear un Web Service en Render.
+2. Conectar este repositorio de GitHub.
+3. Usar Docker.
+4. Agregar las variables de entorno desde `.env`.
+5. Desplegar.
+6. Configurar la URL de callback del webhook de Meta como `https://luka-f2nb.onrender.com/webhook` para el deploy actual, o `https://<render-app>.onrender.com/webhook` para un servicio nuevo.
 
-See `RENDER_DEPLOYMENT.md` for more detail.
+Ver `RENDER_DEPLOYMENT.md` para más detalle.

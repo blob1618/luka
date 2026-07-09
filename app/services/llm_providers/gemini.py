@@ -36,7 +36,7 @@ class GeminiProvider(LLMProvider):
             os.getenv("GEMINI_MODEL", self.DEFAULT_MODEL)
         )
         if not api_key:
-            print("Missing GEMINI_API_KEY. Cannot call Gemini.")
+            print("Falta GEMINI_API_KEY. No se puede llamar a Gemini.")
             return None, None
         return api_key, model
 
@@ -130,11 +130,11 @@ class GeminiProvider(LLMProvider):
                     last_error = exc
                     break
 
-            # Si fue 404, seguir con siguiente modelo; si no, no tiene sentido reintentar
+            # Si fue 404, seguir con el siguiente modelo candidato; si no, no tiene sentido reintentar
             if isinstance(last_error, httpx.HTTPStatusError) and last_error.response.status_code == 404:
                 continue
 
-        # Log final error y propagar
+        # Loguear el error final y propagarlo
         if last_error:
             if isinstance(last_error, httpx.HTTPStatusError):
                 print(

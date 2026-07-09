@@ -3,18 +3,18 @@ from datetime import datetime
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-# Get DATABASE_URL from environment, fallback to SQLite for local development
+# Obtener DATABASE_URL del entorno, usando SQLite como fallback para desarrollo local
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./luka.db")
 
-# Handle Supabase PostgreSQL connection with psycopg3
+# Manejar la conexión a PostgreSQL de Supabase con psycopg3
 if DATABASE_URL.startswith("postgresql"):
-    # psycopg3 uses postgresql:// directly (no driver specified needed)
+    # psycopg3 usa postgresql:// directamente (no requiere especificar el driver)
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
 engine = create_engine(
     DATABASE_URL,
     echo=False,
-    pool_pre_ping=True,  # Verify connections before using them
+    pool_pre_ping=True,  # Verificar conexiones antes de usarlas
     connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
 )
 
@@ -23,35 +23,35 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 class User(Base):
-    __tablename__ = "users"
-    
+    __tablename__ = "usuarios"
+
     id = Column(Integer, primary_key=True, index=True)
     whatsapp_id = Column(String, unique=True, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    creado_en = Column(DateTime, default=datetime.utcnow)
 
 class Expense(Base):
-    __tablename__ = "expenses"
-    
+    __tablename__ = "gastos"
+
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    amount = Column(Float, nullable=False)
-    category = Column(String, nullable=False)
-    description = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"))
+    monto = Column(Float, nullable=False)
+    categoria = Column(String, nullable=False)
+    descripcion = Column(String, nullable=True)
+    creado_en = Column(DateTime, default=datetime.utcnow)
 
 class Budget(Base):
-    __tablename__ = "budgets"
-    
+    __tablename__ = "presupuestos"
+
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    category = Column(String, nullable=False)
-    limit_amount = Column(Float, nullable=False)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"))
+    categoria = Column(String, nullable=False)
+    monto_limite = Column(Float, nullable=False)
 
 class Reminder(Base):
-    __tablename__ = "reminders"
-    
+    __tablename__ = "recordatorios"
+
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    title = Column(String, nullable=False)
-    due_date = Column(DateTime, nullable=False)
-    is_active = Column(Integer, default=1)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"))
+    titulo = Column(String, nullable=False)
+    fecha_vencimiento = Column(DateTime, nullable=False)
+    activo = Column(Integer, default=1)

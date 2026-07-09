@@ -20,15 +20,15 @@ class LLMService:
 
     @classmethod
     def set_prompt_path(cls, path: str) -> None:
-        """Override the path to prompt.md (useful for tests)."""
+        """Sobreescribe la ruta a prompt.md (útil para tests)."""
         cls._prompt_path = path
         cls._system_prompt = None  # force reload
 
     @classmethod
     def _load_system_prompt(cls) -> str:
         """
-        Loads the system prompt from prompt.md.
-        Cached in memory after first load.
+        Carga el system prompt desde prompt.md.
+        Se cachea en memoria tras la primera carga.
         """
         if cls._system_prompt is not None:
             return cls._system_prompt
@@ -70,8 +70,8 @@ class LLMService:
     @staticmethod
     async def process_text_expense(text: str) -> Dict[str, Any]:
         """
-        Legacy wrapper. Calls process_message and extracts expense fields.
-        Kept for backward compatibility.
+        Wrapper legacy. Llama a process_message y extrae los campos de gasto.
+        Se mantiene por compatibilidad hacia atrás.
         """
         result = await LLMService.process_message(text)
         return {
@@ -104,7 +104,7 @@ class LLMService:
                 temperature=0.1,
             )
 
-            # Normalize and validate the response
+            # Normalizar y validar la respuesta
             intent = str(parsed.get("intent", "out_of_scope")).strip().lower()
             allowed_intents = {
                 "expense", "budget_query", "reminder",
@@ -153,7 +153,7 @@ class LLMService:
     @staticmethod
     async def process_audio_expense(audio_bytes: bytes) -> Dict[str, Any]:
         """
-        Placeholder for voice note processing.
+        Placeholder para el procesamiento de notas de voz.
         """
         return {
             "is_expense": False,
@@ -165,7 +165,7 @@ class LLMService:
     @staticmethod
     async def process_image_receipt(image_bytes: bytes) -> Dict[str, Any]:
         """
-        Placeholder for receipt image processing.
+        Placeholder para el procesamiento de imágenes de comprobantes.
         """
         return {
             "is_expense": False,

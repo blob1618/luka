@@ -5,14 +5,14 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 import redis.asyncio as redis
 
-# Load environment variables from .env file BEFORE importing submodules
+# Cargar variables de entorno desde .env ANTES de importar submódulos
 load_dotenv()
 
 from app.scheduler import start_scheduler  # noqa: E402
 from app.api.whatsapp import send_whatsapp_message  # noqa: E402
 from app.services.llm import LLMService  # noqa: E402
 
-# Global Redis client
+# Cliente Redis global
 redis_client = None
 
 @asynccontextmanager
@@ -20,25 +20,25 @@ async def lifespan(app: FastAPI):
     global redis_client
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
     
-    # Initialize Redis connection pool
+    # Inicializar el pool de conexiones de Redis
     redis_client = redis.from_url(redis_url, decode_responses=True)
     
-    # Basic test to check if the connection works on startup
+    # Prueba básica para verificar que la conexión funciona al arrancar
     try:
         await redis_client.ping()
-        print(f"✅ Redis connection successful to {redis_url}")
+        print(f"✅ Conexión a Redis exitosa: {redis_url}")
     except Exception as e:
-        print(f"❌ Redis connection failed: {e}")
+        print(f"❌ Fallo al conectar con Redis: {e}")
 
     start_scheduler()
     yield
-    # Shutdown logic
+    # Lógica de apagado
     if redis_client:
         await redis_client.close()
 
 app = FastAPI(title="Luka WhatsApp FinBot", lifespan=lifespan)
 
-# In production, securely load these from environment
+# En producción, cargar esto de forma segura desde el entorno
 VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "fallback_token")
 
 @app.get("/")
@@ -48,7 +48,7 @@ def read_root():
 @app.get("/redis-test")
 async def test_redis():
     """
-    Basic test endpoint to verify Redis connectivity from Render.
+    Endpoint de prueba básico para verificar la conectividad con Redis desde Render.
     """
     if not redis_client:
         raise HTTPException(status_code=500, detail="Redis client not initialized")
@@ -62,7 +62,7 @@ async def test_redis():
 @app.get("/webhook")
 async def verify_webhook(request: Request):
     """
-    Required for Meta WhatsApp verification
+    Requerido para la verificación del webhook de Meta WhatsApp.
     """
     query_params = request.query_params
     hub_mode = query_params.get("hub.mode") or query_params.get("hub_mode")
@@ -85,10 +85,10 @@ async def verify_webhook(request: Request):
 @app.post("/webhook")
 async def handle_webhook(request: Request):
     """
-    Handles incoming messages from WhatsApp Meta API
+    Maneja los mensajes entrantes de la API de Meta WhatsApp.
     """
     data = await request.json()
-    print("Received webhook event")
+    print("Evento de webhook recibido")
     
     if data.get("object") == "whatsapp_business_account":
         for entry in data.get("entry", []):
@@ -105,7 +105,7 @@ async def handle_webhook(request: Request):
                     )
                 
                 if messages:
-                    print(f"Incoming user message count: {len(messages)}")
+                    print(f"Mensajes entrantes del usuario: {len(messages)}")
                     for message in messages:
                         sender_phone = message.get("from")
                         message_type = message.get("type")
@@ -113,7 +113,7 @@ async def handle_webhook(request: Request):
                         if message_type == "text":
                             text_body = message["text"]["body"]
                             
-                            # Use process_message to get full intent analysis
+                            # Usar process_message para obtener el análisis completo de intent
                             extracted_data = await LLMService.process_message(text_body)
                             
                             intent = extracted_data.get("intent", "out_of_scope")
@@ -129,11 +129,11 @@ async def handle_webhook(request: Request):
                                     f"[EXPENSE] User {sender_phone}: "
                                     f"{expense} por {amount_text} {currency}"
                                 )
-                                # TODO: Persist expense to database
+                                # TODO: Persistir gasto en la base de datos
                                 
                             elif intent == "budget_query":
                                 print(f"[BUDGET_QUERY] User {sender_phone}: {text_body}")
-                                # TODO: Query budget from database
+                                # TODO: Consultar presupuesto en la base de datos
                                 
                             elif intent == "reminder":
                                 reminder_title = extracted_data.get("reminder_title")
@@ -142,11 +142,11 @@ async def handle_webhook(request: Request):
                                     f"[REMINDER] User {sender_phone}: "
                                     f"{reminder_title} - {reminder_date}"
                                 )
-                                # TODO: Create reminder in database
+                                # TODO: Crear recordatorio en la base de datos
                                 
                             elif intent == "expense_summary":
                                 print(f"[EXPENSE_SUMMARY] User {sender_phone}: {text_body}")
-                                # TODO: Query expense summary from database
+                                # TODO: Consultar resumen de gastos en la base de datos
                                 
                             elif intent == "greeting":
                                 print(f"[GREETING] User {sender_phone}: {text_body}")

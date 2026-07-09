@@ -5,16 +5,16 @@ class FinanceService:
     @staticmethod
     def check_dynamic_budget(user_id: int, new_expense: float, category: str) -> str:
         """
-        Calculates if an expense breaks the budget. 
-        If it does, generates a positive reallocation message (El Fin de la 'Espiral de Culpa').
+        Calcula si un gasto supera el presupuesto.
+        Si es así, genera un mensaje positivo de reasignación (El Fin de la 'Espiral de Culpa').
         """
-        # TODO: Lookup DB for budgets vs expenses
+        # TODO: Consultar DB para comparar presupuestos vs gastos
         return "¡Buen registro! Te pasaste un poco en ocio, pero ajustamos el límite de ropa de este mes para que sigas en carrera. ¡Vamos bien!"
 
     @staticmethod
     def generate_expense_chart(expenses_by_category: dict) -> bytes:
         """
-        Generates a basic pie chart and returns it as bytes.
+        Genera un gráfico de torta básico y lo retorna como bytes.
         """
         labels = list(expenses_by_category.keys())
         sizes = list(expenses_by_category.values())

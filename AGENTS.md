@@ -1,52 +1,52 @@
-# Luka AI Agent Instructions
+# Instrucciones para agentes de IA — Luka
 
-Welcome to the Luka project! Luka is a WhatsApp-based financial assistant designed to help users manage their personal finances through natural language interaction.
+Bienvenido al proyecto Luka. Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los usuarios a gestionar sus finanzas a través de lenguaje natural.
 
-## High-Level Architecture and Stack
+## Arquitectura y stack
 
-- **Framework**: FastAPI (async architecture)
-- **AI/LLM**: Google Gemini (transforms natural language to structured financial data)
-- **Messaging**: Meta WhatsApp Business API
-- **Database**: SQLAlchemy (SQLite for local dev, PostgreSQL/Supabase for production)
-- **Background Tasks**: APScheduler (manages reminders and background jobs)
-- **Deployment**: Containerized via Docker, deployed to Render
+- **Framework**: FastAPI (arquitectura async)
+- **IA/LLM**: Google Gemini (transforma lenguaje natural en datos financieros estructurados)
+- **Mensajería**: Meta WhatsApp Business API
+- **Base de datos**: SQLAlchemy (SQLite para desarrollo local, PostgreSQL/Supabase en producción)
+- **Tareas en segundo plano**: APScheduler (gestiona recordatorios y jobs en background)
+- **Deploy**: Contenedor Docker desplegado en Render
 
-## Codebase Organization
+## Organización del código
 
-- `app/main.py`: Application entrypoint, webhook verification, and message ingestion layer (`/webhook`).
-- `app/api/whatsapp.py`: WhatsApp API client for sending messages.
-- `app/services/llm.py`: Interaction with Gemini to extract structured data (e.g., expenses, budgets) from natural language text.
-- `app/services/finance.py`: Core business logic for managing users, transactions, and budgets.
-- `app/models/`: Contains database models (SQLAlchemy) and schemas (`database.py`).
-- `app/scheduler.py`: Handles background processes like recurring financial reminders.
+- `app/main.py`: Entrypoint de la aplicación, verificación del webhook y capa de ingesta de mensajes (`/webhook`).
+- `app/api/whatsapp.py`: Cliente de salida para la API de WhatsApp.
+- `app/services/llm.py`: Interacción con Gemini para extraer datos estructurados (gastos, presupuestos, etc.) desde texto en lenguaje natural.
+- `app/services/finance.py`: Lógica de negocio central para gestionar usuarios, transacciones y presupuestos.
+- `app/models/`: Modelos de base de datos (SQLAlchemy) y esquemas (`database.py`).
+- `app/scheduler.py`: Procesos en segundo plano como recordatorios financieros periódicos.
 
-## General Engineering Guidelines
+## Guías de ingeniería
 
-### 1. File Changes
-- Place FastAPI route definitions inside `app/main.py`.
-- Keep complex logic out of controllers; handle parsing in `app/services/llm.py` and state changes in `app/services/finance.py`.
-- Update SQLAlchemy definitions in `app/models/` when altering database structure and ensure proper async sessions.
+### 1. Cambios de archivos
+- Las rutas de FastAPI van en `app/main.py`.
+- La lógica compleja no va en los controllers: el parseo va en `app/services/llm.py` y los cambios de estado en `app/services/finance.py`.
+- Actualizar las definiciones de SQLAlchemy en `app/models/` cuando se altere la estructura de la base de datos y asegurar sesiones async correctas.
 
-### 2. Interaction with Services
-- All outgoing WhatsApp messages must be routed through `app/api/whatsapp.py`.
-- Any external NLP/LLM features must be integrated through `app/services/llm.py` logic wrapper to maintain modularity.
+### 2. Interacción con servicios
+- Todos los mensajes salientes de WhatsApp deben pasar por `app/api/whatsapp.py`.
+- Cualquier feature NLP/LLM externa debe integrarse a través del wrapper de `app/services/llm.py` para mantener modularidad.
 
-### 3. Data & Persistence
-- Use SQLAlchemy ORM for database interaction.
-- Maintain compatibility for both local SQLite development and production Supabase PostgreSQL deployment.
+### 3. Datos y persistencia
+- Usar el ORM SQLAlchemy para interactuar con la base de datos.
+- Mantener compatibilidad con SQLite local y PostgreSQL/Supabase en producción.
 
-### 4. Background Tasks
-- Any time-based logic, notifications, or batch processing should be encapsulated and orchestrated through `app/scheduler.py`.
+### 4. Tareas en segundo plano
+- Toda lógica basada en tiempo, notificaciones o procesamiento batch debe encapsularse y orquestarse desde `app/scheduler.py`.
 
-### 5. Deployment
-- The app uses `Dockerfile` and `render.yaml` for containerized hosting. Treat the app's `lifespan` effectively for cleanly starting and killing background services.
+### 5. Deploy
+- La app usa `Dockerfile` y `render.yaml` para hosting en contenedor. Manejar correctamente el `lifespan` de la app para iniciar y detener servicios en background limpiamente.
 
-## DeepWiki References
-When working on complex architectural portions, refer to the deepwiki references here:
+## Referencias DeepWiki
+Para porciones complejas de arquitectura, consultar estas referencias:
 - Overview: https://deepwiki.com/blob1618/luka/1-luka-overview
-- Project Structure: https://deepwiki.com/blob1618/luka/1.2-project-structure
-- Core Architecture: https://deepwiki.com/blob1618/luka/2-core-architecture
-- LLM Service: https://deepwiki.com/blob1618/luka/2.3-llm-service-(gemini-integration)
-- Finance Service: https://deepwiki.com/blob1618/luka/3.1-finance-service
-- Database Models: https://deepwiki.com/blob1618/luka/4.1-database-models
-- Deployment: https://deepwiki.com/blob1618/luka/5-deployment
+- Estructura del proyecto: https://deepwiki.com/blob1618/luka/1.2-project-structure
+- Arquitectura central: https://deepwiki.com/blob1618/luka/2-core-architecture
+- Servicio LLM: https://deepwiki.com/blob1618/luka/2.3-llm-service-(gemini-integration)
+- Servicio de finanzas: https://deepwiki.com/blob1618/luka/3.1-finance-service
+- Modelos de base de datos: https://deepwiki.com/blob1618/luka/4.1-database-models
+- Deploy: https://deepwiki.com/blob1618/luka/5-deployment

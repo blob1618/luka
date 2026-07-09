@@ -28,7 +28,7 @@ class MistralProvider(LLMProvider):
         api_key = os.getenv("MISTRAL_API_KEY")
         model = os.getenv("MISTRAL_MODEL", self.DEFAULT_MODEL).strip()
         if not api_key:
-            print("Missing MISTRAL_API_KEY. Cannot call Mistral.")
+            print("Falta MISTRAL_API_KEY. No se puede llamar a Mistral.")
             return None, None
         return api_key, model
 

@@ -10,18 +10,18 @@ Documento minimo para ubicar la base de datos actual y el diseno objetivo de LUK
 
 ## Estado actual en el repo
 
-El codigo actual usa SQLAlchemy y toma la conexion desde `DATABASE_URL`.
+El código actual usa SQLAlchemy y toma la conexión desde `DATABASE_URL`.
 
 - Local por defecto: `sqlite:///./luka.db`.
-- Produccion/entornos compartidos: PostgreSQL en Supabase.
+- Producción/entornos compartidos: PostgreSQL en Supabase.
 - Modelos actuales: `User`, `Expense`, `Budget`, `Reminder`.
 
-Tablas actuales segun `app/models/database.py`:
+Tablas actuales según `app/models/database.py`:
 
-- `users`
-- `expenses`
-- `budgets`
-- `reminders`
+- `usuarios`
+- `gastos`
+- `presupuestos`
+- `recordatorios`
 
 Comando actual para crear tablas desde los modelos:
 
@@ -95,8 +95,8 @@ Release 1 objetivo deberia usar la base para:
 
 Hay una brecha entre el codigo actual y el diseno del PDF:
 
-- El codigo actual usa tablas simples en ingles: `users`, `expenses`, `budgets`, `reminders`.
-- El diseno objetivo usa tablas en espanol, UUIDs, consentimiento versionado, categorias, limites y eventos.
+- El codigo actual ya usa tablas en espanol: `usuarios`, `gastos`, `presupuestos`, `recordatorios`.
+- El diseno objetivo agrega UUIDs, consentimiento versionado, categorias, limites y eventos.
 
 Antes de desarrollar tickets que toquen persistencia, el equipo tiene que decidir si adapta el codigo al script del PDF o si ajusta el script al modelo actual.
 
@@ -106,39 +106,39 @@ Diagrama Mermaid basado en `app/models/database.py`:
 
 ```mermaid
 erDiagram
-    users {
+    usuarios {
         int id PK
         string whatsapp_id UK
-        datetime created_at
+        datetime creado_en
     }
 
-    expenses {
+    gastos {
         int id PK
-        int user_id FK
-        float amount
-        string category
-        string description
-        datetime created_at
+        int usuario_id FK
+        float monto
+        string categoria
+        string descripcion
+        datetime creado_en
     }
 
-    budgets {
+    presupuestos {
         int id PK
-        int user_id FK
-        string category
-        float limit_amount
+        int usuario_id FK
+        string categoria
+        float monto_limite
     }
 
-    reminders {
+    recordatorios {
         int id PK
-        int user_id FK
-        string title
-        datetime due_date
-        int is_active
+        int usuario_id FK
+        string titulo
+        datetime fecha_vencimiento
+        int activo
     }
 
-    users ||--o{ expenses : has
-    users ||--o{ budgets : has
-    users ||--o{ reminders : has
+    usuarios ||--o{ gastos : tiene
+    usuarios ||--o{ presupuestos : tiene
+    usuarios ||--o{ recordatorios : tiene
 ```
 
 Para un equipo chico, esta es la opcion mas simple y mantenible por ahora. Si Supabase pasa a ser la fuente real del esquema, conviene exportar el schema SQL y regenerar el diagrama desde ese schema.

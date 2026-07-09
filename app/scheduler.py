@@ -5,14 +5,14 @@ scheduler = AsyncIOScheduler()
 
 async def check_reminders():
     """
-    Checks the database for upcoming reminders and sends WhatsApp templates
+    Consulta la base de datos en busca de recordatorios próximos y envía templates de WhatsApp.
     """
-    print(f"[{datetime.utcnow()}] Checking for active reminders...")
-    # TODO: Query DB for reminders due today
-    # TODO: Make API call to Meta WhatsApp to send reminder template
+    print(f"[{datetime.utcnow()}] Verificando recordatorios activos...")
+    # TODO: Consultar la DB por recordatorios que vencen hoy
+    # TODO: Llamar a la API de Meta WhatsApp para enviar el template de recordatorio
     pass
 
 def start_scheduler():
     scheduler.add_job(check_reminders, 'interval', hours=24)
     scheduler.start()
-    print("Scheduler started.")
+    print("Scheduler iniciado.")

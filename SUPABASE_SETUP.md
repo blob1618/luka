@@ -1,42 +1,42 @@
-# Supabase Integration Guide
+# Guía de configuración de Supabase
 
-## Step 1: Create Supabase Project
+## Paso 1: Crear el proyecto en Supabase
 
-1. Go to [supabase.com](https://supabase.com)
-2. Sign up or log in
-3. Click "New Project"
-4. Fill in:
-   - **Project name:** `luka` (or any name)
-   - **Database Password:** Create a strong password (save this!)
-   - **Region:** Choose closest to you
-5. Click "Create new project" and wait ~2 minutes
+1. Ir a [supabase.com](https://supabase.com)
+2. Registrarse o iniciar sesión
+3. Hacer clic en "New Project"
+4. Completar:
+   - **Nombre del proyecto:** `luka` (o cualquier nombre)
+   - **Contraseña de la base de datos:** crear una contraseña segura (¡guardarla!)
+   - **Región:** elegir la más cercana
+5. Hacer clic en "Create new project" y esperar ~2 minutos
 
-## Step 2: Get Your Connection String
+## Paso 2: Obtener el connection string
 
-1. Once your project is created, go to **Settings → Database**
-2. Look for **Connection string** section
-3. Click the tab for **"URI"** (not Pool)
-4. Copy the connection string (it looks like):
+1. Una vez creado el proyecto, ir a **Settings → Database**
+2. Buscar la sección **Connection string**
+3. Hacer clic en la pestaña **"URI"** (no Pool)
+4. Copiar el connection string (tiene esta forma):
    ```
    postgresql://postgres:[PASSWORD]@[HOST]:[PORT]/postgres
    ```
 
-## Step 3: Update Your Environment
+## Paso 3: Actualizar el entorno
 
-Replace `[PASSWORD]` with the password you created, then add to your `.env`:
+Reemplazar `[PASSWORD]` con la contraseña creada y agregar al archivo `.env`:
 
 ```bash
-DATABASE_URL=postgresql://postgres:YOUR_PASSWORD@YOUR_HOST:5432/postgres
+DATABASE_URL=postgresql://postgres:TU_CONTRASEÑA@TU_HOST:5432/postgres
 ```
 
-**Example:**
+**Ejemplo:**
 ```bash
-DATABASE_URL=postgresql://postgres:MySecurePass123@db.supabase.co:5432/postgres
+DATABASE_URL=postgresql://postgres:MiContraseñaSegura123@db.supabase.co:5432/postgres
 ```
 
-## Step 4: Initialize Database Tables
+## Paso 4: Inicializar las tablas de la base de datos
 
-Run this to create all tables:
+Ejecutar esto para crear todas las tablas:
 
 ```bash
 python
@@ -44,50 +44,50 @@ python
 >>> Base.metadata.create_all(bind=engine)
 ```
 
-Or from command line:
+O desde la línea de comandos:
 ```bash
 python -c "from app.models.database import engine, Base; Base.metadata.create_all(bind=engine)"
 ```
 
-## Step 5: Verify Connection (Optional)
+## Paso 5: Verificar la conexión (opcional)
 
-Test the connection works:
+Probar que la conexión funciona:
 
 ```bash
-python -c "from app.models.database import SessionLocal; db = SessionLocal(); print('✓ Connected to Supabase!')"
+python -c "from app.models.database import SessionLocal; db = SessionLocal(); print('✓ Conectado a Supabase!')"
 ```
 
-## Step 6: Deploy to Render
+## Paso 6: Desplegar en Render
 
-1. Create a Render account and add a new **Web Service**.
-2. Connect your Git repository and select the branch to deploy.
-3. Choose the environment: use **Docker** (recommended) or **Python**.
-   - If using Docker: include the provided `Dockerfile` in the repo — Render will build the image automatically.
-   - If using Python (no Docker): set the build command to `pip install -r requirements.txt` and the start command to:
+1. Crear una cuenta en Render y agregar un nuevo **Web Service**.
+2. Conectar el repositorio de Git y seleccionar la rama a desplegar.
+3. Elegir el entorno: usar **Docker** (recomendado) o **Python**.
+   - Si se usa Docker: incluir el `Dockerfile` provisto en el repo — Render construirá la imagen automáticamente.
+   - Si se usa Python (sin Docker): configurar el build command como `pip install -r requirements.txt` y el start command como:
      ```bash
      gunicorn -w 4 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:$PORT
      ```
-4. In Render's dashboard, add required environment variables: `WHATSAPP_VERIFY_TOKEN`, `DATABASE_URL`, and any API keys.
-5. Deploy. Render provides a persistent server, so the app's internal scheduler will run as expected.
+4. En el dashboard de Render, agregar las variables de entorno requeridas: `WHATSAPP_VERIFY_TOKEN`, `DATABASE_URL` y las API keys necesarias.
+5. Desplegar. Render provee un servidor persistente, por lo que el scheduler interno de la app correrá con normalidad.
 
-## ⚠️ Important Notes
+## ⚠️ Notas importantes
 
-- **Keep your password secret!** Don't commit it to git
-- Your `.env` file is already in `.gitignore`
-- For Supabase Free tier: 500MB storage, plenty for development
-- Connection pooling available with Supabase's PgBouncer (enable in Settings if you hit connection limits)
+- **¡Mantener la contraseña en secreto!** No subirla al repo
+- El archivo `.env` ya está en `.gitignore`
+- Para el tier gratuito de Supabase: 500MB de almacenamiento, suficiente para desarrollo
+- El connection pooling está disponible con PgBouncer de Supabase (habilitarlo en Settings si se alcanzan los límites de conexiones)
 
-## 🔗 Useful Supabase Features
+## 🔗 Features útiles de Supabase
 
-- **SQL Editor:** Go to **SQL Editor** to run raw queries or manage tables
-- **Auth:** Supabase has built-in auth (optional, not needed for your current setup)
-- **Storage:** For file uploads (expenses receipts, etc.)
-- **Real-time:** For live updates across clients
+- **SQL Editor:** Ir a **SQL Editor** para ejecutar consultas raw o gestionar tablas
+- **Auth:** Supabase tiene auth integrado (opcional, no requerido para la configuración actual)
+- **Storage:** Para subida de archivos (comprobantes de gastos, etc.)
+- **Real-time:** Para actualizaciones en vivo entre clientes
 
-## Troubleshooting
+## Solución de problemas
 
-**"Connection refused"** → Check DATABASE_URL is correct, paste it exactly from Supabase
+**"Connection refused"** → Verificar que `DATABASE_URL` sea correcto, pegarlo exactamente desde Supabase
 
-**"too many connections"** → Free tier has a connection limit. Enable PgBouncer in Supabase Settings
+**"too many connections"** → El tier gratuito tiene límite de conexiones. Habilitar PgBouncer en Settings de Supabase
 
-**"relation does not exist"** → Run the initialization command from Step 4 to create tables
+**"relation does not exist"** → Ejecutar el comando de inicialización del Paso 4 para crear las tablas
