@@ -34,6 +34,8 @@ Bienvenido al proyecto Luka. Luka es un asistente financiero personal que opera 
 ### 3. Datos y persistencia
 - Usar el ORM SQLAlchemy para interactuar con la base de datos.
 - Mantener compatibilidad con SQLite local y PostgreSQL/Supabase en producción.
+- Para Release 1, el acceso a datos financieros debe ser mediado por backend. No implementar frontend -> Supabase directo para `movimientos_financieros` salvo nueva ADR.
+- `public.movimientos_financieros` tiene RLS habilitado; no asumir que existen policies para acceso público desde roles `anon` o `authenticated`.
 
 ### 3.1 Contrato DB MVP Release 1
 - Usar `public.movimientos_financieros` como entidad central del MVP para ingresos y egresos.
