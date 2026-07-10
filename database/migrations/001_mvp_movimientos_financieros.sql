@@ -49,4 +49,6 @@ CREATE INDEX IF NOT EXISTS movimientos_financieros_usuario_categoria_fecha_idx
   ON public.movimientos_financieros (usuario_id, categoria_id, fecha_movimiento DESC)
   WHERE categoria_id IS NOT NULL;
 
+ALTER TABLE public.movimientos_financieros ENABLE ROW LEVEL SECURITY;
+
 COMMIT;
