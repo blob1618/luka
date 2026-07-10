@@ -7,6 +7,37 @@ Documento minimo para ubicar la base de datos actual y el diseno objetivo de LUK
 - Codigo actual: `app/models/database.py`.
 - Guia existente: `SUPABASE_SETUP.md`.
 - PDF de referencia: `Flujo de datos y Script DB.pdf`.
+- Schema actual exportado de Supabase: `database/schema_supabase_actual.sql`.
+- ADR vigente: `docs/decisions/0001-mvp-db-contract.md`.
+
+## Contrato DB MVP vigente
+
+Supabase actual contiene tablas mezcladas de distintos modelos. El contrato oficial para Release 1 queda definido en `docs/decisions/0001-mvp-db-contract.md`.
+
+Tablas oficiales del contrato MVP:
+
+- `public.usuario`
+- `public.categorias`
+- `public.movimientos_financieros`
+- `public.limite_categoria`
+- `public.recordatorio`
+- `public.evento`
+- `public.acuerdo_version`
+- `public.acuerdo_aceptado`
+
+`public.movimientos_financieros` es la entidad central para ingresos y egresos del flujo nuevo. `public.usuario` debe tener `whatsapp_id` para mapear el número recibido desde WhatsApp con `usuario.id`.
+
+Tablas legacy/no usadas para nuevas features:
+
+- `public.usuarios`
+- `public.presupuestos`
+- `public.recordatorios`
+- `public.limites_gasto`
+- `public.versiones_consentimiento`
+- `public.consentimientos_usuario`
+- `public.gastos`
+
+Las tablas legacy no se borran todavía, pero las nuevas features no deben depender de ellas. Todo cambio de schema debe versionarse en GitHub antes de considerarse parte del contrato técnico.
 
 ## Estado actual en el repo
 
@@ -29,11 +60,11 @@ Comando actual para crear tablas desde los modelos:
 python -c "from app.models.database import engine, Base; Base.metadata.create_all(bind=engine)"
 ```
 
-No hay scripts SQL, dumps de schema, carpeta `supabase/` ni migraciones versionadas en GitHub.
+No hay migraciones versionadas en GitHub. El schema actual copiado desde Supabase queda versionado como referencia en `database/schema_supabase_actual.sql`; no debe ejecutarse como migración.
 
-## Diseno objetivo del MVP
+## Diseno previo de referencia
 
-El PDF `Flujo de datos y Script DB.pdf` propone un modelo PostgreSQL/Supabase mas completo, con eventos auditables y estado proyectado.
+El PDF `Flujo de datos y Script DB.pdf` propuso un modelo PostgreSQL/Supabase mas completo, con eventos auditables y estado proyectado. Ese material queda como referencia historica; el contrato vigente para Release 1 es el ADR 0001.
 
 Tablas propuestas:
 
@@ -52,14 +83,14 @@ Enums propuestos:
 
 Tambien propone indices, triggers y funciones para registrar eventos y actualizar timestamps.
 
-## Regla de arquitectura de datos
+## Regla previa del PDF
 
-El modelo objetivo separa:
+El modelo del PDF separaba:
 
 - Eventos: historico auditable e inmutable.
 - Proyecciones: estado actual optimizado para consultas.
 
-Regla operativa:
+Regla operativa propuesta por el PDF:
 
 1. Recibir request.
 2. Validar reglas de negocio.
@@ -67,20 +98,11 @@ Regla operativa:
 4. Persistir evento.
 5. Actualizar proyeccion.
 
-No se deberia escribir estado proyectado sin generar el evento correspondiente.
+Esta regla no reemplaza el contrato MVP vigente. Para Release 1, `public.evento` queda para auditoria/trazabilidad y `public.movimientos_financieros` es la fuente principal de movimientos.
 
 ## Release 1
 
-Mientras no exista un script SQL o migracion versionada, la unica fuente verificable en GitHub para Release 1 es `app/models/database.py`.
-
-Eso significa que el esquema valido hoy para desarrollo es:
-
-- `users`
-- `expenses`
-- `budgets`
-- `reminders`
-
-El diseno de eventos/consentimiento del PDF debe tratarse como objetivo pendiente hasta que se implemente en codigo o en SQL versionado.
+Para Release 1, la fuente de decisión del contrato DB MVP es `docs/decisions/0001-mvp-db-contract.md`. El schema real de Supabase todavía necesita una migración posterior para alinearse completamente con ese contrato.
 
 Release 1 objetivo deberia usar la base para:
 
@@ -93,14 +115,15 @@ Release 1 objetivo deberia usar la base para:
 
 ## Diferencia importante
 
-Hay una brecha entre el codigo actual y el diseno del PDF:
+Hay una brecha entre el codigo actual, Supabase y el diseno del PDF:
 
 - El codigo actual ya usa tablas en espanol: `usuarios`, `gastos`, `presupuestos`, `recordatorios`.
-- El diseno objetivo agrega UUIDs, consentimiento versionado, categorias, limites y eventos.
+- Supabase actual contiene tablas oficiales y tablas legacy de modelos previos.
+- El contrato MVP agrega `movimientos_financieros` como entidad central para ingresos y egresos.
 
-Antes de desarrollar tickets que toquen persistencia, el equipo tiene que decidir si adapta el codigo al script del PDF o si ajusta el script al modelo actual.
+Antes de desarrollar tickets que toquen persistencia, el equipo debe seguir el contrato MVP versionado y preparar migraciones posteriores para alinear Supabase y los modelos.
 
-## Diagrama actual
+## Diagrama actual del codigo
 
 Diagrama Mermaid basado en `app/models/database.py`:
 
@@ -141,15 +164,15 @@ erDiagram
     usuarios ||--o{ recordatorios : tiene
 ```
 
-Para un equipo chico, esta es la opcion mas simple y mantenible por ahora. Si Supabase pasa a ser la fuente real del esquema, conviene exportar el schema SQL y regenerar el diagrama desde ese schema.
+Este diagrama describe los modelos actuales del codigo, no el contrato DB MVP decidido. Si Supabase pasa a ser la fuente real del esquema, conviene exportar el schema SQL y regenerar el diagrama desde ese schema.
 
 ## Versionado recomendado
 
-Opcion minima recomendada:
+Regla minima:
 
-1. Exportar el schema real de Supabase/PostgreSQL.
-2. Guardarlo en GitHub como `database/schema.sql`.
-3. Actualizar `docs/database.md` cada vez que cambie el schema.
+1. Versionar en GitHub todo cambio de schema antes de usarlo desde backend o frontend.
+2. Mantener actualizado `database/schema_supabase_actual.sql` cuando se vuelva a exportar el schema real.
+3. Actualizar `docs/database.md` y el ADR correspondiente cuando cambie el contrato.
 
 Cuando el equipo necesite historial de cambios, pasar a migraciones:
 
@@ -165,6 +188,6 @@ No puedo confirmar si hay cambios hechos directamente en Supabase porque no hay 
 - Confirmar proyecto/URL final de Supabase.
 - Definir si se agregan migraciones, por ejemplo Alembic.
 - Definir RLS/politicas de acceso en Supabase.
-- Confirmar si `recordatorios` entra en Release 1 o queda preparado para despues.
-- Confirmar como se va a garantizar que toda mutacion genere evento.
+- Preparar la migracion que agregue `public.movimientos_financieros` y `usuario.whatsapp_id`.
+- Definir reglas concretas de auditoria para `public.evento`.
 - Definir si Redis se usa para rate limiting, deduplicacion o cache de usuario.

@@ -35,6 +35,13 @@ Bienvenido al proyecto Luka. Luka es un asistente financiero personal que opera 
 - Usar el ORM SQLAlchemy para interactuar con la base de datos.
 - Mantener compatibilidad con SQLite local y PostgreSQL/Supabase en producción.
 
+### 3.1 Contrato DB MVP Release 1
+- Usar `public.movimientos_financieros` como entidad central del MVP para ingresos y egresos.
+- Usar `public.usuario` como tabla oficial de usuarios; el contrato requiere `whatsapp_id` para mapear WhatsApp con `usuario.id`.
+- No usar tablas legacy para nuevas features: `public.usuarios`, `public.presupuestos`, `public.recordatorios`, `public.limites_gasto`, `public.versiones_consentimiento`, `public.consentimientos_usuario`, `public.gastos`.
+- No ejecutar SQL ni tocar Supabase directamente desde tareas de agentes; todo cambio de schema debe versionarse primero en GitHub.
+- Mantener la lógica de negocio fuera de `app/main.py`; el parseo va en servicios LLM y los cambios de estado en servicios de finanzas.
+
 ### 4. Tareas en segundo plano
 - Toda lógica basada en tiempo, notificaciones o procesamiento batch debe encapsularse y orquestarse desde `app/scheduler.py`.
 
