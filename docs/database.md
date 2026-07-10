@@ -38,6 +38,39 @@ Tablas legacy/no usadas para nuevas features:
 - `public.gastos`
 
 Las tablas legacy no se borran todavía, pero las nuevas features no deben depender de ellas. Todo cambio de schema debe versionarse en GitHub antes de considerarse parte del contrato técnico.
+## Acceso a datos financieros y RLS
+
+Para Release 1, el acceso a datos financieros será mediado por el backend.
+
+El frontend no debe consultar Supabase directamente para leer o escribir movimientos financieros. El dashboard web debe consumir endpoints del backend, y el backend debe consultar Supabase/PostgreSQL aplicando las reglas de autorización correspondientes.
+
+La tabla `public.movimientos_financieros` tiene Row Level Security habilitado. Actualmente no hay policies públicas definidas para permitir acceso directo desde roles como `anon` o `authenticated`.
+
+Esta decisión es intencional para el MVP:
+
+- Evita exponer datos financieros sensibles desde el cliente.
+- Evita resolver prematuramente Supabase Auth y policies basadas en `auth.uid()`.
+- Centraliza la autorización en el backend.
+- Permite avanzar con STK-35 y STK-54 sin bloquear el flujo principal.
+
+Flujo permitido para Release 1:
+
+- WhatsApp -> Backend -> Supabase/PostgreSQL.
+- Dashboard web -> Backend -> Supabase/PostgreSQL.
+
+Flujo no permitido para Release 1:
+
+- Dashboard web -> Supabase directo para datos financieros.
+
+Reglas para backend:
+
+- Buscar usuarios de WhatsApp mediante `public.usuario.whatsapp_id`.
+- Filtrar siempre movimientos por `usuario_id`.
+- No aceptar `usuario_id` enviado por el cliente como prueba de autorización.
+- No devolver listados globales de movimientos financieros.
+- Confirmar operaciones al usuario solo después de una escritura exitosa en base de datos.
+
+Si en una release futura se decide permitir acceso directo desde frontend a Supabase, deberán definirse policies RLS explícitas y una estrategia de autenticación que vincule usuarios autenticados con `public.usuario.id`.
 
 ## Estado actual en el repo
 
@@ -102,7 +135,7 @@ Esta regla no reemplaza el contrato MVP vigente. Para Release 1, `public.evento`
 
 ## Release 1
 
-Para Release 1, la fuente de decisión del contrato DB MVP es `docs/decisions/0001-mvp-db-contract.md`. El schema real de Supabase todavía necesita una migración posterior para alinearse completamente con ese contrato.
+Para Release 1, la fuente de decisión del contrato DB MVP es `docs/decisions/0001-mvp-db-contract.md`. El contrato se implementa mediante migraciones versionadas en `database/migrations/`. La migración `001_mvp_movimientos_financieros.sql` agrega `public.movimientos_financieros`, `public.usuario.whatsapp_id` y habilita RLS sobre la tabla de movimientos financieros.
 
 Release 1 objetivo deberia usar la base para:
 
@@ -112,7 +145,8 @@ Release 1 objetivo deberia usar la base para:
 - Registrar eventos relevantes.
 - Guardar estado actual en tablas proyectadas.
 - Soportar categorias, limites y recordatorios si entran en alcance.
-
+- Acceder a datos financieros desde el dashboard mediante backend, no mediante Supabase directo.
+- Filtrar movimientos financieros por usuario en todos los endpoints del backend.
 ## Diferencia importante
 
 Hay una brecha entre el codigo actual, Supabase y el diseno del PDF:
@@ -184,10 +218,10 @@ No puedo confirmar si hay cambios hechos directamente en Supabase porque no hay 
 
 ## Pendiente de validar
 
-- Versionar el script SQL real dentro del repo.
+- Reexportar el schema real de Supabase después de aplicar la migración y actualizar `database/schema_supabase_actual.sql`.
 - Confirmar proyecto/URL final de Supabase.
-- Definir si se agregan migraciones, por ejemplo Alembic.
-- Definir RLS/politicas de acceso en Supabase.
-- Preparar la migracion que agregue `public.movimientos_financieros` y `usuario.whatsapp_id`.
-- Definir reglas concretas de auditoria para `public.evento`.
-- Definir si Redis se usa para rate limiting, deduplicacion o cache de usuario.
+- Definir si se agregan migraciones mediante una herramienta formal, por ejemplo Alembic o Supabase CLI.
+- Definir policies RLS solo si una release futura requiere acceso directo desde frontend a Supabase.
+- Definir reglas concretas de auditoría para `public.evento`.
+- Definir endpoints backend para STK-54 siguiendo la regla dashboard -> backend -> Supabase.
+- Definir si Redis se usa para rate limiting, deduplicación o cache de usuario.
