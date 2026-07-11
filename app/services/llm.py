@@ -119,8 +119,15 @@ class LLMService:
             except (TypeError, ValueError):
                 amount = None
 
+            # Normalizar movement_type
+            movement_type = str(parsed.get("movement_type", "")).strip().lower() if parsed.get("movement_type") else ""
+            if movement_type not in ("ingreso", "egreso"):
+                # Compatibilidad hacia atrás: si intent es "expense" y no hay movement_type, asumir "egreso"
+                movement_type = "egreso" if intent == "expense" else None
+
             return {
                 "intent": intent,
+                "movement_type": movement_type,
                 "is_expense": intent == "expense" and amount is not None,
                 "expense": parsed.get("expense"),
                 "amount": amount,
@@ -136,6 +143,7 @@ class LLMService:
             print(f"[LLMService] process_message failed: {type(exc).__name__}: {exc}")
             return {
                 "intent": "out_of_scope",
+                "movement_type": None,
                 "is_expense": False,
                 "expense": None,
                 "amount": None,

@@ -121,15 +121,16 @@ async def handle_webhook(request: Request):
                             
                             if intent == "expense":
                                 amount = extracted_data.get("amount")
-                                expense = extracted_data.get("expense") or "gasto"
+                                expense = extracted_data.get("expense") or "movimiento"
                                 currency = extracted_data.get("currency") or "ARS"
+                                movement_type = extracted_data.get("movement_type", "egreso")
                                 
                                 amount_text = f"{amount:.2f}" if isinstance(amount, (int, float)) else str(amount)
                                 print(
-                                    f"[EXPENSE] User {sender_phone}: "
+                                    f"[{movement_type.upper()}] User {sender_phone}: "
                                     f"{expense} por {amount_text} {currency}"
                                 )
-                                # TODO: Persistir gasto en la base de datos
+                                # TODO: Persistir gasto/ingreso en la base de datos
                                 
                             elif intent == "budget_query":
                                 print(f"[BUDGET_QUERY] User {sender_phone}: {text_body}")

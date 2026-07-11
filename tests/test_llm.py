@@ -299,6 +299,130 @@ async def test_process_message_invalid_intent_normalized():
 
 
 # =============================================================================
+# Tests de movement_type (ingreso/egreso)
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_process_message_income():
+    """Prueba: El bot reconoce un ingreso y devuelve movement_type='ingreso'."""
+    mock_response = {
+        "intent": "expense",
+        "movement_type": "ingreso",
+        "is_expense": True,
+        "expense": "sueldo",
+        "amount": 150000.0,
+        "currency": "ARS",
+        "category": "salario",
+        "description": "sueldo",
+        "reminder_title": None,
+        "reminder_date": None,
+        "reply_text": "✅ Ingreso registrado: sueldo por $150,000.00 ARS."
+    }
+
+    with patch.object(LLMService, "_get_provider") as mock_get_provider:
+        mock_provider = AsyncMock()
+        mock_provider.generate_json.return_value = mock_response
+        mock_get_provider.return_value = mock_provider
+
+        result = await LLMService.process_message("Recibí 150000 de sueldo")
+
+        assert result["intent"] == "expense"
+        assert result["movement_type"] == "ingreso"
+        assert result["is_expense"] is True
+        assert result["amount"] == 150000.0
+        assert result["category"] == "salario"
+
+
+@pytest.mark.asyncio
+async def test_process_message_expense_with_movement_type():
+    """Prueba: Un gasto con movement_type='egreso' explícito."""
+    mock_response = {
+        "intent": "expense",
+        "movement_type": "egreso",
+        "is_expense": True,
+        "expense": "supermercado",
+        "amount": 8500.0,
+        "currency": "ARS",
+        "category": "comida",
+        "description": "supermercado semanal",
+        "reminder_title": None,
+        "reminder_date": None,
+        "reply_text": "✅ Gasto registrado: supermercado por $8,500.00 ARS."
+    }
+
+    with patch.object(LLMService, "_get_provider") as mock_get_provider:
+        mock_provider = AsyncMock()
+        mock_provider.generate_json.return_value = mock_response
+        mock_get_provider.return_value = mock_provider
+
+        result = await LLMService.process_message("Gasté 8500 en el supermercado")
+
+        assert result["intent"] == "expense"
+        assert result["movement_type"] == "egreso"
+        assert result["amount"] == 8500.0
+
+
+@pytest.mark.asyncio
+async def test_process_message_expense_backward_compat():
+    """
+    Prueba de compatibilidad hacia atrás:
+    Si intent='expense' pero no hay movement_type, se asume 'egreso'.
+    """
+    mock_response = {
+        "intent": "expense",
+        # Sin movement_type (legacy)
+        "is_expense": True,
+        "expense": "taxi",
+        "amount": 1200.0,
+        "currency": "ARS",
+        "category": "transporte",
+        "description": "viaje en taxi",
+        "reminder_title": None,
+        "reminder_date": None,
+        "reply_text": "✅ Gasto registrado: taxi por $1,200.00 ARS."
+    }
+
+    with patch.object(LLMService, "_get_provider") as mock_get_provider:
+        mock_provider = AsyncMock()
+        mock_provider.generate_json.return_value = mock_response
+        mock_get_provider.return_value = mock_provider
+
+        result = await LLMService.process_message("Pagué 1200 de taxi")
+
+        assert result["intent"] == "expense"
+        assert result["movement_type"] == "egreso"  # default por compatibilidad
+        assert result["amount"] == 1200.0
+
+
+@pytest.mark.asyncio
+async def test_process_message_out_of_scope_movement_type_null():
+    """Prueba: Fuera de alcance tiene movement_type null."""
+    mock_response = {
+        "intent": "out_of_scope",
+        "movement_type": None,
+        "is_expense": False,
+        "expense": None,
+        "amount": None,
+        "currency": None,
+        "category": None,
+        "description": None,
+        "reminder_title": None,
+        "reminder_date": None,
+        "reply_text": "No puedo ayudarte con eso."
+    }
+
+    with patch.object(LLMService, "_get_provider") as mock_get_provider:
+        mock_provider = AsyncMock()
+        mock_provider.generate_json.return_value = mock_response
+        mock_get_provider.return_value = mock_provider
+
+        result = await LLMService.process_message("Haceme un café")
+
+        assert result["intent"] == "out_of_scope"
+        assert result["movement_type"] is None
+
+
+# =============================================================================
 # Tests de carga de prompt.md
 # =============================================================================
 
