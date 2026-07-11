@@ -49,6 +49,15 @@ async def test_process_text_expense_not_expense():
 # Tests de LLMService - process_message (nuevo multi-intent)
 # =============================================================================
 
+async def _process_message_with_mock_response(mock_response):
+    with patch.object(LLMService, "_get_provider") as mock_get_provider:
+        mock_provider = AsyncMock()
+        mock_provider.generate_json.return_value = mock_response
+        mock_get_provider.return_value = mock_provider
+
+        return await LLMService.process_message("Registre un movimiento")
+
+
 @pytest.mark.asyncio
 async def test_process_message_valid_expense():
     """Prueba de éxito: El bot extrae correctamente los datos de un gasto válido."""
@@ -79,6 +88,90 @@ async def test_process_message_valid_expense():
         assert result["currency"] == "ARS"
         assert result["category"] == "transporte"
         assert "Gasto registrado" in result["reply_text"]
+
+
+@pytest.mark.asyncio
+async def test_process_message_normalizes_movement_type_ingreso():
+    mock_response = {
+        "intent": "expense",
+        "is_expense": True,
+        "expense": "sueldo",
+        "amount": 500000.0,
+        "currency": "ARS",
+        "movement_type": "ingreso",
+        "reply_text": "Ingreso detectado.",
+    }
+
+    result = await _process_message_with_mock_response(mock_response)
+
+    assert result["movement_type"] == "ingreso"
+
+
+@pytest.mark.asyncio
+async def test_process_message_normalizes_movement_type_egreso():
+    mock_response = {
+        "intent": "expense",
+        "is_expense": True,
+        "expense": "supermercado",
+        "amount": 42000.0,
+        "currency": "ARS",
+        "movement_type": "egreso",
+        "reply_text": "Egreso detectado.",
+    }
+
+    result = await _process_message_with_mock_response(mock_response)
+
+    assert result["movement_type"] == "egreso"
+
+
+@pytest.mark.asyncio
+async def test_process_message_accepts_transaction_type_ingreso():
+    mock_response = {
+        "intent": "expense",
+        "is_expense": True,
+        "expense": "transferencia recibida",
+        "amount": 25000.0,
+        "currency": "ARS",
+        "transaction_type": "ingreso",
+        "reply_text": "Ingreso detectado.",
+    }
+
+    result = await _process_message_with_mock_response(mock_response)
+
+    assert result["movement_type"] == "ingreso"
+
+
+@pytest.mark.asyncio
+async def test_process_message_falls_back_expense_intent_to_egreso():
+    mock_response = {
+        "intent": "expense",
+        "is_expense": True,
+        "expense": "nafta",
+        "amount": 3500.0,
+        "currency": "ARS",
+        "reply_text": "Gasto detectado.",
+    }
+
+    result = await _process_message_with_mock_response(mock_response)
+
+    assert result["movement_type"] == "egreso"
+
+
+@pytest.mark.asyncio
+async def test_process_message_invalid_movement_type_is_none():
+    mock_response = {
+        "intent": "expense",
+        "is_expense": True,
+        "expense": "supermercado",
+        "amount": 42000.0,
+        "currency": "ARS",
+        "movement_type": "transferencia",
+        "reply_text": "Tipo invalido.",
+    }
+
+    result = await _process_message_with_mock_response(mock_response)
+
+    assert result["movement_type"] is None
 
 
 @pytest.mark.asyncio

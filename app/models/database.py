@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, date
 from sqlalchemy import (
     Column, String, DateTime, ForeignKey, create_engine,
-    Boolean, Date, Numeric, CheckConstraint
+    Boolean, Date, Numeric, CheckConstraint, Index
 )
 from sqlalchemy.types import Uuid, JSON
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -37,6 +37,16 @@ class Usuario(Base):
     creado_en = Column(DateTime(timezone=True), default=func.now())
     actualizado_en = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
     whatsapp_id = Column(String, nullable=True)
+
+    __table_args__ = (
+        Index(
+            "usuario_whatsapp_id_uidx",
+            "whatsapp_id",
+            unique=True,
+            postgresql_where=whatsapp_id.isnot(None),
+            sqlite_where=whatsapp_id.isnot(None),
+        ),
+    )
 
 class AcuerdoVersion(Base):
     __tablename__ = "acuerdo_version"
@@ -120,4 +130,11 @@ class MovimientoFinanciero(Base):
     __table_args__ = (
         CheckConstraint("tipo IN ('ingreso', 'egreso')", name="movimientos_financieros_tipo_check"),
         CheckConstraint("cantidad > 0", name="movimientos_financieros_cantidad_check"),
+        Index(
+            "movimientos_financieros_whatsapp_message_id_uidx",
+            "whatsapp_message_id",
+            unique=True,
+            postgresql_where=whatsapp_message_id.isnot(None),
+            sqlite_where=whatsapp_message_id.isnot(None),
+        ),
     )
