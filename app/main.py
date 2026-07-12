@@ -17,6 +17,7 @@ from app.services.llm import LLMService  # noqa: E402
 
 # Cliente Redis global
 redis_client = None
+REDIS_CONNECT_TIMEOUT_SECONDS = 3
 
 
 @asynccontextmanager
@@ -25,14 +26,21 @@ async def lifespan(app: FastAPI):
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
 
     # Inicializar el pool de conexiones de Redis
-    redis_client = redis.from_url(redis_url, decode_responses=True)
+    redis_client = redis.from_url(
+        redis_url,
+        decode_responses=True,
+        socket_connect_timeout=REDIS_CONNECT_TIMEOUT_SECONDS,
+        socket_timeout=REDIS_CONNECT_TIMEOUT_SECONDS,
+    )
 
     # Prueba basica para verificar que la conexion funciona al arrancar
     try:
         await redis_client.ping()
-        print(f"Conexion a Redis exitosa: {redis_url}")
+        print("Conexion a Redis exitosa.")
     except Exception as e:
-        print(f"Fallo al conectar con Redis: {e}")
+        # Redis no es necesario para servir el health check ni el webhook actual.
+        # No bloquear el arranque si el servicio aun no esta disponible.
+        print(f"Fallo al conectar con Redis tras {REDIS_CONNECT_TIMEOUT_SECONDS}s: {e}")
 
     start_scheduler()
     yield

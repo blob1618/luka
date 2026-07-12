@@ -12,4 +12,5 @@ COPY . .
 EXPOSE 8000
 
 # Use a shell form so environment variables (like $PORT) are expanded at runtime.
-CMD ["sh", "-c", "gunicorn -w 4 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:${PORT:-8000}"]
+# The scheduler must run once, not once per Gunicorn worker.
+CMD ["sh", "-c", "gunicorn -w 1 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:${PORT:-8000}"]
