@@ -185,8 +185,12 @@ class FinanceService:
                 duplicate=False,
             )
 
-        except IntegrityError:
+        except IntegrityError as exc:
             session.rollback()
+            print(
+                "[MOVEMENT_REGISTRATION] Persistence integrity error: "
+                f"{type(exc.orig).__name__}: {exc.orig}"
+            )
             if whatsapp_message_id:
                 try:
                     duplicate = cls._find_duplicate(session, whatsapp_message_id)
@@ -202,8 +206,12 @@ class FinanceService:
                     )
             return cls._result("persistence_error", "could not persist movement")
 
-        except Exception:
+        except Exception as exc:
             session.rollback()
+            print(
+                "[MOVEMENT_REGISTRATION] Persistence error: "
+                f"{type(exc).__name__}: {exc}"
+            )
             return cls._result("persistence_error", "could not persist movement")
 
         finally:
