@@ -70,8 +70,8 @@ class LLMService:
     @staticmethod
     def _normalize_movement_type(parsed: Dict[str, Any], intent: str) -> str | None:
         explicit_type = (
-            parsed.get("movement_type") is not None
-            or parsed.get("transaction_type") is not None
+            "movement_type" in parsed
+            or "transaction_type" in parsed
         )
 
         for field_name in ("movement_type", "transaction_type"):

@@ -15,8 +15,8 @@ class GeminiProvider(LLMProvider):
     """
 
     API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    DEFAULT_MODEL = "gemini-2.5-flash"
-    FALLBACK_MODELS = ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash")
+    DEFAULT_MODEL = "gemini-flash-latest"
+    FALLBACK_MODELS = ("gemini-2.5-flash-lite",)
     MAX_RETRIES_PER_MODEL = 2
 
     # =========================================================================
@@ -130,9 +130,12 @@ class GeminiProvider(LLMProvider):
                     last_error = exc
                     break
 
-            # Si fue 404, seguir con el siguiente modelo candidato; si no, no tiene sentido reintentar
-            if isinstance(last_error, httpx.HTTPStatusError) and last_error.response.status_code == 404:
-                continue
+            # Solo un modelo inexistente justifica probar otro candidato. Una cuota
+            # agotada aplica al proyecto y recorrer fallbacks multiplica las llamadas.
+            if isinstance(last_error, httpx.HTTPStatusError):
+                if last_error.response.status_code == 404:
+                    continue
+                break
 
         # Loguear el error final y propagarlo
         if last_error:
@@ -143,8 +146,13 @@ class GeminiProvider(LLMProvider):
                     f"status={last_error.response.status_code}",
                     f"body={last_error.response.text}",
                 )
-            else:
-                print(f"[Gemini] processing failed: {type(last_error).__name__}: {last_error}")
-            raise last_error
+                raise RuntimeError(
+                    f"Gemini request failed with status {last_error.response.status_code}"
+                ) from None
+
+            print(f"[Gemini] processing failed: {type(last_error).__name__}")
+            raise RuntimeError(
+                f"Gemini processing failed: {type(last_error).__name__}"
+            ) from None
 
         raise RuntimeError("Gemini: todos los modelos fallaron sin error registrado.")
