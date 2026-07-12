@@ -49,6 +49,15 @@ async def test_process_text_expense_not_expense():
 # Tests de LLMService - process_message (nuevo multi-intent)
 # =============================================================================
 
+async def _process_message_with_mock_response(mock_response):
+    with patch.object(LLMService, "_get_provider") as mock_get_provider:
+        mock_provider = AsyncMock()
+        mock_provider.generate_json.return_value = mock_response
+        mock_get_provider.return_value = mock_provider
+
+        return await LLMService.process_message("Registre un movimiento")
+
+
 @pytest.mark.asyncio
 async def test_process_message_valid_expense():
     """Prueba de éxito: El bot extrae correctamente los datos de un gasto válido."""
@@ -79,6 +88,122 @@ async def test_process_message_valid_expense():
         assert result["currency"] == "ARS"
         assert result["category"] == "transporte"
         assert "Gasto registrado" in result["reply_text"]
+
+
+@pytest.mark.asyncio
+async def test_process_message_normalizes_movement_type_ingreso():
+    mock_response = {
+        "intent": "expense",
+        "is_expense": True,
+        "expense": "sueldo",
+        "amount": 500000.0,
+        "currency": "ARS",
+        "movement_type": "ingreso",
+        "reply_text": "Ingreso detectado.",
+    }
+
+    result = await _process_message_with_mock_response(mock_response)
+
+    assert result["movement_type"] == "ingreso"
+
+
+@pytest.mark.asyncio
+async def test_process_message_normalizes_movement_type_egreso():
+    mock_response = {
+        "intent": "expense",
+        "is_expense": True,
+        "expense": "supermercado",
+        "amount": 42000.0,
+        "currency": "ARS",
+        "movement_type": "egreso",
+        "reply_text": "Egreso detectado.",
+    }
+
+    result = await _process_message_with_mock_response(mock_response)
+
+    assert result["movement_type"] == "egreso"
+
+
+@pytest.mark.asyncio
+async def test_process_message_accepts_transaction_type_ingreso():
+    mock_response = {
+        "intent": "expense",
+        "is_expense": True,
+        "expense": "transferencia recibida",
+        "amount": 25000.0,
+        "currency": "ARS",
+        "transaction_type": "ingreso",
+        "reply_text": "Ingreso detectado.",
+    }
+
+    result = await _process_message_with_mock_response(mock_response)
+
+    assert result["movement_type"] == "ingreso"
+
+
+@pytest.mark.asyncio
+async def test_process_message_falls_back_expense_intent_to_egreso():
+    mock_response = {
+        "intent": "expense",
+        "is_expense": True,
+        "expense": "nafta",
+        "amount": 3500.0,
+        "currency": "ARS",
+        "reply_text": "Gasto detectado.",
+    }
+
+    result = await _process_message_with_mock_response(mock_response)
+
+    assert result["movement_type"] == "egreso"
+
+
+@pytest.mark.asyncio
+async def test_process_message_preserves_explicit_null_movement_type():
+    mock_response = {
+        "intent": "expense",
+        "is_expense": True,
+        "amount": 5000.0,
+        "currency": "ARS",
+        "movement_type": None,
+        "reply_text": "¿Es un ingreso o un egreso?",
+    }
+
+    result = await _process_message_with_mock_response(mock_response)
+
+    assert result["movement_type"] is None
+
+
+@pytest.mark.asyncio
+async def test_process_message_preserves_explicit_null_transaction_type():
+    mock_response = {
+        "intent": "expense",
+        "is_expense": True,
+        "amount": 5000.0,
+        "currency": "ARS",
+        "transaction_type": None,
+        "reply_text": "¿Es un ingreso o un egreso?",
+    }
+
+    result = await _process_message_with_mock_response(mock_response)
+
+    assert result["movement_type"] is None
+
+
+@pytest.mark.asyncio
+async def test_process_message_invalid_movement_type_is_none():
+    mock_response = {
+        "intent": "expense",
+        "is_expense": True,
+        "expense": "supermercado",
+        "amount": 42000.0,
+        "currency": "ARS",
+        "movement_type": "transferencia",
+        "reply_text": "Tipo invalido.",
+    }
+
+    result = await _process_message_with_mock_response(mock_response)
+
+    assert result["movement_type"] is None
 
 
 @pytest.mark.asyncio
@@ -422,6 +547,39 @@ async def test_gemini_provider_raises_on_missing_key(monkeypatch):
     provider = GeminiProvider()
     with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
         await provider.generate_json("sys", "msg")
+
+
+@pytest.mark.asyncio
+async def test_gemini_provider_quota_error_does_not_try_fallback_or_leak_key(monkeypatch):
+    api_key = "secret-test-key"
+    monkeypatch.setenv("GEMINI_API_KEY", api_key)
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-primary")
+
+    request = httpx.Request(
+        "POST",
+        f"https://example.test/models/gemini-primary:generateContent?key={api_key}",
+    )
+    response = httpx.Response(
+        429,
+        request=request,
+        json={"error": {"status": "RESOURCE_EXHAUSTED"}},
+    )
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=response)
+
+    with (
+        patch("app.services.llm_providers.gemini.asyncio.sleep", new_callable=AsyncMock),
+        patch("app.services.llm_providers.gemini.httpx.AsyncClient", return_value=mock_client),
+    ):
+        provider = GeminiProvider()
+        with pytest.raises(RuntimeError, match="status 429") as exc_info:
+            await provider.generate_json("sys", "msg")
+
+    assert mock_client.post.await_count == provider.MAX_RETRIES_PER_MODEL
+    assert api_key not in str(exc_info.value)
 
 
 # =============================================================================
