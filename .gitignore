@@ -220,3 +220,5 @@ __marimo__/
 # Context files
 Escenario.pdf
 Especificación de Requisitos.pdf
+
+.agents/*
