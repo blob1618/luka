@@ -58,7 +58,6 @@ Estas tablas existen o pueden existir por modelos anteriores. No se borran en es
 
 - `public.usuarios`
 - `public.presupuestos`
-- `public.recordatorios`
 - `public.limites_gasto`
 - `public.versiones_consentimiento`
 - `public.consentimientos_usuario`

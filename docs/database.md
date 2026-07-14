@@ -37,7 +37,6 @@ Tablas legacy/no usadas para features nuevas:
 
 - `public.usuarios`
 - `public.presupuestos`
-- `public.recordatorios`
 - `public.limites_gasto`
 - `public.versiones_consentimiento`
 - `public.consentimientos_usuario`
