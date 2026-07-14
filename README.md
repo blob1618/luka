@@ -2,9 +2,27 @@
 
 # LUKA
 
-LUKA es un asistente financiero por WhatsApp que ayuda a los usuarios a registrar gastos desde mensajes en lenguaje natural. El punto de entrada del producto es WhatsApp a través de la Meta WhatsApp Business API.
+LUKA es un asistente financiero por WhatsApp que ayuda a los usuarios a registrar ingresos y egresos desde mensajes en lenguaje natural. El punto de entrada del producto es WhatsApp a través de la Meta WhatsApp Business API.
 
-Por ahora el bot puede recibir mensajes de texto, pedirle a un proveedor LLM que extraiga los datos del gasto, y responder de vuelta por WhatsApp. Las notas de voz e imágenes de comprobantes están preparadas en el código pero todavía no están implementadas.
+STK-35 implementa el registro de movimientos financieros por texto. El bot recibe el mensaje, usa un proveedor LLM para interpretarlo, valida y persiste el movimiento mediante el backend y recién entonces confirma el resultado por WhatsApp. Las notas de voz e imágenes de comprobantes están preparadas en el código pero todavía no están implementadas.
+
+## Registro de movimientos por texto (STK-35)
+
+Flujo implementado:
+
+```text
+WhatsApp webhook -> LLMService -> FinanceService -> public.movimientos_financieros -> respuesta
+```
+
+- Los movimientos registrables pueden ser `ingreso` o `egreso`, según `movement_type`.
+- `intent="expense"` se mantiene para ambos tipos por compatibilidad con el contrato existente del LLM.
+- El backend confirma el registro solo después de que la escritura en base de datos termina correctamente; el LLM no es autoridad para confirmar persistencia.
+- El remitente debe corresponder a un usuario previamente registrado y vinculado mediante `public.usuario.whatsapp_id`. STK-35 no implementa alta, registro, login ni vinculación inicial de usuarios.
+- Si el usuario no existe, el movimiento no se registra.
+- `FinanceService` asocia `categoria_id` solo cuando encuentra una categoría activa del usuario. No crea categorías automáticamente y, si no hay coincidencia, guarda `categoria_id=null`.
+- Los intents `greeting`, `out_of_scope`, `reminder`, `budget_query` y `expense_summary` no se persisten como movimientos.
+
+El flujo oficial de alta/vinculación de usuarios, las categorías default o personalizadas y la consulta de movimientos de STK-128 quedan fuera de STK-35. El acceso seguro al futuro micrositio/dashboard mediante Magic Link está relacionado con STK-54 y requiere coordinación entre backend y frontend; no está implementado por este ticket.
 
 ## Stack
 
@@ -21,9 +39,9 @@ Por ahora el bot puede recibir mensajes de texto, pedirle a un proveedor LLM que
 
 - `app/main.py`: app FastAPI, endpoint de health, verificación del webhook de WhatsApp e ingesta de mensajes.
 - `app/api/whatsapp.py`: cliente de salida hacia la API de WhatsApp.
-- `app/services/llm.py`: fachada LLM usada por el flujo del webhook.
+- `app/services/llm.py`: fachada LLM que interpreta mensajes y normaliza el tipo de movimiento.
 - `app/services/llm_providers/`: implementaciones de los providers Gemini y Mistral.
-- `app/services/finance.py`: helpers de lógica financiera y de negocio.
+- `app/services/finance.py`: validación y persistencia de movimientos financieros y otras reglas de negocio.
 - `app/models/database.py`: engine, sesión y modelos SQLAlchemy.
 - `tests/`: tests del backend.
 - `docs/database.md`: estado actual de la base de datos, esquema objetivo del MVP y decisiones pendientes.
@@ -106,13 +124,23 @@ postgresql://...
 
 Usar Supabase salvo que el equipo decida otra cosa. Los detalles de configuración están en `SUPABASE_SETUP.md`.
 
-Para crear las tablas actuales desde los modelos SQLAlchemy:
+Para crear las tablas actuales desde los modelos SQLAlchemy en una base local de desarrollo:
 
 ```powershell
 python -c "from app.models.database import engine, Base; Base.metadata.create_all(bind=engine)"
 ```
 
-No hay herramienta de migraciones configurada todavía. Si un cambio toca los modelos, coordinar la actualización del esquema con el equipo y actualizar `docs/database.md`.
+El repositorio contiene migraciones SQL versionadas en `database/migrations/`, aunque todavía no hay una herramienta formal de migraciones configurada. No usar `Base.metadata.create_all()` para actualizar una base compartida de Supabase. Si un cambio toca el esquema, debe versionarse y coordinarse con el equipo antes de aplicarlo; ver `docs/database.md`.
+
+`database/schema_supabase_actual.sql` es un snapshot local de referencia y puede quedar desactualizado si Supabase no se reexportó después de aplicar una migración. La presencia de una migración en GitHub no demuestra por sí sola que esté aplicada en el entorno remoto.
+
+## Limitaciones conocidas y trabajo relacionado
+
+- La deduplicación por `whatsapp_message_id` evita insertar dos filas, pero un reintento de Meta puede generar una segunda respuesta visible indicando que el movimiento estaba duplicado.
+- Los índices productivos de usuarios y movimientos, incluido el índice único parcial de `whatsapp_message_id`, deben verificarse en Supabase. El contrato versionado puede contenerlos sin que eso pruebe su aplicación remota.
+- El flujo completo puede tardar aproximadamente entre 5 y 10 segundos por la suma de LLM, base de datos, API de WhatsApp y hosting.
+- Faltan métricas de latencia por etapa e investigación sobre typing indicator o mark as read en WhatsApp Business API.
+- Quedan pendientes rate limiting, protección frente al abuso de tokens y optimizaciones para evitar llamadas innecesarias al LLM: validar usuarios y duplicados antes del LLM y usar un pre-router para saludos o mensajes fuera de alcance.
 
 ## Verificar cambios
 
