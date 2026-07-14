@@ -123,12 +123,4 @@ CREATE TABLE public.presupuestos (
   CONSTRAINT presupuestos_pkey PRIMARY KEY (id),
   CONSTRAINT presupuestos_usuario_id_fkey FOREIGN KEY (usuario_id) REFERENCES public.usuarios(id)
 );
-CREATE TABLE public.recordatorios (
-  id integer NOT NULL DEFAULT nextval('recordatorios_id_seq'::regclass),
-  usuario_id integer,
-  titulo character varying NOT NULL,
-  fecha_vencimiento timestamp without time zone NOT NULL,
-  activo integer,
-  CONSTRAINT recordatorios_pkey PRIMARY KEY (id),
-  CONSTRAINT recordatorios_usuario_id_fkey FOREIGN KEY (usuario_id) REFERENCES public.usuarios(id)
-);
+

@@ -658,3 +658,68 @@ def test_safe_json_loads_invalid_raises():
     provider = GeminiProvider()
     with pytest.raises(json.JSONDecodeError):
         provider._safe_json_loads("esto no es json en absoluto!!!")
+
+
+class TestCreateReminderIntent:
+    """Tests for intent create_reminder in LLMService.process_message()."""
+
+    @pytest.mark.asyncio
+    async def test_create_reminder_full(self):
+        """LLM returns create_reminder with all fields."""
+        mock_response = {
+            "intent": "create_reminder",
+            "reminder_concept": "luz",
+            "reminder_day": 15,
+            "reminder_amount": 5000.0,
+            "reminder_currency": "ARS",
+            "reply_text": "Estoy procesando el recordatorio.",
+        }
+        result = await _process_message_with_mock_response(mock_response)
+
+        assert result["intent"] == "create_reminder"
+        assert result["reminder_concept"] == "luz"
+        assert result["reminder_day"] == 15
+        assert result["reminder_amount"] == 5000.0
+        assert result["reminder_currency"] == "ARS"
+
+    @pytest.mark.asyncio
+    async def test_create_reminder_no_day(self):
+        mock_response = {
+            "intent": "create_reminder",
+            "reminder_concept": "cable",
+            "reminder_day": None,
+            "reminder_amount": None,
+            "reminder_currency": None,
+            "reply_text": "¿Qué día del mes vence?",
+        }
+        result = await _process_message_with_mock_response(mock_response)
+
+        assert result["intent"] == "create_reminder"
+        assert result["reminder_concept"] == "cable"
+        assert result["reminder_day"] is None
+
+    @pytest.mark.asyncio
+    async def test_create_reminder_invalid_day_becomes_none(self):
+        mock_response = {
+            "intent": "create_reminder",
+            "reminder_concept": "luz",
+            "reminder_day": "quince",
+            "reply_text": "test",
+        }
+        result = await _process_message_with_mock_response(mock_response)
+
+        assert result["intent"] == "create_reminder"
+        assert result["reminder_day"] is None
+
+    @pytest.mark.asyncio
+    async def test_create_reminder_day_out_of_range(self):
+        mock_response = {
+            "intent": "create_reminder",
+            "reminder_concept": "luz",
+            "reminder_day": 32,
+            "reply_text": "test",
+        }
+        result = await _process_message_with_mock_response(mock_response)
+
+        assert result["intent"] == "create_reminder"
+        assert result["reminder_day"] is None

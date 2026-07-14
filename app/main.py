@@ -6,6 +6,7 @@ import redis.asyncio as redis
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
+from sqlalchemy.sql import func
 
 # Cargar variables de entorno desde .env ANTES de importar submodulos
 load_dotenv()
@@ -14,6 +15,7 @@ from app.api.whatsapp import send_whatsapp_message  # noqa: E402
 from app.scheduler import start_scheduler  # noqa: E402
 from app.services.finance import FinanceService, MovementRegistrationResult  # noqa: E402
 from app.services.llm import LLMService  # noqa: E402
+from app.services.reminder import ReminderService, ReminderResult  # noqa: E402
 
 # Cliente Redis global
 redis_client = None
@@ -150,6 +152,47 @@ def _safe_non_stk35_reply(extracted_data: dict) -> str:
     return reply_text or "No pude interpretar tu mensaje. ¿Podés reformularlo?"
 
 
+def _update_ultimo_mensaje(sender_phone: str) -> None:
+    """Update usuario.ultimo_mensaje_en for WhatsApp 24h window tracking."""
+    from app.models.database import SessionLocal, Usuario
+    session = SessionLocal()
+    try:
+        session.query(Usuario).filter(
+            Usuario.whatsapp_id == sender_phone
+        ).update({"ultimo_mensaje_en": func.now()})
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        print(f"[UPDATE_ULTIMO_MENSAJE] Error: {type(exc).__name__}: {exc}")
+    finally:
+        session.close()
+
+
+def _is_create_reminder(extracted_data: dict) -> bool:
+    return extracted_data.get("intent") == "create_reminder"
+
+
+def _reminder_creation_reply(
+    result: ReminderResult,
+    extracted_data: dict,
+) -> str:
+    if result.status == "created":
+        concept = extracted_data.get("reminder_concept") or "tu pago"
+        day = extracted_data.get("reminder_day")
+        return f"✅ Listo, te voy a recordar {concept} el día {day} de cada mes."
+
+    if result.status == "user_not_found":
+        return "No encontré una cuenta vinculada a este WhatsApp."
+
+    if result.status == "invalid_data":
+        return result.message
+
+    if result.status == "persistence_error":
+        return "Hubo un problema. Intentá nuevamente en unos minutos."
+
+    return "No pude procesar tu solicitud de recordatorio."
+
+
 @app.get("/webhook")
 async def verify_webhook(request: Request):
     """
@@ -205,6 +248,10 @@ async def handle_webhook(request: Request):
 
                     whatsapp_message_id = message.get("id")
                     text_body = message.get("text", {}).get("body", "")
+
+                    # Track last message time for 24h window
+                    _update_ultimo_mensaje(sender_phone)
+
                     extracted_data = await LLMService.process_message(text_body)
 
                     if _is_financial_movement(extracted_data):
@@ -221,6 +268,17 @@ async def handle_webhook(request: Request):
                             f"status={registration_result.status}",
                         )
                         reply_text = _registration_reply(registration_result, extracted_data)
+                    elif _is_create_reminder(extracted_data):
+                        reminder_result = ReminderService.create_reminder(
+                            sender_phone=sender_phone,
+                            llm_result=extracted_data,
+                        )
+                        print(
+                            "[REMINDER_CREATION]",
+                            f"user={sender_phone}",
+                            f"status={reminder_result.status}",
+                        )
+                        reply_text = _reminder_creation_reply(reminder_result, extracted_data)
                     else:
                         intent = extracted_data.get("intent", "out_of_scope")
                         print(f"[{str(intent).upper()}] User {sender_phone}: {text_body}")

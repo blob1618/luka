@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, date
 from sqlalchemy import (
     Column, String, DateTime, ForeignKey, create_engine,
-    Boolean, Date, Numeric, CheckConstraint, Index
+    Boolean, Date, Integer, Numeric, CheckConstraint, Index
 )
 from sqlalchemy.types import Uuid, JSON
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -37,6 +37,7 @@ class Usuario(Base):
     creado_en = Column(DateTime(timezone=True), default=func.now())
     actualizado_en = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
     whatsapp_id = Column(String, nullable=True)
+    ultimo_mensaje_en = Column(DateTime(timezone=True))
 
     __table_args__ = (
         Index(
@@ -96,9 +97,18 @@ class Recordatorio(Base):
     usuario_id = Column(Uuid(as_uuid=True), ForeignKey("usuario.id"), nullable=False)
     titulo = Column(String, nullable=False)
     descripcion = Column(String)
-    recordar_en = Column(DateTime, nullable=False)
-    es_recurrente = Column(Boolean, default=False)
+    dia_del_mes = Column(Integer, nullable=False)
+    monto = Column(Numeric)
+    moneda = Column(String, default="ARS")
+    estado = Column(String, nullable=False, default="activo")
+    ultimo_aviso_enviado = Column(Date)
     creado_en = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        CheckConstraint("dia_del_mes BETWEEN 1 AND 31", name="recordatorio_dia_del_mes_check"),
+        CheckConstraint("estado IN ('activo', 'pausado', 'eliminado')", name="recordatorio_estado_check"),
+        CheckConstraint("monto IS NULL OR monto > 0", name="recordatorio_monto_check"),
+    )
 
 class Evento(Base):
     __tablename__ = "evento"

@@ -1,6 +1,7 @@
 import os
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -356,3 +357,72 @@ def test_handle_webhook_status_update_without_messages_does_not_fail():
     process_message.assert_not_awaited()
     register_movement.assert_not_called()
     send_message.assert_not_awaited()
+
+
+class TestWebhookCreateReminder:
+    """Tests for create_reminder intent routing and last message update in webhook."""
+
+    @pytest.mark.asyncio
+    async def test_create_reminder_via_webhook(self, monkeypatch):
+        llm_response = {
+            "intent": "create_reminder",
+            "reminder_concept": "luz",
+            "reminder_day": 15,
+            "reminder_amount": None,
+            "reminder_currency": None,
+            "reply_text": "Estoy procesando el recordatorio.",
+        }
+
+        # Mock LLMService
+        async def mock_process(text):
+            return llm_response
+        monkeypatch.setattr("app.main.LLMService.process_message", mock_process)
+
+        # Mock ReminderService
+        from app.services.reminder import ReminderResult, ReminderService
+        def mock_create(sender_phone, llm_result):
+            return ReminderResult(status="created", message="ok", reminder_id="abc-123")
+        monkeypatch.setattr(ReminderService, "create_reminder", mock_create)
+
+        # Mock WhatsApp send
+        sent_messages = []
+        async def mock_send(to, text):
+            sent_messages.append((to, text))
+        monkeypatch.setattr("app.main.send_whatsapp_message", mock_send)
+
+        # Mock update_ultimo_mensaje as no-op for simplicity in webhook route test
+        monkeypatch.setattr("app.main._update_ultimo_mensaje", lambda phone: None)
+
+        payload = make_webhook_payload(messages=[make_text_message("recordame pagar la luz el 15")])
+        response = client.post("/webhook", json=payload)
+
+        assert response.status_code == 200
+        assert len(sent_messages) == 1
+        assert "luz" in sent_messages[0][1].lower()
+        assert "15" in sent_messages[0][1]
+
+    @pytest.mark.asyncio
+    async def test_webhook_updates_ultimo_mensaje_en(self, monkeypatch):
+        """Webhook updates usuario.ultimo_mensaje_en on any message."""
+        llm_response = {
+            "intent": "greeting",
+            "reply_text": "Hola.",
+        }
+
+        async def mock_process(text):
+            return llm_response
+        monkeypatch.setattr("app.main.LLMService.process_message", mock_process)
+        monkeypatch.setattr("app.main.send_whatsapp_message", AsyncMock())
+
+        # Track if _update_ultimo_mensaje was called
+        calls = []
+        def mock_update(phone):
+            calls.append(phone)
+        monkeypatch.setattr("app.main._update_ultimo_mensaje", mock_update)
+
+        payload = make_webhook_payload(messages=[make_text_message("hola bot")])
+        response = client.post("/webhook", json=payload)
+
+        assert response.status_code == 200
+        assert len(calls) == 1
+        assert calls[0] == "12345"
