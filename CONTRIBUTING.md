@@ -20,7 +20,7 @@ Guia practica del flujo actual del equipo.
 
 - Por ahora no se usan Pull Requests como paso obligatorio.
 - `main` es la rama que se despliega y se prueba contra Meta/WhatsApp.
-- La configuracion actual de GitHub Actions corre en `main` y en Pull Requests a `main`. Si no usan PRs, el check automatico aparece cuando el cambio llega a `main`.
+- La configuracion actual de GitHub Actions corre en pushes a cualquier rama y en Pull Requests a `main`.
 - Las pruebas reales de WhatsApp dependen del numero configurado en Meta y de la base de datos compartida.
 - No subir secretos al repo.
 - Si aparece una variable nueva, agregarla a `.env.example`.

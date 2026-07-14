@@ -1,4 +1,3 @@
-import matplotlib.pyplot as plt
 import io
 from datetime import datetime, date, timedelta
 from typing import Optional
@@ -370,7 +369,7 @@ class FinanceService:
     @staticmethod
     def generate_expense_chart(expenses_by_category: dict) -> bytes:
         """
-        Genera un gráfico de torta básico y lo retorna como bytes.
+        Genera un grafico de torta basico y lo retorna como bytes.
         """
         labels = list(expenses_by_category.keys())
         sizes = list(expenses_by_category.values())
@@ -380,7 +379,7 @@ class FinanceService:
         ax.axis('equal')
 
         buf = io.BytesIO()
-        plt.savefig(buf, format='png')
+        plt.savefig(buf, format="png")
         buf.seek(0)
 
         plt.close(fig)

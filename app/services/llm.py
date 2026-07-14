@@ -68,6 +68,30 @@ class LLMService:
         cls._provider = None
 
     @staticmethod
+    def _normalize_movement_type(parsed: Dict[str, Any], intent: str) -> str | None:
+        explicit_type = (
+            "movement_type" in parsed
+            or "transaction_type" in parsed
+        )
+
+        for field_name in ("movement_type", "transaction_type"):
+            raw_value = parsed.get(field_name)
+            if raw_value is None:
+                continue
+
+            movement_type = str(raw_value).strip().lower()
+            if movement_type in {"ingreso", "egreso"}:
+                return movement_type
+
+        if explicit_type:
+            return None
+
+        if intent == "expense":
+            return "egreso"
+
+        return None
+
+    @staticmethod
     async def process_text_expense(text: str) -> Dict[str, Any]:
         """
         Wrapper legacy. Llama a process_message y extrae los campos de gasto.
@@ -132,6 +156,7 @@ class LLMService:
                 "expense": parsed.get("expense"),
                 "amount": amount,
                 "currency": str(parsed.get("currency", "ARS")).upper() if parsed.get("currency") else "ARS",
+                "movement_type": movement_type,
                 "category": parsed.get("category"),
                 "description": parsed.get("description"),
                 "month": parsed.get("month"),
@@ -149,6 +174,7 @@ class LLMService:
                 "expense": None,
                 "amount": None,
                 "currency": "ARS",
+                "movement_type": None,
                 "category": None,
                 "description": None,
                 "month": None,

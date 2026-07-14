@@ -7,6 +7,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.sql import func
 
 # Obtener DATABASE_URL del entorno, usando SQLite como fallback para desarrollo local
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./luka.db")

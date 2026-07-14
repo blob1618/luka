@@ -1,170 +1,188 @@
-# Database
+# Base de datos
 
-Documento minimo para ubicar la base de datos actual y el diseno objetivo de LUKA.
+Estado del contrato de datos de LUKA después de STK-35 y relación entre el código, las migraciones y Supabase.
 
-## Fuentes usadas
+## Fuentes de verdad y alcance
 
-- Codigo actual: `app/models/database.py`.
-- Guia existente: `SUPABASE_SETUP.md`.
-- PDF de referencia: `Flujo de datos y Script DB.pdf`.
+El repositorio contiene fuentes con propósitos distintos:
 
-## Estado actual en el repo
+| Fuente | Qué representa | Qué no demuestra |
+| --- | --- | --- |
+| `docs/decisions/0001-mvp-db-contract.md` | Decisión vigente sobre tablas oficiales y acceso mediado por backend. | Que el contrato ya esté aplicado en cada entorno. |
+| `app/models/database.py` | Modelos SQLAlchemy que usa el backend actual. | El estado exacto de una base remota. |
+| `database/migrations/` | Cambios de esquema versionados esperados por el contrato. | Que las migraciones se hayan ejecutado en Supabase. |
+| `database/schema_supabase_actual.sql` | Último snapshot local exportado como referencia. | Que siga actualizado después de migraciones o cambios remotos. |
+| Supabase remoto | Estado aplicado de producción o del entorno compartido. | No puede inferirse únicamente desde GitHub; requiere verificación operativa autorizada. |
 
-El código actual usa SQLAlchemy y toma la conexión desde `DATABASE_URL`.
+`database/schema_supabase_actual.sql` actualmente no contiene todas las incorporaciones de STK-35. Debe tratarse como un snapshot potencialmente desactualizado hasta que el equipo reexporte el esquema real. No es una migración y no debe ejecutarse como tal.
 
-- Local por defecto: `sqlite:///./luka.db`.
-- Producción/entornos compartidos: PostgreSQL en Supabase.
-- Modelos actuales: `User`, `Expense`, `Budget`, `Reminder`.
+## Contrato DB MVP vigente
 
-Tablas actuales según `app/models/database.py`:
+Tablas oficiales de Release 1:
 
-- `usuarios`
-- `gastos`
-- `presupuestos`
-- `recordatorios`
+- `public.usuario`
+- `public.categorias`
+- `public.movimientos_financieros`
+- `public.limite_categoria`
+- `public.recordatorio`
+- `public.evento`
+- `public.acuerdo_version`
+- `public.acuerdo_aceptado`
 
-Comando actual para crear tablas desde los modelos:
+`public.usuario` es la tabla oficial de usuarios. El identificador recibido desde WhatsApp se vincula con el usuario interno mediante `public.usuario.whatsapp_id`.
 
-```powershell
-python -c "from app.models.database import engine, Base; Base.metadata.create_all(bind=engine)"
-```
+`public.movimientos_financieros` es la entidad central para ingresos y egresos. Las nuevas features no deben escribir en `public.gastos` ni depender de otras tablas legacy.
 
-No hay scripts SQL, dumps de schema, carpeta `supabase/` ni migraciones versionadas en GitHub.
+Tablas legacy/no usadas para features nuevas:
 
-## Diseno objetivo del MVP
+- `public.usuarios`
+- `public.presupuestos`
+- `public.recordatorios`
+- `public.limites_gasto`
+- `public.versiones_consentimiento`
+- `public.consentimientos_usuario`
+- `public.gastos`
 
-El PDF `Flujo de datos y Script DB.pdf` propone un modelo PostgreSQL/Supabase mas completo, con eventos auditables y estado proyectado.
+Las tablas legacy no se eliminan como parte de STK-35.
 
-Tablas propuestas:
+## Modelos actuales del backend
 
-- `usuarios`
-- `versiones_consentimiento`
-- `consentimientos_usuario`
-- `categorias`
-- `limites_gasto`
-- `recordatorios`
-- `eventos`
+`app/models/database.py` define actualmente:
 
-Enums propuestos:
+- `Usuario` -> `usuario`
+- `AcuerdoVersion` -> `acuerdo_version`
+- `AcuerdoAceptado` -> `acuerdo_aceptado`
+- `Categoria` -> `categorias`
+- `LimiteCategoria` -> `limite_categoria`
+- `Recordatorio` -> `recordatorio`
+- `Evento` -> `evento`
+- `MovimientoFinanciero` -> `movimientos_financieros`
 
-- `estado_usuario_enum`
-- `tipo_evento_enum`
-
-Tambien propone indices, triggers y funciones para registrar eventos y actualizar timestamps.
-
-## Regla de arquitectura de datos
-
-El modelo objetivo separa:
-
-- Eventos: historico auditable e inmutable.
-- Proyecciones: estado actual optimizado para consultas.
-
-Regla operativa:
-
-1. Recibir request.
-2. Validar reglas de negocio.
-3. Generar evento.
-4. Persistir evento.
-5. Actualizar proyeccion.
-
-No se deberia escribir estado proyectado sin generar el evento correspondiente.
-
-## Release 1
-
-Mientras no exista un script SQL o migracion versionada, la unica fuente verificable en GitHub para Release 1 es `app/models/database.py`.
-
-Eso significa que el esquema valido hoy para desarrollo es:
-
-- `users`
-- `expenses`
-- `budgets`
-- `reminders`
-
-El diseno de eventos/consentimiento del PDF debe tratarse como objetivo pendiente hasta que se implemente en codigo o en SQL versionado.
-
-Release 1 objetivo deberia usar la base para:
-
-- Identificar usuarios registrados.
-- Bloquear interacciones de usuarios no registrados.
-- Validar consentimiento vigente antes de guardar datos financieros.
-- Registrar eventos relevantes.
-- Guardar estado actual en tablas proyectadas.
-- Soportar categorias, limites y recordatorios si entran en alcance.
-
-## Diferencia importante
-
-Hay una brecha entre el codigo actual y el diseno del PDF:
-
-- El codigo actual ya usa tablas en espanol: `usuarios`, `gastos`, `presupuestos`, `recordatorios`.
-- El diseno objetivo agrega UUIDs, consentimiento versionado, categorias, limites y eventos.
-
-Antes de desarrollar tickets que toquen persistencia, el equipo tiene que decidir si adapta el codigo al script del PDF o si ajusta el script al modelo actual.
-
-## Diagrama actual
-
-Diagrama Mermaid basado en `app/models/database.py`:
+Diagrama de las entidades que participan directamente en STK-35:
 
 ```mermaid
 erDiagram
-    usuarios {
-        int id PK
-        string whatsapp_id UK
-        datetime creado_en
+    usuario {
+        uuid id PK
+        text nombre
+        text email UK
+        text whatsapp_id UK
     }
 
-    gastos {
-        int id PK
-        int usuario_id FK
-        float monto
-        string categoria
-        string descripcion
-        datetime creado_en
+    categorias {
+        uuid id PK
+        uuid usuario_id FK
+        text nombre
+        boolean es_default
+        boolean esta_eliminado
     }
 
-    presupuestos {
-        int id PK
-        int usuario_id FK
-        string categoria
-        float monto_limite
+    movimientos_financieros {
+        uuid id PK
+        uuid usuario_id FK
+        uuid categoria_id FK
+        text tipo
+        numeric cantidad
+        text moneda
+        text descripcion
+        date fecha_movimiento
+        text origen
+        text whatsapp_message_id UK
     }
 
-    recordatorios {
-        int id PK
-        int usuario_id FK
-        string titulo
-        datetime fecha_vencimiento
-        int activo
-    }
-
-    usuarios ||--o{ gastos : tiene
-    usuarios ||--o{ presupuestos : tiene
-    usuarios ||--o{ recordatorios : tiene
+    usuario ||--o{ categorias : posee
+    usuario ||--o{ movimientos_financieros : registra
+    categorias o|--o{ movimientos_financieros : clasifica
 ```
 
-Para un equipo chico, esta es la opcion mas simple y mantenible por ahora. Si Supabase pasa a ser la fuente real del esquema, conviene exportar el schema SQL y regenerar el diagrama desde ese schema.
+Este diagrama representa el contrato del ORM, no una verificación del esquema remoto.
 
-## Versionado recomendado
+## Persistencia de movimientos de STK-35
 
-Opcion minima recomendada:
-
-1. Exportar el schema real de Supabase/PostgreSQL.
-2. Guardarlo en GitHub como `database/schema.sql`.
-3. Actualizar `docs/database.md` cada vez que cambie el schema.
-
-Cuando el equipo necesite historial de cambios, pasar a migraciones:
+El flujo oficial es:
 
 ```text
-supabase/migrations/<timestamp>_<descripcion>.sql
+WhatsApp -> Backend -> public.movimientos_financieros
 ```
 
-No puedo confirmar si hay cambios hechos directamente en Supabase porque no hay acceso real a ese proyecto desde el repo. Si existen, hoy no estan representados en GitHub.
+`FinanceService.register_movement_from_whatsapp_text()` aplica estas reglas:
 
-## Pendiente de validar
+- Requiere `sender_phone` y busca una coincidencia en `public.usuario.whatsapp_id`.
+- No crea usuarios. Sin usuario vinculado devuelve `user_not_found` y no guarda el movimiento.
+- Admite `tipo` `ingreso` o `egreso`, monto positivo, moneda y descripción.
+- Usa `ARS` cuando el resultado del LLM no incluye moneda y normaliza el valor a mayúsculas.
+- Busca una categoría activa perteneciente al usuario.
+- No crea categorías automáticamente. Sin coincidencia guarda `categoria_id=null`.
+- Guarda `origen="whatsapp_text"` y el identificador de Meta en `whatsapp_message_id`.
+- Confirma al usuario solo después de un commit exitoso.
 
-- Versionar el script SQL real dentro del repo.
-- Confirmar proyecto/URL final de Supabase.
-- Definir si se agregan migraciones, por ejemplo Alembic.
-- Definir RLS/politicas de acceso en Supabase.
-- Confirmar si `recordatorios` entra en Release 1 o queda preparado para despues.
-- Confirmar como se va a garantizar que toda mutacion genere evento.
-- Definir si Redis se usa para rate limiting, deduplicacion o cache de usuario.
+El alta, register, login y vinculación inicial de usuarios no forman parte de STK-35. Las categorías default o personalizadas también requieren trabajo separado.
+
+## Deduplicación e índices
+
+El backend consulta `whatsapp_message_id` antes de insertar. Si ya existe, devuelve `duplicate` y evita una segunda fila. Cuando Meta reenvía el mismo evento, el webhook puede enviar una segunda respuesta visible indicando el duplicado; este comportamiento sigue pendiente de corrección.
+
+La migración versionada `database/migrations/001_mvp_movimientos_financieros.sql` y el ORM declaran un índice único parcial sobre `movimientos_financieros.whatsapp_message_id`. La migración también declara índices para búsqueda de usuario y consultas de movimientos.
+
+Esto define el contrato esperado, pero no prueba el estado productivo. Queda pendiente verificar en Supabase:
+
+- El índice de `public.usuario.whatsapp_id`.
+- El índice único parcial real de `public.movimientos_financieros.whatsapp_message_id`.
+- Los índices por usuario, fecha, tipo y categoría necesarios para consultas productivas.
+- Cualquier índice adicional requerido para resolver categorías activas del usuario.
+
+Hasta esa verificación, la deduplicación de aplicación reduce duplicados secuenciales, pero la protección robusta ante concurrencia depende del índice único aplicado en la base.
+
+## Migraciones y desarrollo local
+
+Sí existen migraciones SQL versionadas en GitHub dentro de `database/migrations/`. La primera migración del contrato de movimientos es `001_mvp_movimientos_financieros.sql`.
+
+Todavía no hay una herramienta formal como Alembic o Supabase CLI configurada como flujo único de aplicación. Por lo tanto:
+
+1. Todo cambio de esquema debe versionarse en el repositorio antes de aplicarse.
+2. La aplicación en un entorno compartido debe coordinarse mediante el proceso operativo del equipo.
+3. Después de aplicar cambios remotos, debe reexportarse `database/schema_supabase_actual.sql`.
+4. La creación desde `Base.metadata.create_all()` queda limitada a SQLite o bases locales descartables; no sustituye migraciones en Supabase.
+
+Configuración local por defecto:
+
+```text
+sqlite:///./luka.db
+```
+
+Producción y entornos compartidos usan PostgreSQL mediante `DATABASE_URL`, normalmente en Supabase.
+
+## Acceso a datos financieros y RLS
+
+Para Release 1, el acceso financiero es mediado por backend:
+
+- WhatsApp -> Backend -> Supabase/PostgreSQL.
+- Dashboard -> Backend -> Supabase/PostgreSQL.
+
+No se permite que un dashboard consulte directamente los movimientos financieros de Supabase en esta etapa. El backend debe aplicar autorización y filtrar siempre por el usuario correspondiente.
+
+La migración declara `ENABLE ROW LEVEL SECURITY` para `public.movimientos_financieros`, pero el estado efectivo en Supabase debe verificarse en el entorno remoto. Esto no implica que existan policies públicas para `anon` o `authenticated`; la estrategia no depende de acceso directo desde frontend.
+
+El micrositio/dashboard y su acceso seguro mediante Magic Link están relacionados con STK-54. Requieren coordinación entre backend y frontend y no fueron implementados por STK-35.
+
+## Funcionalidad fuera de STK-35
+
+- Consulta de movimientos de STK-128.
+- Alta y vinculación oficial de usuarios por WhatsApp.
+- Login y Magic Link.
+- Categorías default y administración de categorías personalizadas.
+- Validación de consentimiento y escritura de eventos dentro del flujo de movimientos.
+- Endpoints financieros del dashboard.
+
+Estas capacidades pueden formar parte de la arquitectura objetivo, pero no deben documentarse como comportamiento actual de STK-35.
+
+## Pendientes operativos y de seguridad/costos
+
+- Reexportar el schema después de confirmar el estado real de Supabase.
+- Verificar índices productivos y el índice único parcial de deduplicación.
+- Agregar observabilidad de latencia para webhook, LLM, base y respuesta. Durante pruebas manuales se observó una latencia aproximada de 5–10 segundos en el flujo completo, pendiente de medición formal por etapa.
+- Investigar typing indicator y mark as read en WhatsApp Business API.
+- Incorporar rate limiting y protecciones frente a abuso de tokens.
+- Evitar llamar al LLM para usuarios no registrados o mensajes ya procesados.
+- Evaluar un pre-router para saludos y solicitudes claramente fuera de alcance.
+- Definir una herramienta y procedimiento formal de migraciones.

@@ -34,7 +34,7 @@ El repo está preparado para Render usando Docker:
 Render construye la imagen Docker y ejecuta:
 
 ```bash
-gunicorn -w 4 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:${PORT:-8000}
+gunicorn -w 1 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:${PORT:-8000}
 ```
 
 ## Variables de entorno requeridas
@@ -51,6 +51,10 @@ Configurar estas en el dashboard de Render. No subir valores reales al repo.
 - `MISTRAL_MODEL`
 - `DATABASE_URL`
 - `REDIS_URL`
+
+El arranque prueba Redis con un límite de 3 segundos. Si la conexión falla, la API
+sigue disponible y el error queda registrado en los logs; usar `GET /redis-test`
+para validar la conectividad antes de depender de Redis.
 
 `render.yaml` es una plantilla del servicio. Los valores secretos reales deben configurarse en Render.
 

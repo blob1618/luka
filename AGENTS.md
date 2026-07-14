@@ -15,8 +15,8 @@ Bienvenido al proyecto Luka. Luka es un asistente financiero personal que opera 
 
 - `app/main.py`: Entrypoint de la aplicación, verificación del webhook y capa de ingesta de mensajes (`/webhook`).
 - `app/api/whatsapp.py`: Cliente de salida para la API de WhatsApp.
-- `app/services/llm.py`: Interacción con Gemini para extraer datos estructurados (gastos, presupuestos, etc.) desde texto en lenguaje natural.
-- `app/services/finance.py`: Lógica de negocio central para gestionar usuarios, transacciones y presupuestos.
+- `app/services/llm.py`: Interacción con el proveedor LLM para interpretar mensajes y normalizar movimientos financieros desde texto en lenguaje natural.
+- `app/services/finance.py`: Lógica de negocio central para validar y persistir ingresos y egresos, además de otros helpers financieros.
 - `app/models/`: Modelos de base de datos (SQLAlchemy) y esquemas (`database.py`).
 - `app/scheduler.py`: Procesos en segundo plano como recordatorios financieros periódicos.
 
@@ -34,6 +34,25 @@ Bienvenido al proyecto Luka. Luka es un asistente financiero personal que opera 
 ### 3. Datos y persistencia
 - Usar el ORM SQLAlchemy para interactuar con la base de datos.
 - Mantener compatibilidad con SQLite local y PostgreSQL/Supabase en producción.
+- Para Release 1, el acceso a datos financieros debe ser mediado por backend. No implementar frontend -> Supabase directo para `movimientos_financieros` salvo nueva ADR.
+- `public.movimientos_financieros` tiene RLS habilitado; no asumir que existen policies para acceso público desde roles `anon` o `authenticated`.
+
+### 3.1 Contrato DB MVP Release 1
+- Usar `public.movimientos_financieros` como entidad central del MVP para ingresos y egresos.
+- Usar `public.usuario` como tabla oficial de usuarios; el contrato requiere `whatsapp_id` para mapear WhatsApp con `usuario.id`.
+- No usar tablas legacy para nuevas features: `public.usuarios`, `public.presupuestos`, `public.recordatorios`, `public.limites_gasto`, `public.versiones_consentimiento`, `public.consentimientos_usuario`, `public.gastos`.
+- No ejecutar SQL ni tocar Supabase directamente desde tareas de agentes; todo cambio de schema debe versionarse primero en GitHub.
+- Mantener la lógica de negocio fuera de `app/main.py`; el parseo va en servicios LLM y los cambios de estado en servicios de finanzas.
+
+### 3.2 Invariantes del registro por texto (STK-35)
+- El flujo implementado es WhatsApp webhook -> `LLMService` -> `FinanceService` -> `public.movimientos_financieros` -> respuesta.
+- Para movimientos registrables, `intent="expense"` se conserva por compatibilidad y `movement_type` define si es `ingreso` o `egreso`.
+- Confirmar el registro al usuario únicamente después de una persistencia exitosa. Nunca confiar en `reply_text` del LLM para confirmar una escritura.
+- Exigir un usuario previamente registrado y vinculado por `public.usuario.whatsapp_id`; STK-35 no crea usuarios ni implementa register, login o vinculación inicial.
+- Asociar `categoria_id` solo si existe una categoría activa del usuario. No crear categorías automáticamente; sin coincidencia debe quedar `null`.
+- No persistir como movimientos los intents `greeting`, `out_of_scope`, `reminder`, `budget_query` o `expense_summary`.
+- Tratar alta/vinculación de usuarios, categorías default, Magic Link/STK-54 y consulta de movimientos/STK-128 como trabajo separado, no como comportamiento implementado por STK-35.
+- No asumir que una migración versionada o el snapshot local demuestran el estado aplicado en Supabase; los índices productivos deben verificarse por el proceso operativo correspondiente.
 
 ### 4. Tareas en segundo plano
 - Toda lógica basada en tiempo, notificaciones o procesamiento batch debe encapsularse y orquestarse desde `app/scheduler.py`.
