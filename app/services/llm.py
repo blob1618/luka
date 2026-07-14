@@ -107,7 +107,7 @@ class LLMService:
             # Normalizar y validar la respuesta
             intent = str(parsed.get("intent", "out_of_scope")).strip().lower()
             allowed_intents = {
-                "expense", "budget_query", "reminder",
+                "expense", "set_budget", "budget_query", "reminder",
                 "expense_summary", "greeting", "out_of_scope",
             }
             if intent not in allowed_intents:
@@ -134,6 +134,7 @@ class LLMService:
                 "currency": str(parsed.get("currency", "ARS")).upper() if parsed.get("currency") else "ARS",
                 "category": parsed.get("category"),
                 "description": parsed.get("description"),
+                "month": parsed.get("month"),
                 "reminder_title": parsed.get("reminder_title"),
                 "reminder_date": parsed.get("reminder_date"),
                 "reply_text": str(parsed.get("reply_text", "")),
@@ -150,6 +151,7 @@ class LLMService:
                 "currency": "ARS",
                 "category": None,
                 "description": None,
+                "month": None,
                 "reminder_title": None,
                 "reminder_date": None,
                 "reply_text": (

@@ -11,6 +11,8 @@ load_dotenv()
 from app.scheduler import start_scheduler  # noqa: E402
 from app.api.whatsapp import send_whatsapp_message  # noqa: E402
 from app.services.llm import LLMService  # noqa: E402
+from app.services.finance import FinanceService  # noqa: E402
+from app.models.database import SessionLocal, Usuario  # noqa: E402
 
 # Cliente Redis global
 redis_client = None
@@ -132,9 +134,81 @@ async def handle_webhook(request: Request):
                                 )
                                 # TODO: Persistir gasto/ingreso en la base de datos
                                 
+                            elif intent == "set_budget":
+                                category = extracted_data.get("category")
+                                amount = extracted_data.get("amount")
+                                month = extracted_data.get("month")
+                                print(
+                                    f"[SET_BUDGET] User {sender_phone}: "
+                                    f"category={category}, amount={amount}, month={month}"
+                                )
+
+                                if category and amount:
+                                    db = SessionLocal()
+                                    try:
+                                        user = (
+                                            db.query(Usuario)
+                                            .filter(Usuario.whatsapp_id == sender_phone)
+                                            .first()
+                                        )
+                                        if user:
+                                            result = FinanceService.set_budget_limit(
+                                                user_id=user.id,
+                                                category=category,
+                                                amount=amount,
+                                                month=month,
+                                            )
+                                            reply_text = result.get("message", reply_text)
+                                        else:
+                                            reply_text = (
+                                                "Primero necesito que registres algunos gastos "
+                                                "para identificarte en el sistema."
+                                            )
+                                    except Exception as exc:
+                                        print(f"[SET_BUDGET] Error: {exc}")
+                                        reply_text = (
+                                            "Hubo un error al guardar tu límite. "
+                                            "Intentalo de nuevo en unos minutos."
+                                        )
+                                    finally:
+                                        db.close()
+                                else:
+                                    reply_text = (
+                                        "No pude identificar la categoría o el monto. "
+                                        "Decime algo como: 'Quiero un límite de 50000 en salidas'."
+                                    )
+
                             elif intent == "budget_query":
                                 print(f"[BUDGET_QUERY] User {sender_phone}: {text_body}")
-                                # TODO: Consultar presupuesto en la base de datos
+                                category = extracted_data.get("category")
+
+                                if category:
+                                    db = SessionLocal()
+                                    try:
+                                        user = (
+                                            db.query(Usuario)
+                                            .filter(Usuario.whatsapp_id == sender_phone)
+                                            .first()
+                                        )
+                                        if user:
+                                            result = FinanceService.get_budget_limit(
+                                                user_id=user.id,
+                                                category=category,
+                                            )
+                                            reply_text = result.get("message", reply_text)
+                                        else:
+                                            reply_text = (
+                                                "Primero necesito que registres algunos gastos "
+                                                "para identificarte en el sistema."
+                                            )
+                                    except Exception as exc:
+                                        print(f"[BUDGET_QUERY] Error: {exc}")
+                                        reply_text = (
+                                            "Hubo un error al consultar tu límite. "
+                                            "Intentalo de nuevo en unos minutos."
+                                        )
+                                    finally:
+                                        db.close()
                                 
                             elif intent == "reminder":
                                 reminder_title = extracted_data.get("reminder_title")

@@ -176,6 +176,36 @@ async def test_process_message_greeting():
 
 
 @pytest.mark.asyncio
+async def test_process_message_set_budget():
+    """Prueba: El bot reconoce una solicitud de configurar límite mensual."""
+    mock_response = {
+        "intent": "set_budget",
+        "is_expense": False,
+        "expense": None,
+        "amount": 50000.0,
+        "currency": None,
+        "category": "salidas",
+        "description": None,
+        "month": "2026-07",
+        "reminder_title": None,
+        "reminder_date": None,
+        "reply_text": "¡Perfecto! Estoy configurando un límite de $50,000 para salidas. Un momento..."
+    }
+
+    with patch.object(LLMService, "_get_provider") as mock_get_provider:
+        mock_provider = AsyncMock()
+        mock_provider.generate_json.return_value = mock_response
+        mock_get_provider.return_value = mock_provider
+
+        result = await LLMService.process_message("Quiero poner un límite de 50000 en salidas")
+
+        assert result["intent"] == "set_budget"
+        assert result["amount"] == 50000.0
+        assert result["category"] == "salidas"
+        assert result["month"] == "2026-07"
+
+
+@pytest.mark.asyncio
 async def test_process_message_budget_query():
     """Prueba: El bot reconoce una consulta de presupuesto."""
     mock_response = {
