@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Float, Boolean, DateTime, Date, Text,
-    ForeignKey, create_engine, UniqueConstraint, CheckConstraint
+    ForeignKey, create_engine, CheckConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, sessionmaker
