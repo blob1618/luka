@@ -268,11 +268,7 @@ async def handle_webhook(request: Request):
                             print(f"[SET_BUDGET] User {sender_phone}: {text_body}")
                             reply_text = _handle_set_budget(sender_phone, extracted_data, reply_text)
 
-                        elif intent == "budget_query":
-                            print(f"[BUDGET_QUERY] User {sender_phone}: {text_body}")
-                            reply_text = _handle_budget_query(sender_phone, extracted_data, reply_text)
-
-                        elif intent in {"reminder", "expense_summary"}:
+                        elif intent in {"reminder", "budget_query", "expense_summary"}:
                             print(f"[{intent.upper()}] User {sender_phone}: {text_body}")
                             reply_text = (
                                 "Esta función todavía no está disponible en esta versión. "

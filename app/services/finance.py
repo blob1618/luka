@@ -269,7 +269,7 @@ class FinanceService:
             .filter(
                 Categoria.usuario_id == usuario_id,
                 Categoria.nombre.ilike(nombre_categoria),
-                Categoria.esta_eliminado == False,
+                Categoria.esta_eliminado.is_(False),
             )
             .first()
         )
@@ -282,8 +282,8 @@ class FinanceService:
             .filter(
                 Categoria.usuario_id.is_(None),
                 Categoria.nombre.ilike(nombre_categoria),
-                Categoria.es_default == True,
-                Categoria.esta_eliminado == False,
+                Categoria.es_default.is_(True),
+                Categoria.esta_eliminado.is_(False),
             )
             .first()
         )
