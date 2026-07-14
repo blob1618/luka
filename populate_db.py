@@ -9,7 +9,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 load_dotenv()
 
-from app.models.database import SessionLocal, Usuario
+from app.models.database import SessionLocal, Usuario  # noqa: E402
 
 # =========================================================================
 # CONFIGURA AQUÍ LOS MIEMBROS DEL EQUIPO

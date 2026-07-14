@@ -3,6 +3,7 @@ FROM python:3.11-slim
 WORKDIR /home/app
 
 ENV PYTHONUNBUFFERED=1
+ENV TZ="America/Argentina/Buenos_Aires"
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt

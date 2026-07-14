@@ -5,6 +5,8 @@ services:
     plan: free
     dockerfilePath: Dockerfile
     envVars:
+      - key: TZ
+        value: America/Argentina/Buenos_Aires
       - key: DATABASE_URL
         value: $DATABASE_URL
       - key: WHATSAPP_VERIFY_TOKEN
