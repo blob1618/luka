@@ -14,6 +14,7 @@ from app.api.whatsapp import send_whatsapp_message  # noqa: E402
 from app.scheduler import start_scheduler  # noqa: E402
 from app.services.finance import FinanceService, MovementRegistrationResult  # noqa: E402
 from app.services.llm import LLMService  # noqa: E402
+from app.models.database import SessionLocal, Usuario  # noqa: E402
 
 # Cliente Redis global
 redis_client = None
@@ -137,17 +138,55 @@ def _registration_reply(
     return extracted_data.get("reply_text") or "No pude interpretar ese mensaje como un movimiento financiero."
 
 
-def _safe_non_stk35_reply(extracted_data: dict) -> str:
-    intent = extracted_data.get("intent")
-    reply_text = extracted_data.get("reply_text") or ""
+def _handle_set_budget(sender_phone: str, extracted_data: dict, default_reply: str) -> str:
+    category = extracted_data.get("category")
+    amount = extracted_data.get("amount")
+    month = extracted_data.get("month")
 
-    if intent in {"reminder", "budget_query", "expense_summary"}:
-        return (
-            "Esta función todavía no está disponible en esta versión. "
-            "Por ahora puedo ayudarte a registrar ingresos y egresos por texto."
+    if not category or not amount:
+        return "No pude identificar la categoría o el monto. Decime algo como: 'Quiero un límite de 50000 en salidas'."
+
+    db = SessionLocal()
+    try:
+        user = db.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
+        if not user:
+            return "Primero necesito que registres algunos gastos para identificarte en el sistema."
+
+        result = FinanceService.set_budget_limit(
+            user_id=user.id,
+            category=category,
+            amount=amount,
+            month=month,
         )
+        return result.get("message", default_reply)
+    except Exception as exc:
+        print(f"[SET_BUDGET] Error: {exc}")
+        return "Hubo un error al guardar tu límite. Intentalo de nuevo en unos minutos."
+    finally:
+        db.close()
 
-    return reply_text or "No pude interpretar tu mensaje. ¿Podés reformularlo?"
+
+def _handle_budget_query(sender_phone: str, extracted_data: dict, default_reply: str) -> str:
+    category = extracted_data.get("category")
+    if not category:
+        return default_reply
+
+    db = SessionLocal()
+    try:
+        user = db.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
+        if not user:
+            return "Primero necesito que registres algunos gastos para identificarte en el sistema."
+
+        result = FinanceService.get_budget_limit(
+            user_id=user.id,
+            category=category,
+        )
+        return result.get("message", default_reply)
+    except Exception as exc:
+        print(f"[BUDGET_QUERY] Error: {exc}")
+        return "Hubo un error al consultar tu límite. Intentalo de nuevo en unos minutos."
+    finally:
+        db.close()
 
 
 @app.get("/webhook")
@@ -223,8 +262,31 @@ async def handle_webhook(request: Request):
                         reply_text = _registration_reply(registration_result, extracted_data)
                     else:
                         intent = extracted_data.get("intent", "out_of_scope")
-                        print(f"[{str(intent).upper()}] User {sender_phone}: {text_body}")
-                        reply_text = _safe_non_stk35_reply(extracted_data)
+                        reply_text = extracted_data.get("reply_text", "")
+
+                        if intent == "set_budget":
+                            print(f"[SET_BUDGET] User {sender_phone}: {text_body}")
+                            reply_text = _handle_set_budget(sender_phone, extracted_data, reply_text)
+
+                        elif intent == "budget_query":
+                            print(f"[BUDGET_QUERY] User {sender_phone}: {text_body}")
+                            reply_text = _handle_budget_query(sender_phone, extracted_data, reply_text)
+
+                        elif intent in {"reminder", "expense_summary"}:
+                            print(f"[{intent.upper()}] User {sender_phone}: {text_body}")
+                            reply_text = (
+                                "Esta función todavía no está disponible en esta versión. "
+                                "Por ahora puedo ayudarte a registrar ingresos y egresos por texto."
+                            )
+
+                        elif intent == "greeting":
+                            print(f"[GREETING] User {sender_phone}: {text_body}")
+
+                        elif intent == "out_of_scope":
+                            print(f"[OUT_OF_SCOPE] User {sender_phone}: '{text_body}' -> guardrail triggered")
+
+                        else:
+                            print(f"[{intent.upper()}] User {sender_phone}: {text_body}")
 
                     await send_whatsapp_message(sender_phone, reply_text)
 

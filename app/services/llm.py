@@ -131,7 +131,7 @@ class LLMService:
             # Normalizar y validar la respuesta
             intent = str(parsed.get("intent", "out_of_scope")).strip().lower()
             allowed_intents = {
-                "expense", "budget_query", "reminder",
+                "expense", "set_budget", "budget_query", "reminder",
                 "expense_summary", "greeting", "out_of_scope",
             }
             if intent not in allowed_intents:
@@ -147,13 +147,14 @@ class LLMService:
 
             return {
                 "intent": intent,
+                "movement_type": movement_type,
                 "is_expense": intent == "expense" and amount is not None,
                 "expense": parsed.get("expense"),
                 "amount": amount,
                 "currency": str(parsed.get("currency", "ARS")).upper() if parsed.get("currency") else "ARS",
-                "movement_type": movement_type,
                 "category": parsed.get("category"),
                 "description": parsed.get("description"),
+                "month": parsed.get("month"),
                 "reminder_title": parsed.get("reminder_title"),
                 "reminder_date": parsed.get("reminder_date"),
                 "reply_text": str(parsed.get("reply_text", "")),
@@ -163,13 +164,14 @@ class LLMService:
             print(f"[LLMService] process_message failed: {type(exc).__name__}: {exc}")
             return {
                 "intent": "out_of_scope",
+                "movement_type": None,
                 "is_expense": False,
                 "expense": None,
                 "amount": None,
                 "currency": "ARS",
-                "movement_type": None,
                 "category": None,
                 "description": None,
+                "month": None,
                 "reminder_title": None,
                 "reminder_date": None,
                 "reply_text": (

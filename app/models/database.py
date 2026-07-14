@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, date
 from sqlalchemy import (
     Column, String, DateTime, ForeignKey, create_engine,
-    Boolean, Date, Numeric, CheckConstraint, Index
+    Boolean, Date, Numeric, CheckConstraint, Index, Text
 )
 from sqlalchemy.types import Uuid, JSON
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -14,19 +14,19 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./luka.db")
 
 # Manejar la conexión a PostgreSQL de Supabase con psycopg3
 if DATABASE_URL.startswith("postgresql"):
-    # psycopg3 usa postgresql:// directamente (no requiere especificar el driver)
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
 engine = create_engine(
     DATABASE_URL,
     echo=False,
-    pool_pre_ping=True,  # Verificar conexiones antes de usarlas
+    pool_pre_ping=True,
     connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
+
 
 class Usuario(Base):
     __tablename__ = "usuario"
@@ -48,6 +48,7 @@ class Usuario(Base):
         ),
     )
 
+
 class AcuerdoVersion(Base):
     __tablename__ = "acuerdo_version"
 
@@ -56,6 +57,7 @@ class AcuerdoVersion(Base):
     contenido = Column(String, nullable=False)
     creado_en = Column(DateTime, default=datetime.utcnow)
 
+
 class AcuerdoAceptado(Base):
     __tablename__ = "acuerdo_aceptado"
 
@@ -63,6 +65,7 @@ class AcuerdoAceptado(Base):
     usuario_id = Column(Uuid(as_uuid=True), ForeignKey("usuario.id"))
     version_acuerdo_id = Column(Uuid(as_uuid=True), ForeignKey("acuerdo_version.id"))
     aceptado_en = Column(DateTime, default=datetime.utcnow)
+
 
 class Categoria(Base):
     __tablename__ = "categorias"
@@ -73,6 +76,7 @@ class Categoria(Base):
     es_default = Column(Boolean, default=False)
     esta_eliminado = Column(Boolean, default=False)
     creado_en = Column(DateTime, default=datetime.utcnow)
+
 
 class LimiteCategoria(Base):
     __tablename__ = "limite_categoria"
@@ -89,6 +93,7 @@ class LimiteCategoria(Base):
         CheckConstraint('cantidad_max > 0', name='limite_categoria_cantidad_max_check'),
     )
 
+
 class Recordatorio(Base):
     __tablename__ = "recordatorio"
 
@@ -100,6 +105,7 @@ class Recordatorio(Base):
     es_recurrente = Column(Boolean, default=False)
     creado_en = Column(DateTime, default=datetime.utcnow)
 
+
 class Evento(Base):
     __tablename__ = "evento"
 
@@ -110,6 +116,7 @@ class Evento(Base):
     tipo_evento = Column(String, nullable=False)
     carga = Column(JSON)
     creado_en = Column(DateTime, default=datetime.utcnow)
+
 
 class MovimientoFinanciero(Base):
     __tablename__ = "movimientos_financieros"
@@ -138,3 +145,10 @@ class MovimientoFinanciero(Base):
             sqlite_where=whatsapp_message_id.isnot(None),
         ),
     )
+
+
+# Alias para retrocompatibilidad en importaciones
+User = Usuario
+Expense = MovimientoFinanciero
+Budget = LimiteCategoria
+Reminder = Recordatorio
