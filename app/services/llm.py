@@ -133,6 +133,7 @@ class LLMService:
             allowed_intents = {
                 "expense", "budget_query", "reminder",
                 "expense_summary", "greeting", "out_of_scope",
+                "create_reminder",
             }
             if intent not in allowed_intents:
                 intent = "out_of_scope"
@@ -145,6 +146,29 @@ class LLMService:
 
             movement_type = cls._normalize_movement_type(parsed, intent)
 
+            # Normalizar campos de create_reminder
+            reminder_day = parsed.get("reminder_day")
+            try:
+                reminder_day = int(reminder_day) if reminder_day is not None else None
+            except (TypeError, ValueError):
+                reminder_day = None
+            if reminder_day is not None and not (1 <= reminder_day <= 31):
+                reminder_day = None
+
+            reminder_amount = parsed.get("reminder_amount")
+            try:
+                reminder_amount = float(reminder_amount) if reminder_amount is not None else None
+            except (TypeError, ValueError):
+                reminder_amount = None
+
+            reminder_concept = parsed.get("reminder_concept")
+            if reminder_concept is not None:
+                reminder_concept = str(reminder_concept).strip() or None
+
+            reminder_currency = parsed.get("reminder_currency")
+            if reminder_currency is not None:
+                reminder_currency = str(reminder_currency).strip().upper() or None
+
             return {
                 "intent": intent,
                 "is_expense": intent == "expense" and amount is not None,
@@ -156,6 +180,10 @@ class LLMService:
                 "description": parsed.get("description"),
                 "reminder_title": parsed.get("reminder_title"),
                 "reminder_date": parsed.get("reminder_date"),
+                "reminder_concept": reminder_concept,
+                "reminder_day": reminder_day,
+                "reminder_amount": reminder_amount,
+                "reminder_currency": reminder_currency,
                 "reply_text": str(parsed.get("reply_text", "")),
             }
 
@@ -172,6 +200,10 @@ class LLMService:
                 "description": None,
                 "reminder_title": None,
                 "reminder_date": None,
+                "reminder_concept": None,
+                "reminder_day": None,
+                "reminder_amount": None,
+                "reminder_currency": None,
                 "reply_text": (
                     "No he podido analizar tu mensaje en este momento. "
                     "Si deseas, puedes reenviarlo en unos instantes."
