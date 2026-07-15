@@ -142,8 +142,6 @@ def post_webhook_with_real_finance(payload, llm_result, expects_category_confirm
         patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
         patch("app.main.ConversationService.is_awaiting_category_confirmation", new_callable=AsyncMock) as mock_is_awaiting,
         patch("app.main.ConversationService.get_pending_movement", new_callable=AsyncMock) as mock_get_pending,
-        patch("app.main.ConversationService.set_pending_movement", new_callable=AsyncMock) as mock_set_pending,
-        patch("app.main.ConversationService.clear_state", new_callable=AsyncMock) as mock_clear,
     ):
         if expects_category_confirmation:
             mock_is_awaiting.return_value = True
