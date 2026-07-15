@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, date
 from sqlalchemy import (
     Column, String, DateTime, ForeignKey, create_engine,
-    Boolean, Date, Integer, Numeric, CheckConstraint, Index
+    Boolean, Date, Integer, Numeric, CheckConstraint, Index, UniqueConstraint
 )
 from sqlalchemy.types import Uuid, JSON
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -37,15 +37,101 @@ class Usuario(Base):
     creado_en = Column(DateTime(timezone=True), default=func.now())
     actualizado_en = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now())
     whatsapp_id = Column(String, nullable=True)
+    auth_user_id = Column(Uuid(as_uuid=True), nullable=True)
     ultimo_mensaje_en = Column(DateTime(timezone=True))
 
     __table_args__ = (
+        CheckConstraint(
+            "whatsapp_id IS NULL OR trim(whatsapp_id) <> ''",
+            name="usuario_whatsapp_id_no_vacio_check",
+        ),
         Index(
             "usuario_whatsapp_id_uidx",
             "whatsapp_id",
             unique=True,
             postgresql_where=whatsapp_id.isnot(None),
             sqlite_where=whatsapp_id.isnot(None),
+        ),
+        Index(
+            "usuario_auth_user_id_uidx",
+            "auth_user_id",
+            unique=True,
+            postgresql_where=auth_user_id.isnot(None),
+            sqlite_where=auth_user_id.isnot(None),
+        ),
+    )
+
+class OnboardingInvitacion(Base):
+    __tablename__ = "onboarding_invitacion"
+
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    whatsapp_id = Column(String, nullable=False)
+    token_hash = Column(String, nullable=False)
+    estado = Column(String, nullable=False, default="pendiente")
+    expira_en = Column(DateTime(timezone=True), nullable=False)
+    intentos = Column(Integer, nullable=False, default=0)
+    reenvios = Column(Integer, nullable=False, default=0)
+    ultimo_envio_en = Column(DateTime(timezone=True), nullable=True)
+    usuario_id = Column(
+        Uuid(as_uuid=True),
+        ForeignKey("usuario.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    consumida_en = Column(DateTime(timezone=True), nullable=True)
+    revocada_en = Column(DateTime(timezone=True), nullable=True)
+    creado_en = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    actualizado_en = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="onboarding_invitacion_token_hash_key"),
+        CheckConstraint(
+            "trim(token_hash) <> ''",
+            name="onboarding_invitacion_token_hash_no_vacio_check",
+        ),
+        CheckConstraint(
+            "trim(whatsapp_id) <> ''",
+            name="onboarding_invitacion_whatsapp_id_no_vacio_check",
+        ),
+        CheckConstraint(
+            "estado IN ('pendiente', 'consumida', 'revocada', 'vencida')",
+            name="onboarding_invitacion_estado_check",
+        ),
+        CheckConstraint(
+            "intentos >= 0",
+            name="onboarding_invitacion_intentos_check",
+        ),
+        CheckConstraint(
+            "reenvios >= 0",
+            name="onboarding_invitacion_reenvios_check",
+        ),
+        CheckConstraint(
+            "expira_en > creado_en",
+            name="onboarding_invitacion_expiracion_check",
+        ),
+        CheckConstraint(
+            "(estado = 'pendiente' AND usuario_id IS NULL "
+            "AND consumida_en IS NULL AND revocada_en IS NULL) OR "
+            "(estado = 'consumida' AND usuario_id IS NOT NULL "
+            "AND consumida_en IS NOT NULL AND revocada_en IS NULL) OR "
+            "(estado = 'revocada' AND usuario_id IS NULL "
+            "AND consumida_en IS NULL AND revocada_en IS NOT NULL) OR "
+            "(estado = 'vencida' AND usuario_id IS NULL "
+            "AND consumida_en IS NULL AND revocada_en IS NULL)",
+            name="onboarding_invitacion_estado_campos_check",
+        ),
+        Index("onboarding_invitacion_whatsapp_id_idx", "whatsapp_id"),
+        Index("onboarding_invitacion_estado_expira_idx", "estado", "expira_en"),
+        Index(
+            "onboarding_invitacion_whatsapp_pendiente_uidx",
+            "whatsapp_id",
+            unique=True,
+            postgresql_where=(estado == "pendiente"),
+            sqlite_where=(estado == "pendiente"),
         ),
     )
 
@@ -55,15 +141,45 @@ class AcuerdoVersion(Base):
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     version = Column(String, nullable=False)
     contenido = Column(String, nullable=False)
-    creado_en = Column(DateTime, default=datetime.utcnow)
+    creado_en = Column(DateTime, default=func.now())
+    esta_vigente = Column(Boolean, nullable=False, default=False)
+    vigente_desde = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("version", name="acuerdo_version_version_key"),
+        CheckConstraint(
+            "esta_vigente = false OR vigente_desde IS NOT NULL",
+            name="acuerdo_version_vigencia_fecha_check",
+        ),
+        Index(
+            "acuerdo_version_vigente_uidx",
+            "esta_vigente",
+            unique=True,
+            postgresql_where=(esta_vigente.is_(True)),
+            sqlite_where=(esta_vigente.is_(True)),
+        ),
+    )
 
 class AcuerdoAceptado(Base):
     __tablename__ = "acuerdo_aceptado"
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    usuario_id = Column(Uuid(as_uuid=True), ForeignKey("usuario.id"))
-    version_acuerdo_id = Column(Uuid(as_uuid=True), ForeignKey("acuerdo_version.id"))
-    aceptado_en = Column(DateTime, default=datetime.utcnow)
+    usuario_id = Column(Uuid(as_uuid=True), ForeignKey("usuario.id"), nullable=False)
+    version_acuerdo_id = Column(
+        Uuid(as_uuid=True),
+        ForeignKey("acuerdo_version.id"),
+        nullable=False,
+    )
+    aceptado_en = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    origen = Column(String, nullable=False, default="web_onboarding")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "usuario_id",
+            "version_acuerdo_id",
+            name="acuerdo_aceptado_usuario_version_key",
+        ),
+    )
 
 class Categoria(Base):
     __tablename__ = "categorias"

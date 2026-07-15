@@ -132,7 +132,7 @@ python -c "from app.models.database import engine, Base; Base.metadata.create_al
 
 El repositorio contiene migraciones SQL versionadas en `database/migrations/`, aunque todavía no hay una herramienta formal de migraciones configurada. No usar `Base.metadata.create_all()` para actualizar una base compartida de Supabase. Si un cambio toca el esquema, debe versionarse y coordinarse con el equipo antes de aplicarlo; ver `docs/database.md`.
 
-`database/schema_supabase_actual.sql` es un snapshot local de referencia y puede quedar desactualizado si Supabase no se reexportó después de aplicar una migración. La presencia de una migración en GitHub no demuestra por sí sola que esté aplicada en el entorno remoto.
+`database/reference/schema_supabase_inicial_legacy.sql` es un snapshot histórico no ejecutable: no representa el estado actual y no debe usarse para reconstruir ni reparar Supabase. Las migraciones versionadas describen el contrato esperado, pero solo Supabase remoto demuestra qué cambios están realmente aplicados. Después de aplicar y verificar una migración deberá generarse un snapshot nuevo mediante un procedimiento controlado.
 
 ## Limitaciones conocidas y trabajo relacionado
 

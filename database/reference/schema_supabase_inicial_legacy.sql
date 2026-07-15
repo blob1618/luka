@@ -1,3 +1,6 @@
+-- SNAPSHOT HISTÓRICO DE REFERENCIA. NO EJECUTAR.
+-- NO REPRESENTA EL ESTADO ACTUAL DE SUPABASE.
+-- NO ES UNA MIGRACIÓN NI UNA FUENTE DE VERDAD OPERATIVA.
 -- WARNING: This schema is for context only and is not meant to be run.
 -- Table order and constraints may not be valid for execution.
 

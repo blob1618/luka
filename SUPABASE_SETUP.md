@@ -4,7 +4,7 @@ LUKA usa SQLite por defecto para desarrollo local y PostgreSQL/Supabase en entor
 
 - En local se pueden crear tablas temporales o de desarrollo desde los modelos SQLAlchemy.
 - En Supabase compartido, todo cambio de esquema debe estar versionado en `database/migrations/` y coordinarse antes de aplicarlo.
-- `database/schema_supabase_actual.sql` es un snapshot de referencia, no una migración ejecutable ni una garantía del estado remoto actual.
+- `database/reference/schema_supabase_inicial_legacy.sql` es un snapshot histórico no ejecutable. No representa el estado remoto actual y no debe usarse para reconstruir ni reparar la base.
 
 El contrato vigente de Release 1 está documentado en `docs/decisions/0001-mvp-db-contract.md`: `public.usuario` es la tabla oficial de usuarios y `public.movimientos_financieros` es la tabla oficial para ingresos y egresos. Las nuevas features no deben usar tablas legacy como `public.gastos`.
 
@@ -61,9 +61,9 @@ python -c "from app.models.database import engine, Base; Base.metadata.create_al
 
 ## Paso 5: Gestionar el esquema compartido
 
-El repositorio ya contiene migraciones SQL versionadas, comenzando por `database/migrations/001_mvp_movimientos_financieros.sql`. Aunque todavía no hay una herramienta formal de migraciones configurada, no debe afirmarse que el proyecto carece de migraciones.
+El repositorio `blob1618/luka` es propietario de las migraciones; `blob1618/luka_frontend` consume el esquema, pero no lo administra. Las migraciones versionadas comienzan en `database/migrations/001_mvp_movimientos_financieros.sql` y la migración 003 prepara identidad, onboarding y consentimiento. Aunque todavía no hay una herramienta formal de migraciones configurada, no debe afirmarse que el proyecto carece de migraciones.
 
-La existencia de una migración en GitHub describe el contrato esperado, pero no confirma que haya sido aplicada en Supabase. Antes de depender de una columna, tabla o índice en producción, el equipo debe verificar su aplicación mediante el proceso operativo autorizado y luego reexportar el schema de referencia.
+La existencia de una migración en GitHub describe el contrato esperado, pero no confirma que haya sido aplicada en Supabase. Antes de depender de una columna, tabla o índice en producción, el equipo debe verificar su aplicación mediante el proceso operativo autorizado. Después deberá generar un snapshot nuevo mediante un procedimiento controlado; el snapshot histórico no se reemplaza ni se ejecuta para este fin.
 
 En particular, deben verificarse en el entorno remoto:
 
@@ -71,6 +71,7 @@ En particular, deben verificarse en el entorno remoto:
 - `public.movimientos_financieros` y sus índices de consulta.
 - El índice único parcial sobre `public.movimientos_financieros.whatsapp_message_id`, necesario para reforzar la deduplicación ante concurrencia.
 - RLS habilitado en `public.movimientos_financieros`, sin asumir acceso directo para roles públicos.
+- El estado previo de `acuerdo_aceptado`, la compatibilidad de los roles backend con RLS y todos los objetos de la migración 003 antes de aplicarla.
 
 Esta guía no define ni ejecuta el procedimiento de aplicación de migraciones en Supabase.
 
