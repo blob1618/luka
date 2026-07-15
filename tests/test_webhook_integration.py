@@ -136,11 +136,21 @@ def create_category(session, user_id, nombre="supermercado"):
     return category
 
 
-def post_webhook_with_real_finance(payload, llm_result):
+def post_webhook_with_real_finance(payload, llm_result, expects_category_confirmation=False):
     with (
         patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message,
         patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
+        patch("app.main.ConversationService.is_awaiting_category_confirmation", new_callable=AsyncMock) as mock_is_awaiting,
+        patch("app.main.ConversationService.get_pending_movement", new_callable=AsyncMock) as mock_get_pending,
+        patch("app.main.ConversationService.set_pending_movement", new_callable=AsyncMock) as mock_set_pending,
+        patch("app.main.ConversationService.clear_state", new_callable=AsyncMock) as mock_clear,
     ):
+        if expects_category_confirmation:
+            mock_is_awaiting.return_value = True
+            mock_get_pending.return_value = None
+        else:
+            mock_is_awaiting.return_value = False
+
         process_message.return_value = llm_result
         response = client.post("/webhook", json=payload)
 
@@ -158,12 +168,11 @@ def onboarding_invitations(session):
 def test_webhook_integration_valid_expense_creates_egreso(db_context):
     session = db_context["session"]
     user = create_user(session)
-    category = create_category(session, user.id)
     payload = make_webhook_payload()
 
     response, process_message, send_message = post_webhook_with_real_finance(
         payload=payload,
-        llm_result=llm_movement_result(),
+        llm_result=llm_movement_result(category=None),
     )
 
     saved_movements = movements(session)
@@ -176,7 +185,7 @@ def test_webhook_integration_valid_expense_creates_egreso(db_context):
     assert len(saved_movements) == 1
     movement = saved_movements[0]
     assert movement.usuario_id == user.id
-    assert movement.categoria_id == category.id
+    assert movement.categoria_id is None
     assert movement.tipo == "egreso"
     assert movement.cantidad == 5000
     assert movement.moneda == "ARS"
@@ -247,7 +256,7 @@ def test_webhook_integration_duplicate_message_id_does_not_create_second_row(db_
     session = db_context["session"]
     create_user(session)
     payload = make_webhook_payload(whatsapp_message_id="wamid.integration.duplicate")
-    llm_result = llm_movement_result()
+    llm_result = llm_movement_result(category=None)
 
     first_response, _, first_send_message = post_webhook_with_real_finance(
         payload=payload,
