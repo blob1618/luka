@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.services.finance import MovementRegistrationResult
+from app.services.onboarding import OnboardingDecision, OnboardingResult, OnboardingService
 
 
 client = TestClient(app)
@@ -70,11 +71,19 @@ def registration_result(status):
     )
 
 
+def known_user_result():
+    return OnboardingResult(OnboardingDecision.KNOWN_USER)
+
+
 def post_webhook_with_mocks(llm_result, finance_result=None, messages=None):
     messages = messages if messages is not None else [make_text_message()]
     payload = make_webhook_payload(messages=messages)
 
     with (
+        patch(
+            "app.main.OnboardingService.prepare_whatsapp_message",
+            return_value=known_user_result(),
+        ),
         patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message,
         patch(
             "app.main.FinanceService.register_movement_from_whatsapp_text",
@@ -359,6 +368,106 @@ def test_handle_webhook_status_update_without_messages_does_not_fail():
     send_message.assert_not_awaited()
 
 
+def test_unknown_user_sends_one_onboarding_message_without_calling_services():
+    registration_url = "https://example.com/registro?token=safe-token"
+    payload = make_webhook_payload(messages=[make_text_message()])
+    onboarding_result = OnboardingResult(
+        OnboardingDecision.SEND_INVITATION,
+        registration_url=registration_url,
+        invitation_ttl_minutes=30,
+    )
+
+    with (
+        patch(
+            "app.main.OnboardingService.prepare_whatsapp_message",
+            return_value=onboarding_result,
+        ) as prepare_onboarding,
+        patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message,
+        patch(
+            "app.main.FinanceService.register_movement_from_whatsapp_text",
+            autospec=True,
+        ) as register_movement,
+        patch(
+            "app.main.ReminderService.create_reminder",
+            autospec=True,
+        ) as create_reminder,
+        patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
+        patch("app.main._update_ultimo_mensaje") as update_last_message,
+    ):
+        response = client.post("/webhook", json=payload)
+
+    assert response.status_code == 200
+    prepare_onboarding.assert_called_once_with("12345")
+    process_message.assert_not_awaited()
+    register_movement.assert_not_called()
+    create_reminder.assert_not_called()
+    update_last_message.assert_not_called()
+    send_message.assert_awaited_once_with(
+        "12345",
+        "Para usar Luka, primero registrate y vinculá este WhatsApp:\n\n"
+        f"{registration_url}\n\n"
+        "El enlace vence en 30 minutos.",
+    )
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [OnboardingDecision.SUPPRESS_RESPONSE],
+)
+def test_unknown_user_suppression_does_not_call_llm_or_send_message(decision):
+    payload = make_webhook_payload(messages=[make_text_message()])
+
+    with (
+        patch(
+            "app.main.OnboardingService.prepare_whatsapp_message",
+            return_value=OnboardingResult(decision),
+        ),
+        patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message,
+        patch(
+            "app.main.FinanceService.register_movement_from_whatsapp_text",
+            autospec=True,
+        ) as register_movement,
+        patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
+    ):
+        response = client.post("/webhook", json=payload)
+
+    assert response.status_code == 200
+    process_message.assert_not_awaited()
+    register_movement.assert_not_called()
+    send_message.assert_not_awaited()
+
+
+def test_onboarding_database_error_does_not_reach_llm():
+    payload = make_webhook_payload(messages=[make_text_message()])
+
+    with (
+        patch(
+            "app.main.OnboardingService.prepare_whatsapp_message",
+            return_value=OnboardingResult(OnboardingDecision.ERROR),
+        ),
+        patch("app.main.LLMService.process_message", new_callable=AsyncMock) as process_message,
+        patch(
+            "app.main.FinanceService.register_movement_from_whatsapp_text",
+            autospec=True,
+        ) as register_movement,
+        patch(
+            "app.main.ReminderService.create_reminder",
+            autospec=True,
+        ) as create_reminder,
+        patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
+    ):
+        response = client.post("/webhook", json=payload)
+
+    assert response.status_code == 200
+    process_message.assert_not_awaited()
+    register_movement.assert_not_called()
+    create_reminder.assert_not_called()
+    send_message.assert_awaited_once_with(
+        "12345",
+        "No pude verificar tu cuenta. Intentá nuevamente en unos minutos.",
+    )
+
+
 class TestWebhookCreateReminder:
     """Tests for create_reminder intent routing and last message update in webhook."""
 
@@ -377,6 +486,11 @@ class TestWebhookCreateReminder:
         async def mock_process(text):
             return llm_response
         monkeypatch.setattr("app.main.LLMService.process_message", mock_process)
+        monkeypatch.setattr(
+            OnboardingService,
+            "prepare_whatsapp_message",
+            lambda phone: known_user_result(),
+        )
 
         # Mock ReminderService
         from app.services.reminder import ReminderResult, ReminderService
@@ -412,6 +526,11 @@ class TestWebhookCreateReminder:
         async def mock_process(text):
             return llm_response
         monkeypatch.setattr("app.main.LLMService.process_message", mock_process)
+        monkeypatch.setattr(
+            OnboardingService,
+            "prepare_whatsapp_message",
+            lambda phone: known_user_result(),
+        )
         monkeypatch.setattr("app.main.send_whatsapp_message", AsyncMock())
 
         # Track if _update_ultimo_mensaje was called

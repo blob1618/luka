@@ -3,13 +3,21 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import app.models.database as database_module
 import app.services.finance as finance_module
+import app.services.onboarding as onboarding_module
 from app.main import app
-from app.models.database import Base, Categoria, MovimientoFinanciero, Usuario
+from app.models.database import (
+    Base,
+    Categoria,
+    MovimientoFinanciero,
+    OnboardingInvitacion,
+    Usuario,
+)
 
 
 client = TestClient(app)
@@ -22,9 +30,23 @@ def db_context(monkeypatch):
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(dbapi_connection, _connection_record):
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
     testing_session_local = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.create_all(bind=engine)
     monkeypatch.setattr(finance_module, "SessionLocal", testing_session_local)
+    monkeypatch.setattr(onboarding_module, "SessionLocal", testing_session_local)
+    monkeypatch.setattr(database_module, "SessionLocal", testing_session_local)
+    monkeypatch.setenv(
+        "ONBOARDING_REGISTRATION_URL",
+        "https://example.com/registro",
+    )
+    monkeypatch.setenv("ONBOARDING_INVITATION_TTL_MINUTES", "30")
+    monkeypatch.setenv("ONBOARDING_RESEND_COOLDOWN_SECONDS", "60")
+    monkeypatch.setenv("ONBOARDING_MAX_RESENDS", "3")
 
     session = testing_session_local()
     try:
@@ -129,6 +151,10 @@ def movements(session):
     return session.query(MovimientoFinanciero).all()
 
 
+def onboarding_invitations(session):
+    return session.query(OnboardingInvitacion).all()
+
+
 def test_webhook_integration_valid_expense_creates_egreso(db_context):
     session = db_context["session"]
     user = create_user(session)
@@ -198,15 +224,23 @@ def test_webhook_integration_unknown_user_does_not_create_movement(db_context):
         whatsapp_message_id="wamid.integration.3",
     )
 
-    response, _, send_message = post_webhook_with_real_finance(
+    response, process_message, send_message = post_webhook_with_real_finance(
         payload=payload,
         llm_result=llm_movement_result(),
     )
 
     assert response.status_code == 200
+    process_message.assert_not_awaited()
     assert movements(session) == []
-    assert "No encontr" in send_message.await_args.args[1]
-    assert "No pude registrar" in send_message.await_args.args[1]
+    invitations = onboarding_invitations(session)
+    assert len(invitations) == 1
+    assert invitations[0].whatsapp_id == "99999"
+    assert invitations[0].estado == "pendiente"
+    assert invitations[0].reenvios == 0
+    sent_text = send_message.await_args.args[1]
+    assert "Para usar Luka" in sent_text
+    assert "https://example.com/registro?token=" in sent_text
+    assert "99999" not in sent_text
 
 
 def test_webhook_integration_duplicate_message_id_does_not_create_second_row(db_context):
