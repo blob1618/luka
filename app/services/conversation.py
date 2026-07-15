@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass, field, asdict
 from datetime import timedelta
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
 
 import redis.asyncio as redis
 

@@ -6,7 +6,6 @@ from typing import Any
 import matplotlib.pyplot as plt
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
-from uuid import UUID
 
 from app.models.database import Categoria, MovimientoFinanciero, SessionLocal, Usuario
 
