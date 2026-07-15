@@ -20,6 +20,10 @@ from app.services.onboarding import (  # noqa: E402
     OnboardingService,
 )
 from app.services.reminder import ReminderService, ReminderResult  # noqa: E402
+from app.services.conversation import (  # noqa: E402
+    ConversationService,
+    PendingMovement,
+)
 
 # Cliente Redis global
 redis_client = None
@@ -112,6 +116,18 @@ def _registered_reply(extracted_data: dict) -> str:
     return f"✅ Registré tu {movement_type}: {description} por ${amount} {currency}."
 
 
+def _registered_reply_from_pending(pending: PendingMovement) -> str:
+    movement_type = pending.movement_type or "movimiento"
+    description = pending.description or "movimiento"
+    amount = _format_amount(pending.amount)
+    currency = pending.currency.upper()
+    return f"✅ Registré tu {movement_type}: {description} por ${amount} {currency}."
+
+
+def _category_confirmation_reply(category_name: str) -> str:
+    return f"¿La categoría *{category_name}* es correcta? (respondé sí/no o decime otra)"
+
+
 def _registration_reply(
     result: MovementRegistrationResult,
     extracted_data: dict,
@@ -146,6 +162,10 @@ def _registration_reply(
 def _safe_non_stk35_reply(extracted_data: dict) -> str:
     intent = extracted_data.get("intent")
     reply_text = extracted_data.get("reply_text") or ""
+
+    # Estos intents se manejan aparte en el flujo STK-39
+    if intent in {"confirm_category", "reject_category", "delete_category", "list_categories"}:
+        return reply_text
 
     if intent in {"reminder", "budget_query", "expense_summary"}:
         return (
@@ -203,6 +223,154 @@ def _onboarding_invitation_reply(registration_url: str, ttl_minutes: int) -> str
         f"{registration_url}\n\n"
         f"El enlace vence en {ttl_minutes} minutos."
     )
+
+
+# ---------------------------------------------------------------------------
+# STK-39: Handlers de gestión de categorías
+# ---------------------------------------------------------------------------
+
+
+def _category_deleted_reply(category_name: str) -> str:
+    return f"✅ Categoría '{category_name}' eliminada. Los movimientos de esa categoría quedaron sin categoría."
+
+
+def _category_not_found_reply(category_name: str) -> str:
+    return f"No encontré una categoría '{category_name}'."
+
+
+def _format_categories_list(categories_result) -> str:
+    """Formatea la lista de categorías con totales para enviar por WhatsApp."""
+    cats = categories_result.categories
+    if not cats:
+        return "No tenés categorías todavía. Cuando registres movimientos se irán creando."
+
+    lines = ["📊 *Tus categorías:*"]
+    for c in cats:
+        ingreso = _format_amount(c.total_ingresos)
+        egreso = _format_amount(c.total_egresos)
+        default_tag = " (por defecto)" if c.es_default else ""
+        lines.append(
+            f"• {c.category_name}{default_tag}: "
+            f"💰 ${ingreso} ingreso | 💸 ${egreso} egreso"
+        )
+    return "\n".join(lines)
+
+
+async def _handle_category_confirmation(
+    sender_phone: str,
+    extracted_data: dict,
+) -> str:
+    """
+    Maneja la confirmación o rechazo de categoría cuando hay un movimiento pendiente.
+    """
+    intent = extracted_data.get("intent")
+
+    # Verificar si hay movimiento pendiente
+    pending = await ConversationService.get_pending_movement(sender_phone)
+    if pending is None:
+        return "No encontré un movimiento pendiente para confirmar."
+
+    if intent == "confirm_category":
+        # El usuario confirmó la categoría inferida
+        category_name = pending.inferred_category
+        result = FinanceService.register_movement_with_category(
+            sender_phone=sender_phone,
+            whatsapp_message_id=pending.whatsapp_message_id,
+            original_text=pending.original_text,
+            movement_type=pending.movement_type,
+            amount=pending.amount,
+            currency=pending.currency,
+            description=pending.description,
+            category_name=category_name,
+            create_category_if_missing=True,
+        )
+        await ConversationService.clear_state(sender_phone)
+
+        if result.status == "registered":
+            if category_name:
+                return f"{_registered_reply_from_pending(pending)}\n📁 Categoría: {category_name}"
+            return _registered_reply_from_pending(pending)
+        else:
+            return _registration_reply(result, pending.llm_result_extra)
+
+    elif intent == "reject_category":
+        # El usuario rechazó la categoría, ver si propuso una nueva
+        user_category = extracted_data.get("category")
+        if user_category:
+            # Usuario propuso una categoría específica
+            result = FinanceService.register_movement_with_category(
+                sender_phone=sender_phone,
+                whatsapp_message_id=pending.whatsapp_message_id,
+                original_text=pending.original_text,
+                movement_type=pending.movement_type,
+                amount=pending.amount,
+                currency=pending.currency,
+                description=pending.description,
+                category_name=user_category,
+                create_category_if_missing=True,
+            )
+            await ConversationService.clear_state(sender_phone)
+
+            if result.status == "registered":
+                return f"{_registered_reply_from_pending(pending)}\n📁 Categoría: {user_category}"
+            else:
+                return _registration_reply(result, pending.llm_result_extra)
+        else:
+            # No propuso categoría, preguntar cuál quiere
+            return "¿A qué categoría querés asignar este movimiento? Decime el nombre."
+
+    return "No pude procesar tu respuesta. ¿La categoría es correcta o querés cambiarla?"
+
+
+async def _handle_delete_category(sender_phone: str, extracted_data: dict) -> str:
+    """Maneja la eliminación de una categoría."""
+    from app.models.database import SessionLocal, Usuario
+
+    category_name = extracted_data.get("category")
+    if not category_name:
+        return "¿Qué categoría querés eliminar? Decime el nombre."
+
+    session = SessionLocal()
+    try:
+        user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
+        if user is None:
+            return "No encontré tu cuenta."
+        user_id = user.id
+    finally:
+        session.close()
+
+    result = FinanceService.delete_category(user_id, category_name)
+    if result.status == "deleted":
+        return _category_deleted_reply(result.category_name or category_name)
+    elif result.status == "not_found":
+        return _category_not_found_reply(category_name)
+    else:
+        return "Hubo un problema eliminando la categoría. Intentá de nuevo."
+
+
+async def _handle_list_categories(sender_phone: str) -> str:
+    """Maneja la solicitud de listar categorías con totales."""
+    from app.models.database import SessionLocal, Usuario
+
+    session = SessionLocal()
+    try:
+        user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
+        if user is None:
+            return "No encontré tu cuenta."
+        user_id = user.id
+    finally:
+        session.close()
+
+    result = FinanceService.get_categories_with_totals(user_id)
+    if result.status == "ok":
+        return _format_categories_list(result)
+    else:
+        return "Hubo un problema consultando las categorías."
+
+
+# ---------------------------------------------------------------------------
+# Webhook handlers
+# ---------------------------------------------------------------------------
 
 
 @app.get("/webhook")
@@ -283,37 +451,115 @@ async def handle_webhook(request: Request):
                     # Track last message time for 24h window
                     _update_ultimo_mensaje(sender_phone)
 
-                    extracted_data = await LLMService.process_message(text_body)
+                    # ------------------------------------------------------------------
+                    # STK-39: Verificar si hay una conversación pendiente (categoría)
+                    # ------------------------------------------------------------------
+                    is_awaiting = await ConversationService.is_awaiting_category_confirmation(
+                        sender_phone
+                    )
 
-                    if _is_financial_movement(extracted_data):
-                        registration_result = FinanceService.register_movement_from_whatsapp_text(
-                            sender_phone=sender_phone,
-                            whatsapp_message_id=whatsapp_message_id,
-                            original_text=text_body,
-                            llm_result=extracted_data,
-                        )
-                        print(
-                            "[MOVEMENT_REGISTRATION]",
-                            f"user={sender_phone}",
-                            f"message_id={whatsapp_message_id}",
-                            f"status={registration_result.status}",
-                        )
-                        reply_text = _registration_reply(registration_result, extracted_data)
-                    elif _is_create_reminder(extracted_data):
-                        reminder_result = ReminderService.create_reminder(
-                            sender_phone=sender_phone,
-                            llm_result=extracted_data,
-                        )
-                        print(
-                            "[REMINDER_CREATION]",
-                            f"user={sender_phone}",
-                            f"status={reminder_result.status}",
-                        )
-                        reply_text = _reminder_creation_reply(reminder_result, extracted_data)
-                    else:
+                    if is_awaiting:
+                        # El usuario está en medio de una confirmación de categoría
+                        extracted_data = await LLMService.process_message(text_body)
                         intent = extracted_data.get("intent", "out_of_scope")
-                        print(f"[{str(intent).upper()}] User {sender_phone}: {text_body}")
-                        reply_text = _safe_non_stk35_reply(extracted_data)
+
+                        # Si el LLM no reconoce el intent como confirmación/rechazo,
+                        # forzarlo según palabras clave simples como fallback
+                        if intent not in ("confirm_category", "reject_category", "out_of_scope"):
+                            lower_text = text_body.strip().lower()
+                            if lower_text in ("si", "sí", "dale", "ok", "okey", "de una", "correcto", "bien", "de acuerdo", "confirmo"):
+                                intent = "confirm_category"
+                                extracted_data["intent"] = intent
+                            elif lower_text in ("no", "nop", "nel", "otra", "cambiar", "cambiala", "no esa"):
+                                intent = "reject_category"
+                                extracted_data["intent"] = intent
+
+                        if intent == "confirm_category":
+                            reply_text = await _handle_category_confirmation(
+                                sender_phone, extracted_data
+                            )
+                        elif intent == "reject_category":
+                            reply_text = await _handle_category_confirmation(
+                                sender_phone, extracted_data
+                            )
+                        else:
+                            # Respuesta no reconocida en medio de confirmación
+                            pending = await ConversationService.get_pending_movement(sender_phone)
+                            if pending and pending.inferred_category:
+                                reply_text = (
+                                    f"No entendí tu respuesta. ¿La categoría "
+                                    f"*{pending.inferred_category}* es correcta? "
+                                    f"(respondé sí/no o decime otra)"
+                                )
+                            else:
+                                await ConversationService.clear_state(sender_phone)
+                                reply_text = "No entendí tu respuesta. Cancelé la operación."
+                    else:
+                        # No hay conversación pendiente, procesar normalmente
+                        extracted_data = await LLMService.process_message(text_body)
+                        intent = extracted_data.get("intent", "out_of_scope")
+
+                        # ----------------------------------------------------------
+                        # STK-39: Manejar intents de gestión de categorías
+                        # ----------------------------------------------------------
+                        if intent == "delete_category":
+                            reply_text = await _handle_delete_category(sender_phone, extracted_data)
+                        elif intent == "list_categories":
+                            reply_text = await _handle_list_categories(sender_phone)
+                        elif _is_financial_movement(extracted_data):
+                            # Movimiento financiero: ver si tiene categoría inferida
+                            category_name = extracted_data.get("category")
+
+                            if category_name:
+                                # Guardar movimiento como pendiente para confirmar categoría
+                                pending = PendingMovement(
+                                    sender_phone=sender_phone,
+                                    whatsapp_message_id=whatsapp_message_id,
+                                    original_text=text_body,
+                                    movement_type=extracted_data.get("movement_type", "egreso"),
+                                    amount=Decimal(str(extracted_data.get("amount", 0))),
+                                    currency=extracted_data.get("currency", "ARS"),
+                                    description=_movement_description(extracted_data),
+                                    inferred_category=category_name,
+                                    llm_result_extra=extracted_data,
+                                )
+                                await ConversationService.set_pending_movement(
+                                    sender_phone, pending
+                                )
+                                reply_text = _category_confirmation_reply(category_name)
+                            else:
+                                # Sin categoría inferida, registrar directamente
+                                registration_result = FinanceService.register_movement_from_whatsapp_text(
+                                    sender_phone=sender_phone,
+                                    whatsapp_message_id=whatsapp_message_id,
+                                    original_text=text_body,
+                                    llm_result=extracted_data,
+                                )
+                                print(
+                                    "[MOVEMENT_REGISTRATION]",
+                                    f"user={sender_phone}",
+                                    f"message_id={whatsapp_message_id}",
+                                    f"status={registration_result.status}",
+                                )
+                                reply_text = _registration_reply(registration_result, extracted_data)
+                        elif intent in ("confirm_category", "reject_category"):
+                            # Estos intents no deberían llegar acá sin pending, pero por si acaso
+                            reply_text = "No encontré un movimiento pendiente para confirmar."
+                        elif _is_create_reminder(extracted_data):
+                            reminder_result = ReminderService.create_reminder(
+                                sender_phone=sender_phone,
+                                llm_result=extracted_data,
+                            )
+                            print(
+                                "[REMINDER_CREATION]",
+                                f"user={sender_phone}",
+                                f"status={reminder_result.status}",
+                            )
+                            reply_text = _reminder_creation_reply(reminder_result, extracted_data)
+                        else:
+                            intent_str = extracted_data.get("intent", "out_of_scope")
+                            print(f"[{str(intent_str).upper()}] User {sender_phone}: {text_body}")
+                            reply_text = _safe_non_stk35_reply(extracted_data)
 
                     await send_whatsapp_message(sender_phone, reply_text)
 

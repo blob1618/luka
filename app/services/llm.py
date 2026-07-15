@@ -134,6 +134,8 @@ class LLMService:
                 "expense", "budget_query", "reminder",
                 "expense_summary", "greeting", "out_of_scope",
                 "create_reminder",
+                "confirm_category", "reject_category",
+                "delete_category", "list_categories",
             }
             if intent not in allowed_intents:
                 intent = "out_of_scope"

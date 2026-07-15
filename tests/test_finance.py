@@ -434,3 +434,234 @@ def test_generate_expense_chart():
     assert isinstance(chart_bytes, bytes)
     assert len(chart_bytes) > 0
     assert chart_bytes.startswith(b"\x89PNG")
+
+
+# ---------------------------------------------------------------------------
+# STK-39: Tests de gestión de categorías
+# ---------------------------------------------------------------------------
+
+
+def test_create_category_new(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+
+    result = FinanceService.create_category(user.id, "Transporte")
+
+    assert result.status == "created"
+    assert result.category_name == "Transporte"
+    assert result.category_id is not None
+
+    cat = session.query(Categoria).filter(Categoria.id == uuid.UUID(result.category_id)).first()
+    assert cat is not None
+    assert cat.nombre == "Transporte"
+    assert cat.esta_eliminado is False
+
+
+def test_create_category_case_insensitive_duplicate(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    create_category(session, user.id, nombre="Comida")
+
+    result = FinanceService.create_category(user.id, "  comida  ")
+
+    assert result.status == "already_exists"
+    assert result.category_name == "Comida"
+
+
+def test_create_category_reactivates_deleted(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    cat = create_category(session, user.id, nombre="Comida", esta_eliminado=True)
+
+    result = FinanceService.create_category(user.id, "Comida")
+
+    assert result.status == "created"
+    assert result.category_name == "Comida"
+
+    session.refresh(cat)
+    assert cat.esta_eliminado is False
+
+
+def test_create_category_empty_name_returns_error(db_context):
+    result = FinanceService.create_category(uuid.uuid4(), "   ")
+
+    assert result.status == "error"
+
+
+def test_delete_category_existing(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    cat = create_category(session, user.id, nombre="Comida")
+
+    result = FinanceService.delete_category(user.id, "Comida")
+
+    assert result.status == "deleted"
+    assert result.category_name == "Comida"
+
+    session.refresh(cat)
+    assert cat.esta_eliminado is True
+
+
+def test_delete_category_not_found(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+
+    result = FinanceService.delete_category(user.id, "Inexistente")
+
+    assert result.status == "not_found"
+
+
+def test_delete_category_case_insensitive(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    cat = create_category(session, user.id, nombre="Comida")
+
+    result = FinanceService.delete_category(user.id, "  COMIDA  ")
+
+    assert result.status == "deleted"
+    session.refresh(cat)
+    assert cat.esta_eliminado is True
+
+
+def test_delete_category_sets_movements_to_null(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    cat = create_category(session, user.id, nombre="Comida")
+
+    # Crear movimiento con esa categoría
+    mov = MovimientoFinanciero(
+        usuario_id=user.id,
+        categoria_id=cat.id,
+        tipo="egreso",
+        cantidad=1500,
+        moneda="ARS",
+        descripcion="almuerzo",
+    )
+    session.add(mov)
+    session.commit()
+
+    result = FinanceService.delete_category(user.id, "Comida")
+
+    assert result.status == "deleted"
+
+    session.refresh(mov)
+    assert mov.categoria_id is None
+
+
+def test_get_categories_with_totals_empty(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+
+    result = FinanceService.get_categories_with_totals(user.id)
+
+    assert result.status == "ok"
+    assert len(result.categories) == 0
+
+
+def test_get_categories_with_totals_with_movements(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    cat1 = create_category(session, user.id, nombre="Comida")
+    cat2 = create_category(session, user.id, nombre="Sueldo")
+
+    # Egreso en Comida
+    session.add(MovimientoFinanciero(
+        usuario_id=user.id, categoria_id=cat1.id,
+        tipo="egreso", cantidad=5000, moneda="ARS", descripcion="super",
+    ))
+    # Ingreso en Sueldo
+    session.add(MovimientoFinanciero(
+        usuario_id=user.id, categoria_id=cat2.id,
+        tipo="ingreso", cantidad=250000, moneda="ARS", descripcion="sueldo",
+    ))
+    session.commit()
+
+    result = FinanceService.get_categories_with_totals(user.id)
+
+    assert result.status == "ok"
+    assert len(result.categories) == 2
+
+    cats_by_name = {c.category_name: c for c in result.categories}
+    assert cats_by_name["Comida"].total_egresos == 5000
+    assert cats_by_name["Comida"].total_ingresos == 0
+    assert cats_by_name["Sueldo"].total_ingresos == 250000
+    assert cats_by_name["Sueldo"].total_egresos == 0
+
+
+def test_get_categories_with_totals_excludes_deleted(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    create_category(session, user.id, nombre="Comida")
+    create_category(session, user.id, nombre="Vieja", esta_eliminado=True)
+
+    result = FinanceService.get_categories_with_totals(user.id)
+
+    assert result.status == "ok"
+    names = [c.category_name for c in result.categories]
+    assert "Comida" in names
+    assert "Vieja" not in names
+
+
+def test_register_movement_with_category_existing(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    cat = create_category(session, user.id, nombre="Comida")
+
+    result = FinanceService.register_movement_with_category(
+        sender_phone="5491111111111",
+        whatsapp_message_id="wamid.cat1",
+        original_text="Gaste 1500 en almuerzo",
+        movement_type="egreso",
+        amount=1500,
+        currency="ARS",
+        description="almuerzo",
+        category_name="Comida",
+    )
+
+    assert result.status == "registered"
+    movement = session.query(MovimientoFinanciero).one()
+    assert movement.categoria_id == cat.id
+
+
+def test_register_movement_with_category_create_if_missing(db_context):
+    session = db_context["session"]
+    create_user(session)
+
+    result = FinanceService.register_movement_with_category(
+        sender_phone="5491111111111",
+        whatsapp_message_id="wamid.cat2",
+        original_text="Gaste 2000 en taxi",
+        movement_type="egreso",
+        amount=2000,
+        currency="ARS",
+        description="taxi",
+        category_name="Transporte",
+        create_category_if_missing=True,
+    )
+
+    assert result.status == "registered"
+    movement = session.query(MovimientoFinanciero).one()
+    assert movement.categoria_id is not None
+    cat = session.query(Categoria).filter(Categoria.id == movement.categoria_id).first()
+    assert cat.nombre == "Transporte"
+
+
+def test_register_movement_with_category_not_found_no_create(db_context):
+    session = db_context["session"]
+    create_user(session)
+
+    result = FinanceService.register_movement_with_category(
+        sender_phone="5491111111111",
+        whatsapp_message_id="wamid.cat3",
+        original_text="Gaste 3000 en algo",
+        movement_type="egreso",
+        amount=3000,
+        currency="ARS",
+        description="algo",
+        category_name="Inexistente",
+        create_category_if_missing=False,
+    )
+
+    assert result.status == "registered"
+    movement = session.query(MovimientoFinanciero).one()
+    assert movement.categoria_id is None
