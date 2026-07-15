@@ -91,20 +91,6 @@ class LLMService:
 
         return None
 
-    @staticmethod
-    async def process_text_expense(text: str) -> Dict[str, Any]:
-        """
-        Wrapper legacy. Llama a process_message y extrae los campos de gasto.
-        Se mantiene por compatibilidad hacia atrás.
-        """
-        result = await LLMService.process_message(text)
-        return {
-            "is_expense": result.get("intent") == "expense" and result.get("amount") is not None,
-            "expense": result.get("expense"),
-            "amount": result.get("amount"),
-            "currency": result.get("currency") or "ARS",
-            "reply_text": result.get("reply_text") or "",
-        }
 
     @classmethod
     async def process_message(cls, text: str) -> Dict[str, Any]:
@@ -116,7 +102,7 @@ class LLMService:
             text: El mensaje de texto del usuario.
 
         Returns:
-            Dict con los campos del JSON parseado (intent, is_expense, amount, etc.)
+            Dict con los campos del JSON parseado (intent, amount, etc.)
         """
         system_prompt = cls._load_system_prompt()
 
@@ -171,7 +157,6 @@ class LLMService:
 
             return {
                 "intent": intent,
-                "is_expense": intent == "expense" and amount is not None,
                 "expense": parsed.get("expense"),
                 "amount": amount,
                 "currency": str(parsed.get("currency", "ARS")).upper() if parsed.get("currency") else "ARS",
@@ -191,7 +176,6 @@ class LLMService:
             print(f"[LLMService] process_message failed: {type(exc).__name__}: {exc}")
             return {
                 "intent": "out_of_scope",
-                "is_expense": False,
                 "expense": None,
                 "amount": None,
                 "currency": "ARS",
@@ -216,7 +200,6 @@ class LLMService:
         Placeholder para el procesamiento de notas de voz.
         """
         return {
-            "is_expense": False,
             "amount": None,
             "expense": None,
             "reply_text": "Aun no proceso notas de voz.",
@@ -228,7 +211,6 @@ class LLMService:
         Placeholder para el procesamiento de imágenes de comprobantes.
         """
         return {
-            "is_expense": False,
             "amount": None,
             "expense": None,
             "reply_text": "Aun no proceso imagenes de comprobantes.",

@@ -222,3 +222,5 @@ Escenario.pdf
 Especificación de Requisitos.pdf
 
 .agents/*
+.vscode/*
+luka.db

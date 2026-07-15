@@ -6,7 +6,7 @@ LUKA usa SQLite por defecto para desarrollo local y PostgreSQL/Supabase en entor
 - En Supabase compartido, todo cambio de esquema debe estar versionado en `database/migrations/` y coordinarse antes de aplicarlo.
 - `database/reference/schema_supabase_inicial_legacy.sql` es un snapshot histórico no ejecutable. No representa el estado remoto actual y no debe usarse para reconstruir ni reparar la base.
 
-El contrato vigente de Release 1 está documentado en `docs/decisions/0001-mvp-db-contract.md`: `public.usuario` es la tabla oficial de usuarios y `public.movimientos_financieros` es la tabla oficial para ingresos y egresos. Las nuevas features no deben usar tablas legacy como `public.gastos`.
+El contrato vigente de Release 1 está documentado en `docs/decisions/0001-mvp-db-contract.md`: `public.usuario` es la tabla oficial de usuarios y `public.movimientos_financieros` es la tabla oficial para ingresos y egresos.
 
 ## Paso 1: Crear el proyecto en Supabase
 

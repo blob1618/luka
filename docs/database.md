@@ -40,18 +40,8 @@ Tablas oficiales de Release 1:
 
 La FK PostgreSQL `public.usuario.auth_user_id -> auth.users(id)` existe únicamente en la migración. El metadata SQLAlchemy omite esa FK deliberadamente porque `auth.users` no existe en SQLite; la columna y su unicidad parcial sí se representan en ambos contratos.
 
-`public.movimientos_financieros` es la entidad central para ingresos y egresos. Las nuevas features no deben escribir en `public.gastos` ni depender de otras tablas legacy.
+`public.movimientos_financieros` es la entidad central para ingresos y egresos.
 
-Tablas legacy/no usadas para features nuevas:
-
-- `public.usuarios`
-- `public.presupuestos`
-- `public.limites_gasto`
-- `public.versiones_consentimiento`
-- `public.consentimientos_usuario`
-- `public.gastos`
-
-Las tablas legacy no se eliminan como parte de STK-35.
 
 ## Modelos actuales del backend
 

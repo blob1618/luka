@@ -40,7 +40,6 @@ Bienvenido al proyecto Luka. Luka es un asistente financiero personal que opera 
 ### 3.1 Contrato DB MVP Release 1
 - Usar `public.movimientos_financieros` como entidad central del MVP para ingresos y egresos.
 - Usar `public.usuario` como tabla oficial de usuarios; el contrato requiere `whatsapp_id` para mapear WhatsApp con `usuario.id`.
-- No usar tablas legacy para nuevas features: `public.usuarios`, `public.presupuestos`, `public.limites_gasto`, `public.versiones_consentimiento`, `public.consentimientos_usuario`, `public.gastos`. La tabla oficial de recordatorios es `public.recordatorio`.
 - No ejecutar SQL ni tocar Supabase directamente desde tareas de agentes; todo cambio de schema debe versionarse primero en GitHub.
 - Mantener la lógica de negocio fuera de `app/main.py`; el parseo va en servicios LLM y los cambios de estado en servicios de finanzas.
 

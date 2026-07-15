@@ -52,18 +52,6 @@ Si en una release futura el frontend consulta Supabase directamente, deberán de
 - `public.acuerdo_version`: versiones de acuerdos o consentimientos.
 - `public.acuerdo_aceptado`: aceptación de acuerdos por usuario.
 
-## Tablas legacy
-
-Estas tablas existen o pueden existir por modelos anteriores. No se borran en este ticket, pero no deben usarse para nuevas features:
-
-- `public.usuarios`
-- `public.presupuestos`
-- `public.limites_gasto`
-- `public.versiones_consentimiento`
-- `public.consentimientos_usuario`
-- `public.gastos`
-
-`public.gastos` puede contener datos o haber sido parte de una versión previa, pero no es la entidad central del flujo nuevo.
 
 ## Consecuencias
 
@@ -71,7 +59,6 @@ Estas tablas existen o pueden existir por modelos anteriores. No se borran en es
 - El contrato se implementa mediante migraciones versionadas en `database/migrations/`, comenzando por `001_mvp_movimientos_financieros.sql`.
 - STK-35 debe persistir movimientos en `public.movimientos_financieros` cuando exista la migración correspondiente.
 - `public.evento` debe usarse para auditoría/trazabilidad, no como tabla principal de movimientos.
-- Las nuevas features no deben depender de las tablas legacy.
 - El dashboard de Release 1 debe obtener datos financieros mediante endpoints del backend.
 - No se crearán policies RLS públicas para `public.movimientos_financieros` mientras no exista una estrategia formal de Supabase Auth.
 - La autorización de acceso a movimientos financieros queda inicialmente centralizada en el backend.

@@ -10,7 +10,7 @@ No confirmes que un movimiento fue registrado, guardado o anotado: la confirmaci
 
 ## Registro de movimientos financieros
 
-Un movimiento registrable debe usar `intent="expense"`, tanto si es ingreso como egreso. El campo oficial para distinguirlos es `movement_type`; `is_expense` es un campo legacy de compatibilidad y no debe usarse como fuente principal para determinar el tipo.
+Un movimiento registrable debe usar `intent="expense"`, tanto si es ingreso como egreso. El campo oficial para distinguirlos es `movement_type`.
 
 - Gasto, pago, compra o consumo: `movement_type="egreso"`.
 - Cobro, sueldo, depósito, venta, ingreso o entrada de dinero: `movement_type="ingreso"`.
@@ -57,7 +57,6 @@ Responde únicamente con un objeto JSON válido. Para un egreso válido, la form
 {
   "intent": "expense",
   "movement_type": "egreso",
-  "is_expense": true,
   "expense": "supermercado",
   "amount": 5000,
   "currency": "ARS",
@@ -74,8 +73,7 @@ Reglas del contrato:
 - `currency` debe ser una moneda como `"ARS"`, `"USD"` o `null` si no aplica.
 - `intent` y `reply_text` son obligatorios.
 - Para movimientos registrables, usa `intent="expense"` y `movement_type="ingreso"` o `"egreso"`.
-- `is_expense` es legacy: para movimientos registrables puede mantenerse en `true` por compatibilidad, incluso cuando `movement_type="ingreso"`; el tipo real lo define `movement_type`.
-- Para intents que no son movimientos, usa `movement_type=null`, `is_expense=false` y `amount=null` salvo que el campo sea indispensable para interpretar la solicitud; no la registres.
+- Para intents que no son movimientos, usa `movement_type=null` y `amount=null` salvo que el campo sea indispensable para interpretar la solicitud; no la registres.
 - Para un movimiento sin monto, conserva `intent="expense"` y el `movement_type` que se pueda inferir, usa `amount=null` y solicita el monto.
 - No digas “registrado”, “guardado”, “ya lo anoté”, “gasto registrado”, “ingreso registrado” ni “movimiento registrado” en `reply_text` de un movimiento.
 
@@ -91,7 +89,6 @@ Reglas del contrato:
 {
   "intent": "expense",
   "movement_type": "egreso",
-  "is_expense": true,
   "expense": "supermercado",
   "amount": 5000,
   "currency": "ARS",
@@ -111,7 +108,6 @@ Reglas del contrato:
 {
   "intent": "expense",
   "movement_type": "ingreso",
-  "is_expense": true,
   "expense": "sueldo",
   "amount": 250000,
   "currency": "ARS",
@@ -131,7 +127,6 @@ Reglas del contrato:
 {
   "intent": "expense",
   "movement_type": "egreso",
-  "is_expense": false,
   "expense": "luz",
   "amount": null,
   "currency": "ARS",
@@ -151,7 +146,6 @@ Reglas del contrato:
 {
   "intent": "reminder",
   "movement_type": null,
-  "is_expense": false,
   "expense": null,
   "amount": null,
   "currency": null,
@@ -171,7 +165,6 @@ Reglas del contrato:
 {
   "intent": "create_reminder",
   "movement_type": null,
-  "is_expense": false,
   "expense": null,
   "amount": null,
   "currency": null,
@@ -195,7 +188,6 @@ Reglas del contrato:
 {
   "intent": "create_reminder",
   "movement_type": null,
-  "is_expense": false,
   "expense": null,
   "amount": null,
   "currency": null,
@@ -219,7 +211,6 @@ Reglas del contrato:
 {
   "intent": "create_reminder",
   "movement_type": null,
-  "is_expense": false,
   "expense": null,
   "amount": null,
   "currency": null,
@@ -243,7 +234,6 @@ Reglas del contrato:
 {
   "intent": "out_of_scope",
   "movement_type": null,
-  "is_expense": false,
   "expense": null,
   "amount": null,
   "currency": null,
@@ -263,7 +253,6 @@ Reglas del contrato:
 {
   "intent": "out_of_scope",
   "movement_type": null,
-  "is_expense": false,
   "expense": null,
   "amount": null,
   "currency": null,
