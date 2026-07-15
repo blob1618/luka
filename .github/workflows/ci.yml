@@ -26,12 +26,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           
-      - name: Lint with Ruff
-        run: |
-          ruff check .
-          
       - name: Run tests with Pytest
         env:
           WHATSAPP_VERIFY_TOKEN: "test_verify_token"
         run: |
           pytest -v
+
+      - name: Lint with Ruff
+        run: |
+          ruff check .
