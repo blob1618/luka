@@ -15,6 +15,10 @@ from app.api.whatsapp import send_whatsapp_message  # noqa: E402
 from app.scheduler import start_scheduler  # noqa: E402
 from app.services.finance import FinanceService, MovementRegistrationResult  # noqa: E402
 from app.services.llm import LLMService  # noqa: E402
+from app.services.onboarding import (  # noqa: E402
+    OnboardingDecision,
+    OnboardingService,
+)
 from app.services.reminder import ReminderService, ReminderResult  # noqa: E402
 
 # Cliente Redis global
@@ -193,6 +197,14 @@ def _reminder_creation_reply(
     return "No pude procesar tu solicitud de recordatorio."
 
 
+def _onboarding_invitation_reply(registration_url: str, ttl_minutes: int) -> str:
+    return (
+        "Para usar Luka, primero registrate y vinculá este WhatsApp:\n\n"
+        f"{registration_url}\n\n"
+        f"El enlace vence en {ttl_minutes} minutos."
+    )
+
+
 @app.get("/webhook")
 async def verify_webhook(request: Request):
     """
@@ -248,6 +260,25 @@ async def handle_webhook(request: Request):
 
                     whatsapp_message_id = message.get("id")
                     text_body = message.get("text", {}).get("body", "")
+
+                    onboarding_result = OnboardingService.prepare_whatsapp_message(
+                        sender_phone
+                    )
+                    if onboarding_result.decision == OnboardingDecision.SEND_INVITATION:
+                        reply_text = _onboarding_invitation_reply(
+                            onboarding_result.registration_url,
+                            onboarding_result.invitation_ttl_minutes,
+                        )
+                        await send_whatsapp_message(sender_phone, reply_text)
+                        continue
+                    if onboarding_result.decision == OnboardingDecision.SUPPRESS_RESPONSE:
+                        continue
+                    if onboarding_result.decision == OnboardingDecision.ERROR:
+                        await send_whatsapp_message(
+                            sender_phone,
+                            "No pude verificar tu cuenta. Intentá nuevamente en unos minutos.",
+                        )
+                        continue
 
                     # Track last message time for 24h window
                     _update_ultimo_mensaje(sender_phone)
