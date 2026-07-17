@@ -665,3 +665,113 @@ def test_register_movement_with_category_not_found_no_create(db_context):
     assert result.status == "registered"
     movement = session.query(MovimientoFinanciero).one()
     assert movement.categoria_id is None
+
+
+# ---------------------------------------------------------------------------
+# STK-39 v2: Tests de update_movement_category
+# ---------------------------------------------------------------------------
+
+
+def test_update_movement_category_existing(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    cat1 = create_category(session, user.id, nombre="Comida")
+    cat2 = create_category(session, user.id, nombre="Transporte")
+
+    # Crear movimiento con categoría "Comida"
+    mov = MovimientoFinanciero(
+        usuario_id=user.id,
+        categoria_id=cat1.id,
+        tipo="egreso",
+        cantidad=1500,
+        moneda="ARS",
+        descripcion="almuerzo",
+    )
+    session.add(mov)
+    session.commit()
+    mov_id = str(mov.id)
+
+    result = FinanceService.update_movement_category(
+        movement_id=mov_id,
+        user_id=user.id,
+        new_category_name="Transporte",
+        create_if_missing=False,
+    )
+
+    assert result.status == "updated"
+    session.refresh(mov)
+    assert mov.categoria_id == cat2.id
+
+
+def test_update_movement_category_create_if_missing(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    cat1 = create_category(session, user.id, nombre="Comida")
+
+    mov = MovimientoFinanciero(
+        usuario_id=user.id,
+        categoria_id=cat1.id,
+        tipo="egreso",
+        cantidad=1500,
+        moneda="ARS",
+        descripcion="almuerzo",
+    )
+    session.add(mov)
+    session.commit()
+    mov_id = str(mov.id)
+
+    result = FinanceService.update_movement_category(
+        movement_id=mov_id,
+        user_id=user.id,
+        new_category_name="NuevaCat",
+        create_if_missing=True,
+    )
+
+    assert result.status == "updated"
+    session.refresh(mov)
+    assert mov.categoria_id is not None
+    cat = session.query(Categoria).filter(Categoria.id == mov.categoria_id).first()
+    assert cat.nombre == "NuevaCat"
+
+
+def test_update_movement_category_not_found(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+
+    result = FinanceService.update_movement_category(
+        movement_id=str(uuid.uuid4()),
+        user_id=user.id,
+        new_category_name="Comida",
+    )
+
+    assert result.status == "not_found"
+
+
+def test_update_movement_category_case_insensitive(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    cat1 = create_category(session, user.id, nombre="Comida")
+    cat2 = create_category(session, user.id, nombre="Transporte")
+
+    mov = MovimientoFinanciero(
+        usuario_id=user.id,
+        categoria_id=cat1.id,
+        tipo="egreso",
+        cantidad=1500,
+        moneda="ARS",
+        descripcion="almuerzo",
+    )
+    session.add(mov)
+    session.commit()
+    mov_id = str(mov.id)
+
+    result = FinanceService.update_movement_category(
+        movement_id=mov_id,
+        user_id=user.id,
+        new_category_name="  transporte  ",
+        create_if_missing=False,
+    )
+
+    assert result.status == "updated"
+    session.refresh(mov)
+    assert mov.categoria_id == cat2.id

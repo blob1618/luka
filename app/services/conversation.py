@@ -18,6 +18,7 @@ import redis.asyncio as redis
 # Dataclasses
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PendingMovement:
     """Datos de un movimiento financiero pendiente de confirmación de categoría."""
@@ -67,15 +68,46 @@ class ConversationState:
         return cls(step="none", pending_movement=None)
 
 
+@dataclass
+class LastRegisteredMovement:
+    """
+    Datos del último movimiento registrado, para permitir cambio de categoría
+    sin necesidad de un diálogo de confirmación previo (STK-39 v2).
+    """
+    movement_id: str
+    sender_phone: str
+    movement_type: str
+    amount: Decimal
+    currency: str
+    description: str
+    category_name: str | None
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["amount"] = str(d["amount"])
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "LastRegisteredMovement":
+        raw = dict(d)
+        raw["amount"] = Decimal(str(raw["amount"]))
+        return cls(**raw)
+
+
 # ---------------------------------------------------------------------------
 # Keys y TTL
 # ---------------------------------------------------------------------------
 
 CONVERSATION_TTL = timedelta(minutes=30)
+LAST_MOVEMENT_TTL = timedelta(minutes=60)
 
 
 def _key(whatsapp_id: str) -> str:
     return f"conversation:{whatsapp_id}"
+
+
+def _last_movement_key(whatsapp_id: str) -> str:
+    return f"last_movement:{whatsapp_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -157,3 +189,40 @@ class ConversationService:
         """Obtiene el movimiento pendiente si existe."""
         state = await cls.get_state(whatsapp_id)
         return state.pending_movement
+
+    # ------------------------------------------------------------------
+    # STK-39 v2: Último movimiento registrado (para cambio de categoría)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def set_last_movement(cls, whatsapp_id: str, movement: LastRegisteredMovement) -> None:
+        """Guarda el último movimiento registrado para permitir cambio de categoría."""
+        try:
+            client = await cls._get_client()
+            raw = json.dumps(movement.to_dict())
+            await client.setex(_last_movement_key(whatsapp_id), LAST_MOVEMENT_TTL, raw)
+        except Exception as exc:
+            print(f"[ConversationService] set_last_movement error: {type(exc).__name__}: {exc}")
+
+    @classmethod
+    async def get_last_movement(cls, whatsapp_id: str) -> LastRegisteredMovement | None:
+        """Obtiene el último movimiento registrado."""
+        try:
+            client = await cls._get_client()
+            raw = await client.get(_last_movement_key(whatsapp_id))
+            if raw is None:
+                return None
+            d = json.loads(raw)
+            return LastRegisteredMovement.from_dict(d)
+        except Exception as exc:
+            print(f"[ConversationService] get_last_movement error: {type(exc).__name__}: {exc}")
+            return None
+
+    @classmethod
+    async def clear_last_movement(cls, whatsapp_id: str) -> None:
+        """Elimina el último movimiento registrado."""
+        try:
+            client = await cls._get_client()
+            await client.delete(_last_movement_key(whatsapp_id))
+        except Exception as exc:
+            print(f"[ConversationService] clear_last_movement error: {type(exc).__name__}: {exc}")

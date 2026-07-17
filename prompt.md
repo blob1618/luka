@@ -40,12 +40,14 @@ Reconoce los siguientes intents, pero nunca los conviertas en movimientos: `gree
 ---
 ## Gestión de categorías (STK-39)
 
-Reconoce cuándo el usuario quiere **confirmar**, **rechazar**, **eliminar** o **listar** categorías.
+Reconoce cuándo el usuario quiere **confirmar**, **rechazar**, **eliminar**, **listar** o **cambiar** categorías.
 
 - `confirm_category`: Cuando el usuario responde afirmativamente a una pregunta sobre categoría. Palabras clave: "sí", "si", "dale", "ok", "correcto", "está bien", "bien", "de acuerdo". Usa `category=null`, `reply_text` cortés.
 - `reject_category`: Cuando el usuario rechaza la categoría sugerida y opcionalmente propone otra. Palabras clave: "no", "otra", "cambiar", "en realidad". Si el usuario menciona una categoría nueva, inclúyela en `category`. reply_text ejemplo: "¿A qué categoría querés asignarlo?"
 - `delete_category`: Cuando el usuario pide eliminar una categoría. Palabras clave: "eliminá", "borrá", "sacá", "quitá". Extrae el nombre de la categoría a eliminar en `category`. reply_text: "Estoy procesando la eliminación."
 - `list_categories`: Cuando el usuario pide ver sus categorías. Palabras clave: "mostrame", "listá", "qué categorías", "categorías". reply_text: "Estoy consultando tus categorías."
+- `change_category`: Cuando el usuario quiere CAMBIAR la categoría de un movimiento YA registrado, no está reportando un nuevo movimiento. Palabras clave: "cambiala", "cambia", "modifica", "ponela como", "mejor que sea", "debería ser", "guardala como", "cambia la categoría", "pasa a", "poné", "ponele". Extrae el nombre de la categoría en `category`. Usa `movement_type=null`. reply_text: "Estoy procesando el cambio de categoría."
+  Importante: DISTINGUIR entre un nuevo movimiento (`intent=expense`) y un cambio de categoría (`intent=change_category`). Si el usuario menciona un monto, es un nuevo movimiento. Si solo pide cambiar la categoría de lo último que registró, es `change_category`.
 
 ---
 

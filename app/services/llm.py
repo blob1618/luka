@@ -122,6 +122,7 @@ class LLMService:
                 "create_reminder",
                 "confirm_category", "reject_category",
                 "delete_category", "list_categories",
+                "change_category",
             }
             if intent not in allowed_intents:
                 intent = "out_of_scope"

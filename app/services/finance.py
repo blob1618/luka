@@ -438,6 +438,89 @@ class FinanceService:
             session.close()
 
     @classmethod
+    def update_movement_category(
+        cls,
+        movement_id: str,
+        user_id: Any,
+        new_category_name: str,
+        create_if_missing: bool = True,
+    ) -> MovementRegistrationResult:
+        """
+        Actualiza la categoría de un movimiento ya registrado.
+        Si create_if_missing=True y la categoría no existe, la crea automáticamente.
+        """
+        from uuid import UUID as UuidType
+
+        session = SessionLocal()
+        try:
+            movement = (
+                session.query(MovimientoFinanciero)
+                .filter(MovimientoFinanciero.id == UuidType(movement_id))
+                .filter(MovimientoFinanciero.usuario_id == user_id)
+                .first()
+            )
+            if movement is None:
+                return cls._result("not_found", "movement not found")
+
+            # Resolver categoría
+            category = cls._find_category(session, user_id, new_category_name)
+            if category is not None:
+                movement.categoria_id = category.id
+            elif create_if_missing:
+                # Crear la categoría
+                cat_result = cls.create_category(user_id, new_category_name)
+                if cat_result.status == "created":
+                    session.close()
+                    session = SessionLocal()
+                    movement = (
+                        session.query(MovimientoFinanciero)
+                        .filter(MovimientoFinanciero.id == UuidType(movement_id))
+                        .filter(MovimientoFinanciero.usuario_id == user_id)
+                        .first()
+                    )
+                    if movement is None:
+                        return cls._result("not_found", "movement not found after category creation")
+                    cat_uuid = UuidType(cat_result.category_id)
+                    categoria = (
+                        session.query(Categoria)
+                        .filter(Categoria.id == cat_uuid)
+                        .first()
+                    )
+                    if categoria:
+                        movement.categoria_id = categoria.id
+                else:
+                    # already_exists — buscar el id
+                    session.close()
+                    session = SessionLocal()
+                    movement = (
+                        session.query(MovimientoFinanciero)
+                        .filter(MovimientoFinanciero.id == UuidType(movement_id))
+                        .filter(MovimientoFinanciero.usuario_id == user_id)
+                        .first()
+                    )
+                    if movement is None:
+                        return cls._result("not_found", "movement not found")
+                    category = cls._find_category(session, user_id, new_category_name)
+                    if category:
+                        movement.categoria_id = category.id
+
+            session.commit()
+            return cls._result(
+                "updated",
+                "category updated",
+                movement_id=str(movement.id),
+                user_id=str(movement.usuario_id),
+            )
+
+        except Exception as exc:
+            session.rollback()
+            print(f"[FINANCE] update_movement_category error: {type(exc).__name__}: {exc}")
+            return cls._result("persistence_error", "could not update movement category")
+
+        finally:
+            session.close()
+
+    @classmethod
     def register_movement_with_category(
         cls,
         sender_phone: str,
