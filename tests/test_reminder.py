@@ -371,3 +371,123 @@ class TestReminderServiceCrud:
         )
 
         assert result.status == "invalid_data"
+
+
+class TestReminderFindByTitle:
+    def _setup(self, monkeypatch):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+        monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
+        session = TestSession()
+        user = _seed_user(session, "5491155560000")
+        session.close()
+        return TestSession, user
+
+    def test_find_by_title_exact_match(self, monkeypatch):
+        TestSession, user = self._setup(monkeypatch)
+        session = TestSession()
+        _seed_reminder(session, user, titulo="wifi", dia_del_mes=4)
+        session.close()
+
+        reminder, error = ReminderService.find_by_title("5491155560000", "wifi")
+        assert error is None
+        assert reminder is not None
+        assert reminder.titulo == "wifi"
+
+    def test_find_by_title_partial_match(self, monkeypatch):
+        """'luz' should match 'pago de luz'."""
+        TestSession, user = self._setup(monkeypatch)
+        session = TestSession()
+        _seed_reminder(session, user, titulo="pago de luz", dia_del_mes=10)
+        session.close()
+
+        reminder, error = ReminderService.find_by_title("5491155560000", "luz")
+        assert error is None
+        assert reminder is not None
+        assert reminder.titulo == "pago de luz"
+
+    def test_find_by_title_case_insensitive(self, monkeypatch):
+        TestSession, user = self._setup(monkeypatch)
+        session = TestSession()
+        _seed_reminder(session, user, titulo="Netflix", dia_del_mes=15)
+        session.close()
+
+        reminder, error = ReminderService.find_by_title("5491155560000", "netflix")
+        assert error is None
+        assert reminder is not None
+
+    def test_find_by_title_exact_takes_priority_over_partial(self, monkeypatch):
+        """If 'luz' and 'pago de luz' both exist, exact 'luz' wins."""
+        TestSession, user = self._setup(monkeypatch)
+        session = TestSession()
+        _seed_reminder(session, user, titulo="pago de luz", dia_del_mes=10)
+        _seed_reminder(session, user, titulo="luz", dia_del_mes=5)
+        session.close()
+
+        reminder, error = ReminderService.find_by_title("5491155560000", "luz")
+        assert error is None
+        assert reminder is not None
+        assert reminder.titulo == "luz"
+
+    def test_find_by_title_not_found(self, monkeypatch):
+        TestSession, user = self._setup(monkeypatch)
+
+        reminder, error = ReminderService.find_by_title("5491155560000", "inexistente")
+        assert reminder is None
+        assert error is not None
+        assert error.status == "not_found"
+
+    def test_find_by_title_ignores_eliminated(self, monkeypatch):
+        TestSession, user = self._setup(monkeypatch)
+        session = TestSession()
+        _seed_reminder(session, user, titulo="agua", dia_del_mes=18, estado="eliminado")
+        session.close()
+
+        reminder, error = ReminderService.find_by_title("5491155560000", "agua")
+        assert reminder is None
+        assert error.status == "not_found"
+
+    def test_find_by_title_user_not_found(self, monkeypatch):
+        TestSession, _ = self._setup(monkeypatch)
+
+        reminder, error = ReminderService.find_by_title("0000000000", "luz")
+        assert reminder is None
+        assert error.status == "user_not_found"
+
+
+class TestReminderTitleExists:
+    def test_title_exists_true(self, monkeypatch):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+        session = TestSession()
+        user = _seed_user(session, "5491155561111")
+        _seed_reminder(session, user, titulo="wifi", dia_del_mes=4)
+
+        assert ReminderService.title_exists(session, user.id, "wifi") is True
+        assert ReminderService.title_exists(session, user.id, "WIFI") is True
+        session.close()
+
+    def test_title_exists_false(self, monkeypatch):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+        session = TestSession()
+        user = _seed_user(session, "5491155562222")
+        _seed_reminder(session, user, titulo="wifi", dia_del_mes=4)
+
+        assert ReminderService.title_exists(session, user.id, "internet") is False
+        session.close()
+
+    def test_title_exists_ignores_eliminated(self, monkeypatch):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+        session = TestSession()
+        user = _seed_user(session, "5491155563333")
+        _seed_reminder(session, user, titulo="agua", dia_del_mes=18, estado="eliminado")
+
+        assert ReminderService.title_exists(session, user.id, "agua") is False
+        session.close()
+

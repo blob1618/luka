@@ -387,3 +387,89 @@ class ReminderService:
 
         finally:
             session.close()
+
+    # ------------------------------------------------------------------
+    # Búsqueda por título (match parcial, case-insensitive)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def find_by_title(
+        cls,
+        sender_phone: str,
+        title: str,
+        estados: set[str] | None = None,
+    ) -> tuple["Recordatorio | None", "ReminderResult | None"]:
+        """Busca un recordatorio por coincidencia parcial e insensible a mayúsculas.
+
+        Prioriza coincidencia exacta; si no la hay, usa la primera coincidencia
+        parcial (title in titulo). Busca entre activos y pausados por defecto.
+        """
+        sender_phone = cls._normalize_text(sender_phone)
+        if not sender_phone:
+            return None, cls._result("invalid_data", "sender_phone is required")
+
+        if not title or not str(title).strip():
+            return None, cls._result("invalid_data", "title is required")
+
+        search_term = str(title).strip().lower()
+        allowed_states = estados or {"activo", "pausado"}
+
+        session = SessionLocal()
+        try:
+            user = cls._get_user(session, sender_phone)
+            if user is None:
+                return None, cls._result("user_not_found", "user not found")
+
+            reminders = (
+                session.query(Recordatorio)
+                .filter(
+                    Recordatorio.usuario_id == user.id,
+                    Recordatorio.estado.in_(allowed_states),
+                )
+                .all()
+            )
+
+            # Priorizar coincidencia exacta; luego parcial (contains)
+            exact: Recordatorio | None = None
+            partial: Recordatorio | None = None
+            for r in reminders:
+                titulo_lower = (r.titulo or "").lower()
+                if titulo_lower == search_term:
+                    exact = r
+                    break
+                if search_term in titulo_lower and partial is None:
+                    partial = r
+
+            found = exact or partial
+            if found is None:
+                return None, cls._result(
+                    "not_found",
+                    f"No encontré un recordatorio con ese nombre.",
+                )
+
+            # Expunge para que el caller pueda usar el objeto fuera de la sesión
+            from sqlalchemy.orm import make_transient
+            session.expunge(found)
+            make_transient(found)
+
+            return found, None
+
+        finally:
+            session.close()
+
+    @staticmethod
+    def title_exists(session, user_id, title: str) -> bool:
+        """Retorna True si ya existe un recordatorio no eliminado con ese título (case-insensitive)."""
+        search_term = str(title).strip().lower()
+        reminders = (
+            session.query(Recordatorio)
+            .filter(
+                Recordatorio.usuario_id == user_id,
+                Recordatorio.estado.in_({"activo", "pausado"}),
+            )
+            .all()
+        )
+        return any(
+            (r.titulo or "").lower() == search_term
+            for r in reminders
+        )
