@@ -279,3 +279,28 @@ class ConversationService:
         """Obtiene el recordatorio pendiente de completar."""
         state = await cls.get_state(whatsapp_id)
         return state.pending_reminder
+
+    # ------------------------------------------------------------------
+    # Renombrar recordatorio (multi-turno cuando el título ya existe)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def set_pending_rename(cls, whatsapp_id: str, pending: PendingReminder) -> None:
+        """Fija el estado en 'awaiting_rename' con los datos del recordatorio original."""
+        state = ConversationState(
+            step="awaiting_rename",
+            pending_reminder=pending,
+        )
+        await cls.set_state(whatsapp_id, state)
+
+    @classmethod
+    async def is_awaiting_rename(cls, whatsapp_id: str) -> bool:
+        """Consulta si el usuario está dando un nombre alternativo por título duplicado."""
+        state = await cls.get_state(whatsapp_id)
+        return state.step == "awaiting_rename"
+
+    @classmethod
+    async def get_pending_rename(cls, whatsapp_id: str) -> PendingReminder | None:
+        """Obtiene los datos del recordatorio original a renombrar."""
+        state = await cls.get_state(whatsapp_id)
+        return state.pending_reminder

@@ -458,7 +458,7 @@ async def _register_and_reply_with_hint(
             whatsapp_message_id=whatsapp_message_id,
             original_text=text_body,
             movement_type=extracted_data.get("movement_type", "egreso"),
-            amount=Decimal(str(extracted_data.get("amount", 0))),
+            amount=Decimal(str(extracted_data.get("amount") or 0)),
             currency=extracted_data.get("currency", "ARS"),
             description=_movement_description(extracted_data),
             category_name=category_name,
@@ -486,7 +486,7 @@ async def _register_and_reply_with_hint(
             movement_id=result.movement_id,
             sender_phone=sender_phone,
             movement_type=extracted_data.get("movement_type", "egreso"),
-            amount=Decimal(str(extracted_data.get("amount", 0))),
+            amount=Decimal(str(extracted_data.get("amount") or 0)),
             currency=extracted_data.get("currency", "ARS"),
             description=_movement_description(extracted_data),
             category_name=category_name,
@@ -592,6 +592,38 @@ async def handle_webhook(request: Request):
                     _update_ultimo_mensaje(sender_phone)
 
                     # ----------------------------------------------------------
+                    # Multi-turn: renombrar recordatorio por título duplicado
+                    # ----------------------------------------------------------
+                    is_awaiting_rename = await ConversationService.is_awaiting_rename(sender_phone)
+
+                    if is_awaiting_rename:
+                        pending = await ConversationService.get_pending_rename(sender_phone)
+                        if pending is None:
+                            await ConversationService.clear_state(sender_phone)
+                            reply_text = "Se perdió el contexto. Podés volver a crear el recordatorio."
+                        else:
+                            extracted_data = await LLMService.process_message(text_body)
+                            new_concept = extracted_data.get("reminder_concept")
+                            if not new_concept:
+                                reply_text = "¿Qué nombre querés usar para el recordatorio?"
+                            else:
+                                llm_data = {
+                                    "reminder_concept": new_concept,
+                                    "reminder_day": pending.reminder_day,
+                                    "reminder_amount": float(pending.reminder_amount) if pending.reminder_amount else None,
+                                    "reminder_currency": pending.reminder_currency,
+                                }
+                                reminder_result = ReminderService.create_reminder(
+                                    sender_phone=sender_phone,
+                                    llm_result=llm_data,
+                                )
+                                if reminder_result.status != "duplicate_title":
+                                    await ConversationService.clear_state(sender_phone)
+                                reply_text = _reminder_creation_reply(reminder_result, llm_data)
+                        await send_whatsapp_message(sender_phone, reply_text)
+                        continue
+
+                    # ----------------------------------------------------------
                     # Multi-turn: si estamos esperando datos de recordatorio
                     # ----------------------------------------------------------
                     is_awaiting_reminder = await ConversationService.is_awaiting_reminder_data(sender_phone)
@@ -680,6 +712,19 @@ async def handle_webhook(request: Request):
                                 sender_phone=sender_phone,
                                 llm_result=extracted_data,
                             )
+                            if reminder_result.status == "duplicate_title":
+                                from app.services.conversation import PendingReminder
+                                pending_r = PendingReminder(
+                                    sender_phone=sender_phone,
+                                    reminder_concept=None,
+                                    reminder_day=extracted_data.get("reminder_day"),
+                                    reminder_amount=(
+                                        Decimal(str(extracted_data["reminder_amount"]))
+                                        if extracted_data.get("reminder_amount") else None
+                                    ),
+                                    reminder_currency=extracted_data.get("reminder_currency") or "ARS",
+                                )
+                                await ConversationService.set_pending_rename(sender_phone, pending_r)
                             print(
                                 "[REMINDER_CREATION]",
                                 f"user={sender_phone}",
@@ -771,7 +816,7 @@ async def handle_webhook(request: Request):
                                     whatsapp_message_id=whatsapp_message_id,
                                     original_text=text_body,
                                     movement_type=extracted_data.get("movement_type", "egreso"),
-                                    amount=Decimal(str(extracted_data.get("amount", 0))),
+                                    amount=Decimal(str(extracted_data.get("amount") or 0)),
                                     currency=extracted_data.get("currency", "ARS"),
                                     description=_movement_description(extracted_data),
                                     inferred_category=category_name,
@@ -821,6 +866,19 @@ async def handle_webhook(request: Request):
                                     sender_phone=sender_phone,
                                     llm_result=extracted_data,
                                 )
+                                if reminder_result.status == "duplicate_title":
+                                    from app.services.conversation import PendingReminder
+                                    pending_r = PendingReminder(
+                                        sender_phone=sender_phone,
+                                        reminder_concept=None,
+                                        reminder_day=extracted_data.get("reminder_day"),
+                                        reminder_amount=(
+                                            Decimal(str(extracted_data["reminder_amount"]))
+                                            if extracted_data.get("reminder_amount") else None
+                                        ),
+                                        reminder_currency=extracted_data.get("reminder_currency") or "ARS",
+                                    )
+                                    await ConversationService.set_pending_rename(sender_phone, pending_r)
                                 print(
                                     "[REMINDER_CREATION]",
                                     f"user={sender_phone}",
