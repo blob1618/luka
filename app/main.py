@@ -257,7 +257,7 @@ def _reminder_update_reply(result: ReminderResult) -> str:
 def _reminder_state_reply(result: ReminderResult, action: str) -> str:
     if result.status == action:
         if action == "paused":
-            return "✅ Dale, paué ese recordatorio. Aviáme si querés reactivarlo."
+            return "✅ Dale, pausé ese recordatorio. Aviáme si querés reactivarlo."
         return "✅ Listo, reactivé el recordatorio."
     if result.status == "user_not_found":
         return "No encontré una cuenta vinculada a este WhatsApp."

@@ -345,7 +345,7 @@ def test_handle_webhook_pause_reminder_routes_to_reminder_service():
 
     assert response.status_code == 200
     pause_reminder.assert_called_once()
-    assert send_message.await_args.args[1] == "✅ Dale, paué ese recordatorio. Aviáme si querés reactivarlo."
+    assert send_message.await_args.args[1] == "✅ Dale, pasué ese recordatorio. Aviáme si querés reactivarlo."
 
 
 def test_handle_webhook_update_reminder_routes_to_reminder_service():
