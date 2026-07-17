@@ -1,5 +1,8 @@
 import calendar
+import os
 from datetime import datetime, date, timedelta, timezone
+from decimal import Decimal, InvalidOperation
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -9,6 +12,35 @@ from app.models.database import Recordatorio, SessionLocal, Usuario
 scheduler = AsyncIOScheduler()
 
 WHATSAPP_WINDOW_HOURS = 24
+ARGENTINA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
+
+
+def _to_aware_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _build_due_datetime(due_date: date) -> datetime:
+    return datetime(
+        due_date.year,
+        due_date.month,
+        due_date.day,
+        tzinfo=ARGENTINA_TZ,
+    )
+
+
+def _format_amount(amount) -> str:
+    try:
+        decimal_amount = Decimal(str(amount))
+    except (InvalidOperation, ValueError):
+        return str(amount)
+
+    if decimal_amount == decimal_amount.to_integral_value():
+        return str(decimal_amount.quantize(Decimal("1")))
+    return str(decimal_amount.normalize())
 
 
 def _alert_day(dia_del_mes: int, reference_date: date) -> date:
@@ -63,8 +95,11 @@ async def check_reminders(_now: datetime | None = None):
     Args:
         _now: Injectable datetime for testing. Uses UTC now if not provided.
     """
-    now = _now or datetime.now(timezone.utc)
-    today = now.date() if isinstance(now, datetime) else now
+    now_utc = _to_aware_utc(_now or datetime.now(timezone.utc))
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    local_now = now_utc.astimezone(ARGENTINA_TZ)
+    today = local_now.date()
 
     session = SessionLocal()
     try:
@@ -112,13 +147,15 @@ async def check_reminders(_now: datetime | None = None):
                     effective_due_day = min(recordatorio.dia_del_mes, max_day_next)
                     due_date = date(next_year, next_month, effective_due_day)
 
-                # Determine if due date is within 24h
-                due_datetime = datetime(
-                    due_date.year, due_date.month, due_date.day,
-                    tzinfo=timezone.utc,
-                )
-                hours_until_due = (due_datetime - now).total_seconds() / 3600
+                due_datetime = _build_due_datetime(due_date)
+                hours_until_due = (due_datetime - local_now).total_seconds() / 3600
                 vence_manana = hours_until_due <= 24
+
+                last_message_at = _to_aware_utc(usuario.ultimo_mensaje_en)
+                window_open = (
+                    last_message_at is not None
+                    and last_message_at + timedelta(hours=WHATSAPP_WINDOW_HOURS) > now_utc
+                )
 
                 message = _build_message(
                     titulo=recordatorio.titulo,
@@ -128,7 +165,31 @@ async def check_reminders(_now: datetime | None = None):
                     fecha_vencimiento=due_date,
                 )
 
-                await send_whatsapp_message(usuario.whatsapp_id, message)
+                if window_open:
+                    sent = await send_whatsapp_message(usuario.whatsapp_id, message)
+                else:
+                    template_name = os.getenv("WHATSAPP_REMINDER_TEMPLATE_NAME")
+                    if not template_name:
+                        print(
+                            f"[REMINDER_TEMPLATE_MISSING] user={usuario.whatsapp_id} "
+                            f"reminder={recordatorio.id}"
+                        )
+                        continue
+
+                    due_date_text = due_date.strftime("%d/%m")
+                    amount_text = (
+                        _format_amount(recordatorio.monto)
+                        if recordatorio.monto is not None
+                        else "no especificado"
+                    )
+                    sent = await send_whatsapp_message(
+                        usuario.whatsapp_id,
+                        template_name=template_name,
+                        template_parameters=[recordatorio.titulo, due_date_text, amount_text],
+                    )
+
+                if not sent:
+                    continue
 
                 # Mark as sent
                 recordatorio.ultimo_aviso_enviado = today
