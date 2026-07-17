@@ -45,15 +45,40 @@ class PendingMovement:
 
 
 @dataclass
+class PendingReminder:
+    """Datos parciales de un recordatorio pendiente de completar (multi-turno)."""
+    sender_phone: str
+    reminder_concept: str | None
+    reminder_day: int | None
+    reminder_amount: Decimal | None
+    reminder_currency: str = "ARS"
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["reminder_amount"] = str(d["reminder_amount"]) if d["reminder_amount"] is not None else None
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PendingReminder":
+        raw = dict(d)
+        if raw.get("reminder_amount") is not None:
+            raw["reminder_amount"] = Decimal(str(raw["reminder_amount"]))
+        return cls(**raw)
+
+
+@dataclass
 class ConversationState:
     """Estado de conversación de un usuario."""
-    step: str                     # "none" | "awaiting_category_confirmation" | "awaiting_category_name"
+    # step puede ser: "none" | "awaiting_category_confirmation" | "awaiting_reminder_data"
+    step: str
     pending_movement: PendingMovement | None = None
+    pending_reminder: PendingReminder | None = None
 
     def to_dict(self) -> dict:
         return {
             "step": self.step,
             "pending_movement": self.pending_movement.to_dict() if self.pending_movement else None,
+            "pending_reminder": self.pending_reminder.to_dict() if self.pending_reminder else None,
         }
 
     @classmethod
@@ -61,11 +86,14 @@ class ConversationState:
         pm = None
         if d.get("pending_movement"):
             pm = PendingMovement.from_dict(d["pending_movement"])
-        return cls(step=d.get("step", "none"), pending_movement=pm)
+        pr = None
+        if d.get("pending_reminder"):
+            pr = PendingReminder.from_dict(d["pending_reminder"])
+        return cls(step=d.get("step", "none"), pending_movement=pm, pending_reminder=pr)
 
     @classmethod
     def empty(cls) -> "ConversationState":
-        return cls(step="none", pending_movement=None)
+        return cls(step="none", pending_movement=None, pending_reminder=None)
 
 
 @dataclass
@@ -226,3 +254,28 @@ class ConversationService:
             await client.delete(_last_movement_key(whatsapp_id))
         except Exception as exc:
             print(f"[ConversationService] clear_last_movement error: {type(exc).__name__}: {exc}")
+
+    # ------------------------------------------------------------------
+    # Recordatorio pendiente (multi-turno cuando falta el día)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def set_pending_reminder(cls, whatsapp_id: str, pending: PendingReminder) -> None:
+        """Fija el estado en 'awaiting_reminder_data' con el recordatorio incompleto."""
+        state = ConversationState(
+            step="awaiting_reminder_data",
+            pending_reminder=pending,
+        )
+        await cls.set_state(whatsapp_id, state)
+
+    @classmethod
+    async def is_awaiting_reminder_data(cls, whatsapp_id: str) -> bool:
+        """Consulta si el usuario está en medio de crear un recordatorio (falta info)."""
+        state = await cls.get_state(whatsapp_id)
+        return state.step == "awaiting_reminder_data"
+
+    @classmethod
+    async def get_pending_reminder(cls, whatsapp_id: str) -> PendingReminder | None:
+        """Obtiene el recordatorio pendiente de completar."""
+        state = await cls.get_state(whatsapp_id)
+        return state.pending_reminder
