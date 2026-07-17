@@ -602,8 +602,7 @@ async def handle_webhook(request: Request):
                             await ConversationService.clear_state(sender_phone)
                             reply_text = "Se perdió el contexto. Podés volver a crear el recordatorio."
                         else:
-                            extracted_data = await LLMService.process_message(text_body)
-                            new_concept = extracted_data.get("reminder_concept")
+                            new_concept = text_body.strip()
                             if not new_concept:
                                 reply_text = "¿Qué nombre querés usar para el recordatorio?"
                             else:
