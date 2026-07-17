@@ -609,3 +609,53 @@ class TestReminderDuplicateTitle:
             llm_result={"reminder_concept": "luz", "reminder_day": 15},
         )
         assert result.status == "created"
+
+
+class TestConceptValidation:
+    """Tests for _validate_reminder_concept and _extract_concept_from_text."""
+
+    def setup_method(self):
+        from app.main import _validate_reminder_concept, _extract_concept_from_text
+        self.validate = _validate_reminder_concept
+        self.extract = _extract_concept_from_text
+
+    def test_valid_short_concept_passes_through(self):
+        assert self.validate("luz", "recordatorio de luz") == "luz"
+
+    def test_valid_multiword_concept_passes_through(self):
+        assert self.validate("seguro de vida", "recordatorio seguro de vida") == "seguro de vida"
+
+    def test_full_text_concept_is_extracted(self):
+        result = self.validate(
+            "hola quiero que crees un recordatorio para el wifi el dia 5",
+            "hola quiero que crees un recordatorio para el wifi el dia 5",
+        )
+        assert result == "wifi"
+
+    def test_none_concept_extracted_from_text(self):
+        result = self.validate(None, "recordatorio de luz")
+        assert result == "luz"
+
+    def test_empty_concept_extracted_from_text(self):
+        result = self.validate("", "recordatorio de internet el 10")
+        assert result == "internet"
+
+    def test_long_concept_with_stopwords_is_extracted(self):
+        result = self.validate(
+            "quiero crear un recordatorio para internet",
+            "quiero crear un recordatorio para internet",
+        )
+        assert result == "internet"
+
+    def test_extract_from_avisame_pattern(self):
+        assert self.extract("avisame del cable") == "cable"
+
+    def test_extract_from_recordame_pattern(self):
+        assert self.extract("recordame pagar la luz") == "luz"
+
+    def test_extract_from_crear_pattern(self):
+        result = self.extract("hola quiero crear un recordatorio para el wifi el dia 5")
+        assert result == "wifi"
+
+    def test_extract_no_keyword_returns_none(self):
+        assert self.extract("hola como estas") is None

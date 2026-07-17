@@ -1,4 +1,5 @@
 import os
+import re
 from contextlib import asynccontextmanager
 from decimal import Decimal, InvalidOperation
 
@@ -189,6 +190,33 @@ def _update_ultimo_mensaje(sender_phone: str) -> None:
 
 def _is_create_reminder(extracted_data: dict) -> bool:
     return extracted_data.get("intent") == "create_reminder"
+
+
+_CONCEPT_EXTRACTOR = re.compile(
+    r'(?:recordatorio|avis(?:ar|ame?)|record(?:ar|ame?))\s+'
+    r'(?:(?:de|para|el|la|los|las|un|una|del|al|pagar|crear|hacer)\s+)*'
+    r'(\w[\w\s]{0,30}?\w)'
+    r'(?=\s+(?:el\s+)?(?:d[ií]a|\d)|$)',
+    re.IGNORECASE,
+)
+
+
+def _extract_concept_from_text(text: str) -> str | None:
+    m = _CONCEPT_EXTRACTOR.search(text)
+    if m:
+        candidate = m.group(1).strip()
+        if 2 <= len(candidate) <= 32:
+            return candidate
+    return None
+
+
+def _validate_reminder_concept(llm_concept: str | None, text_body: str) -> str | None:
+    if not llm_concept:
+        return _extract_concept_from_text(text_body)
+    cleaned = llm_concept.strip()
+    if len(cleaned) <= 40 and len(cleaned.split()) <= 3:
+        return cleaned
+    return _extract_concept_from_text(text_body)
 
 
 def _reminder_creation_reply(
@@ -690,12 +718,16 @@ async def handle_webhook(request: Request):
                         )
 
                     elif _is_create_reminder(extracted_data):
-                        # Chequear si falta el día (multi-turno)
-                        if not extracted_data.get("reminder_day"):
+                        validated_concept = _validate_reminder_concept(
+                            extracted_data.get("reminder_concept"), text_body
+                        )
+                        if validated_concept is None:
+                            reply_text = "¿Qué nombre querés ponerle al recordatorio?"
+                        elif not extracted_data.get("reminder_day"):
                             from app.services.conversation import PendingReminder
                             pending_r = PendingReminder(
                                 sender_phone=sender_phone,
-                                reminder_concept=extracted_data.get("reminder_concept"),
+                                reminder_concept=validated_concept,
                                 reminder_day=None,
                                 reminder_amount=(
                                     Decimal(str(extracted_data["reminder_amount"]))
@@ -704,9 +736,10 @@ async def handle_webhook(request: Request):
                                 reminder_currency=extracted_data.get("reminder_currency") or "ARS",
                             )
                             await ConversationService.set_pending_reminder(sender_phone, pending_r)
-                            concept = extracted_data.get("reminder_concept") or "ese pago"
-                            reply_text = f"¿Qué día del mes querés que te avise de {concept}?"
+                            display_concept = validated_concept or "ese pago"
+                            reply_text = f"¿Qué día del mes querés que te avise de {display_concept}?"
                         else:
+                            extracted_data["reminder_concept"] = validated_concept
                             reminder_result = ReminderService.create_reminder(
                                 sender_phone=sender_phone,
                                 llm_result=extracted_data,
@@ -844,12 +877,16 @@ async def handle_webhook(request: Request):
                             # Estos intents no deberían llegar acá sin pending, pero por si acaso
                             reply_text = "No encontré un movimiento pendiente para confirmar."
                         elif _is_create_reminder(extracted_data):
-                            # Chequear si falta el día (multi-turno)
-                            if not extracted_data.get("reminder_day"):
+                            validated_concept = _validate_reminder_concept(
+                                extracted_data.get("reminder_concept"), text_body
+                            )
+                            if validated_concept is None:
+                                reply_text = "¿Qué nombre querés ponerle al recordatorio?"
+                            elif not extracted_data.get("reminder_day"):
                                 from app.services.conversation import PendingReminder
                                 pending_r = PendingReminder(
                                     sender_phone=sender_phone,
-                                    reminder_concept=extracted_data.get("reminder_concept"),
+                                    reminder_concept=validated_concept,
                                     reminder_day=None,
                                     reminder_amount=(
                                         Decimal(str(extracted_data["reminder_amount"]))
@@ -858,9 +895,10 @@ async def handle_webhook(request: Request):
                                     reminder_currency=extracted_data.get("reminder_currency") or "ARS",
                                 )
                                 await ConversationService.set_pending_reminder(sender_phone, pending_r)
-                                concept = extracted_data.get("reminder_concept") or "ese pago"
-                                reply_text = f"¿Qué día del mes querés que te avise de {concept}?"
+                                display_concept = validated_concept or "ese pago"
+                                reply_text = f"¿Qué día del mes querés que te avise de {display_concept}?"
                             else:
+                                extracted_data["reminder_concept"] = validated_concept
                                 reminder_result = ReminderService.create_reminder(
                                     sender_phone=sender_phone,
                                     llm_result=extracted_data,
