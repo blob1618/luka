@@ -120,6 +120,9 @@ class LLMService:
                 "expense", "budget_query", "reminder",
                 "expense_summary", "greeting", "out_of_scope",
                 "create_reminder",
+                "list_reminders", "update_reminder",
+                "pause_reminder", "activate_reminder",
+                "delete_reminder",
                 "confirm_category", "reject_category",
                 "delete_category", "list_categories",
             }
@@ -156,6 +159,10 @@ class LLMService:
             reminder_currency = parsed.get("reminder_currency")
             if reminder_currency is not None:
                 reminder_currency = str(reminder_currency).strip().upper() or None
+                
+            reminder_id = parsed.get("reminder_id")
+            if reminder_id is not None:
+                reminder_id = str(reminder_id).strip() or None
 
             return {
                 "intent": intent,
@@ -171,6 +178,7 @@ class LLMService:
                 "reminder_day": reminder_day,
                 "reminder_amount": reminder_amount,
                 "reminder_currency": reminder_currency,
+                "reminder_id": reminder_id,
                 "reply_text": str(parsed.get("reply_text", "")),
             }
 
@@ -190,6 +198,7 @@ class LLMService:
                 "reminder_day": None,
                 "reminder_amount": None,
                 "reminder_currency": None,
+                "reminder_id": None,
                 "reply_text": (
                     "No he podido analizar tu mensaje en este momento. "
                     "Si deseas, puedes reenviarlo en unos instantes."

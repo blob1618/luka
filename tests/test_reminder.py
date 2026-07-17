@@ -12,7 +12,7 @@ from app.services.reminder import ReminderService
 def _make_session():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine)()
+    return sessionmaker(bind=engine, expire_on_commit=False)()
 
 
 class TestRecordatorioModel:
@@ -95,11 +95,24 @@ def _seed_user(session, whatsapp_id="5491155551234"):
     return user
 
 
+def _seed_reminder(session, user, titulo, dia_del_mes, monto=None, estado="activo"):
+    rec = Recordatorio(
+        usuario_id=user.id,
+        titulo=titulo,
+        dia_del_mes=dia_del_mes,
+        monto=monto,
+        estado=estado,
+    )
+    session.add(rec)
+    session.commit()
+    return rec
+
+
 class TestReminderServiceCreate:
     def test_create_reminder_success(self, monkeypatch):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
-        TestSession = sessionmaker(bind=engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
         monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
 
         session = TestSession()
@@ -131,7 +144,7 @@ class TestReminderServiceCreate:
     def test_create_reminder_with_monto(self, monkeypatch):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
-        TestSession = sessionmaker(bind=engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
         monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
 
         session = TestSession()
@@ -159,7 +172,7 @@ class TestReminderServiceCreate:
     def test_create_reminder_user_not_found(self, monkeypatch):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
-        TestSession = sessionmaker(bind=engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
         monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
 
         result = ReminderService.create_reminder(
@@ -176,7 +189,7 @@ class TestReminderServiceCreate:
     def test_create_reminder_missing_concept(self, monkeypatch):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
-        TestSession = sessionmaker(bind=engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
         monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
 
         session = TestSession()
@@ -194,10 +207,110 @@ class TestReminderServiceCreate:
 
         assert result.status == "invalid_data"
 
+
+class TestReminderServiceCrud:
+    def test_list_reminders_only_active_sorted(self, monkeypatch):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+        monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
+
+        session = TestSession()
+        user = _seed_user(session, "5491155557777")
+        _seed_reminder(session, user, titulo="Internet", dia_del_mes=20)
+        _seed_reminder(session, user, titulo="Luz", dia_del_mes=10)
+        _seed_reminder(session, user, titulo="Viejo", dia_del_mes=5, estado="pausado")
+        session.close()
+
+        result = ReminderService.list_reminders(user.id)
+
+        assert result.status == "ok"
+        assert [item["titulo"] for item in result.reminders] == ["Luz", "Internet"]
+        assert all(item["estado"] == "activo" for item in result.reminders)
+
+    def test_update_reminder_success(self, monkeypatch):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+        monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
+
+        session = TestSession()
+        user = _seed_user(session, "5491155558888")
+        reminder = _seed_reminder(session, user, titulo="Luz", dia_del_mes=10, monto=Decimal("1500"))
+        session.close()
+
+        result = ReminderService.update_reminder(
+            sender_phone="5491155558888",
+            reminder_id=str(reminder.id),
+            llm_result={
+                "reminder_concept": "Internet",
+                "reminder_day": 12,
+                "reminder_amount": 2000,
+                "reminder_currency": "ars",
+            },
+        )
+
+        assert result.status == "updated"
+        session = TestSession()
+        saved = session.query(Recordatorio).filter(Recordatorio.id == reminder.id).first()
+        assert saved.titulo == "Internet"
+        assert saved.dia_del_mes == 12
+        assert saved.monto == Decimal("2000")
+        assert saved.moneda == "ARS"
+        session.close()
+
+    def test_update_reminder_rejects_other_user(self, monkeypatch):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+        monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
+
+        session = TestSession()
+        owner = _seed_user(session, "5491155551111")
+        other = _seed_user(session, "5491155552222")
+        reminder = _seed_reminder(session, owner, titulo="Luz", dia_del_mes=10)
+        session.close()
+
+        result = ReminderService.update_reminder(
+            sender_phone="5491155552222",
+            reminder_id=str(reminder.id),
+            llm_result={
+                "reminder_concept": "Internet",
+                "reminder_day": 12,
+            },
+        )
+
+        assert result.status in {"not_owned", "not_found"}
+
+    def test_pause_activate_and_delete_reminder(self, monkeypatch):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+        monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
+
+        session = TestSession()
+        user = _seed_user(session, "5491155553333")
+        reminder = _seed_reminder(session, user, titulo="Internet", dia_del_mes=20)
+        session.close()
+
+        paused = ReminderService.pause_reminder("5491155553333", str(reminder.id))
+        assert paused.status == "paused"
+
+        activated = ReminderService.activate_reminder("5491155553333", str(reminder.id))
+        assert activated.status == "activated"
+
+        deleted = ReminderService.delete_reminder("5491155553333", str(reminder.id))
+        assert deleted.status == "deleted"
+
+        session = TestSession()
+        saved = session.query(Recordatorio).filter(Recordatorio.id == reminder.id).first()
+        assert saved.estado == "eliminado"
+        session.close()
+
     def test_create_reminder_missing_day(self, monkeypatch):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
-        TestSession = sessionmaker(bind=engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
         monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
 
         session = TestSession()
@@ -219,7 +332,7 @@ class TestReminderServiceCreate:
     def test_create_reminder_day_out_of_range(self, monkeypatch):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
-        TestSession = sessionmaker(bind=engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
         monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
 
         session = TestSession()
@@ -240,7 +353,7 @@ class TestReminderServiceCreate:
     def test_create_reminder_negative_monto(self, monkeypatch):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(engine)
-        TestSession = sessionmaker(bind=engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
         monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
 
         session = TestSession()

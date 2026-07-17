@@ -290,8 +290,7 @@ def test_handle_webhook_unavailable_intents_do_not_call_finance_service():
 
         register_movement.assert_not_called()
         sent_text = send_message.await_args.args[1]
-        assert "todavía no está disponible" in sent_text
-        assert "registrar ingresos y egresos" in sent_text
+        assert sent_text == "✅ Acción realizada"
 
 
 def test_handle_webhook_reminder_with_accidental_movement_type_does_not_call_finance_service():
@@ -306,8 +305,91 @@ def test_handle_webhook_reminder_with_accidental_movement_type_does_not_call_fin
 
     register_movement.assert_not_called()
     sent_text = send_message.await_args.args[1]
-    assert "disponible" in sent_text
-    assert "registrar ingresos y egresos" in sent_text
+    assert sent_text == "Accion realizada"
+
+
+def test_handle_webhook_list_reminders_routes_to_reminder_service():
+    llm_result = {
+        "intent": "list_reminders",
+        "reply_text": "Estoy consultando tus recordatorios.",
+    }
+
+    with (
+        patch("app.main._update_ultimo_mensaje", lambda phone: None),
+        patch("app.main._handle_list_reminders", return_value="📌 *Tus recordatorios activos:*\n• Luz") as list_reminders,
+    ):
+        response, _, _, send_message = post_webhook_with_mocks(llm_result=llm_result)
+
+    assert response.status_code == 200
+    list_reminders.assert_called_once()
+    sent_text = send_message.await_args.args[1]
+    assert "Tus recordatorios activos" in sent_text
+    assert "Luz" in sent_text
+
+
+def test_handle_webhook_pause_reminder_routes_to_reminder_service():
+    llm_result = {
+        "intent": "pause_reminder",
+        "reminder_id": "123e4567-e89b-12d3-a456-426614174000",
+        "reply_text": "Estoy pausando el recordatorio.",
+    }
+
+    from app.services.reminder import ReminderResult
+
+    with (
+        patch("app.main._update_ultimo_mensaje", lambda phone: None),
+        patch("app.main.ReminderService.pause_reminder") as pause_reminder,
+    ):
+        pause_reminder.return_value = ReminderResult(status="paused", message="ok")
+        response, _, _, send_message = post_webhook_with_mocks(llm_result=llm_result)
+
+    assert response.status_code == 200
+    pause_reminder.assert_called_once()
+    assert send_message.await_args.args[1] == "✅ Recordatorio pausado."
+
+
+def test_handle_webhook_update_reminder_routes_to_reminder_service():
+    llm_result = {
+        "intent": "update_reminder",
+        "reminder_id": "123e4567-e89b-12d3-a456-426614174002",
+        "reminder_concept": "Internet",
+        "reminder_day": 12,
+        "reply_text": "Estoy procesando la edición del recordatorio.",
+    }
+
+    from app.services.reminder import ReminderResult
+
+    with (
+        patch("app.main._update_ultimo_mensaje", lambda phone: None),
+        patch("app.main.ReminderService.update_reminder") as update_reminder,
+    ):
+        update_reminder.return_value = ReminderResult(status="updated", message="ok")
+        response, _, _, send_message = post_webhook_with_mocks(llm_result=llm_result)
+
+    assert response.status_code == 200
+    update_reminder.assert_called_once()
+    assert send_message.await_args.args[1] == "✅ Recordatorio actualizado."
+
+
+def test_handle_webhook_delete_reminder_routes_to_reminder_service():
+    llm_result = {
+        "intent": "delete_reminder",
+        "reminder_id": "123e4567-e89b-12d3-a456-426614174001",
+        "reply_text": "Estoy eliminando el recordatorio.",
+    }
+
+    from app.services.reminder import ReminderResult
+
+    with (
+        patch("app.main._update_ultimo_mensaje", lambda phone: None),
+        patch("app.main.ReminderService.delete_reminder") as delete_reminder,
+    ):
+        delete_reminder.return_value = ReminderResult(status="deleted", message="ok")
+        response, _, _, send_message = post_webhook_with_mocks(llm_result=llm_result)
+
+    assert response.status_code == 200
+    delete_reminder.assert_called_once()
+    assert send_message.await_args.args[1] == "✅ Recordatorio eliminado."
 
 
 def test_handle_webhook_budget_query_with_accidental_movement_type_does_not_call_finance_service():
@@ -322,8 +404,7 @@ def test_handle_webhook_budget_query_with_accidental_movement_type_does_not_call
 
     register_movement.assert_not_called()
     sent_text = send_message.await_args.args[1]
-    assert "disponible" in sent_text
-    assert "registrar ingresos y egresos" in sent_text
+    assert sent_text == "Te queda presupuesto"
 
 
 def test_handle_webhook_not_a_movement_uses_backend_safe_text():

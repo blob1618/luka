@@ -19,7 +19,7 @@ from app.services.onboarding import (  # noqa: E402
     OnboardingDecision,
     OnboardingService,
 )
-from app.services.reminder import ReminderService, ReminderResult  # noqa: E402
+from app.services.reminder import ReminderListResult, ReminderResult, ReminderService  # noqa: E402
 from app.services.conversation import (  # noqa: E402
     ConversationService,
     PendingMovement,
@@ -167,12 +167,6 @@ def _safe_non_stk35_reply(extracted_data: dict) -> str:
     if intent in {"confirm_category", "reject_category", "delete_category", "list_categories"}:
         return reply_text
 
-    if intent in {"reminder", "budget_query", "expense_summary"}:
-        return (
-            "Esta función todavía no está disponible en esta versión. "
-            "Por ahora puedo ayudarte a registrar ingresos y egresos por texto."
-        )
-
     return reply_text or "No pude interpretar tu mensaje. ¿Podés reformularlo?"
 
 
@@ -215,6 +209,87 @@ def _reminder_creation_reply(
         return "Hubo un problema. Intentá nuevamente en unos minutos."
 
     return "No pude procesar tu solicitud de recordatorio."
+
+
+def _reminder_list_reply(result: ReminderListResult) -> str:
+    reminders = result.reminders or []
+    if not reminders:
+        return "No tenés recordatorios activos."
+
+    lines = ["📌 *Tus recordatorios activos:*"]
+    for reminder in reminders:
+        amount = reminder.get("monto")
+        currency = str(reminder.get("moneda") or "ARS").upper()
+        amount_text = ""
+        if amount is not None:
+            amount_text = f" | Monto: ${_format_amount(amount)} {currency}"
+        lines.append(
+            f"• {reminder.get('titulo')} - día {reminder.get('dia_del_mes')} - id {reminder.get('id')}"
+            f"{amount_text}"
+        )
+    return "\n".join(lines)
+
+
+def _reminder_update_reply(result: ReminderResult) -> str:
+    if result.status == "updated":
+        return "✅ Recordatorio actualizado."
+    if result.status == "user_not_found":
+        return "No encontré una cuenta vinculada a este WhatsApp."
+    if result.status in {"not_found", "not_owned"}:
+        return "No encontré ese recordatorio para tu cuenta."
+    if result.status == "invalid_data":
+        return result.message
+    if result.status == "persistence_error":
+        return "Hubo un problema. Intentá nuevamente en unos minutos."
+    return "No pude procesar la edición del recordatorio."
+
+
+def _reminder_state_reply(result: ReminderResult, action: str) -> str:
+    if result.status == action:
+        if action == "paused":
+            return "✅ Recordatorio pausado."
+        return "✅ Recordatorio activado."
+    if result.status == "user_not_found":
+        return "No encontré una cuenta vinculada a este WhatsApp."
+    if result.status in {"not_found", "not_owned"}:
+        return "No encontré ese recordatorio para tu cuenta."
+    if result.status == "invalid_data":
+        return result.message
+    if result.status == "persistence_error":
+        return "Hubo un problema. Intentá nuevamente en unos minutos."
+    return "No pude procesar el cambio de estado del recordatorio."
+
+
+def _reminder_delete_reply(result: ReminderResult) -> str:
+    if result.status == "deleted":
+        return "✅ Recordatorio eliminado."
+    if result.status == "user_not_found":
+        return "No encontré una cuenta vinculada a este WhatsApp."
+    if result.status in {"not_found", "not_owned"}:
+        return "No encontré ese recordatorio para tu cuenta."
+    if result.status == "invalid_data":
+        return result.message
+    if result.status == "persistence_error":
+        return "Hubo un problema. Intentá nuevamente en unos minutos."
+    return "No pude procesar la eliminación del recordatorio."
+
+
+async def _handle_list_reminders(sender_phone: str) -> str:
+    from app.models.database import SessionLocal, Usuario
+
+    session = SessionLocal()
+    try:
+        user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
+        if user is None:
+            return "No encontré tu cuenta."
+
+        result = ReminderService.list_reminders(user.id)
+        return _reminder_list_reply(result)
+    except Exception as exc:
+        print(f"[REMINDER_LIST] Error: {type(exc).__name__}: {exc}")
+        return "Hubo un problema consultando tus recordatorios."
+    finally:
+        session.close()
 
 
 def _onboarding_invitation_reply(registration_url: str, ttl_minutes: int) -> str:
@@ -506,6 +581,33 @@ async def handle_webhook(request: Request):
                             reply_text = await _handle_delete_category(sender_phone, extracted_data)
                         elif intent == "list_categories":
                             reply_text = await _handle_list_categories(sender_phone)
+                        elif intent == "list_reminders":
+                            reply_text = await _handle_list_reminders(sender_phone)
+                        elif intent == "update_reminder":
+                            reminder_result = ReminderService.update_reminder(
+                                sender_phone=sender_phone,
+                                reminder_id=extracted_data.get("reminder_id"),
+                                llm_result=extracted_data,
+                            )
+                            reply_text = _reminder_update_reply(reminder_result)
+                        elif intent == "pause_reminder":
+                            reminder_result = ReminderService.pause_reminder(
+                                sender_phone=sender_phone,
+                                reminder_id=extracted_data.get("reminder_id"),
+                            )
+                            reply_text = _reminder_state_reply(reminder_result, "paused")
+                        elif intent == "activate_reminder":
+                            reminder_result = ReminderService.activate_reminder(
+                                sender_phone=sender_phone,
+                                reminder_id=extracted_data.get("reminder_id"),
+                            )
+                            reply_text = _reminder_state_reply(reminder_result, "activated")
+                        elif intent == "delete_reminder":
+                            reminder_result = ReminderService.delete_reminder(
+                                sender_phone=sender_phone,
+                                reminder_id=extracted_data.get("reminder_id"),
+                            )
+                            reply_text = _reminder_delete_reply(reminder_result)
                         elif _is_financial_movement(extracted_data):
                             # Movimiento financiero: ver si tiene categoría inferida
                             category_name = extracted_data.get("category")
