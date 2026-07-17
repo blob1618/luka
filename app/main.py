@@ -621,11 +621,6 @@ async def handle_webhook(request: Request):
                         reply_text = _reminder_creation_reply(reminder_result, extracted_data)
 
                     else:
-<<<<<<< HEAD
-                        intent_str = extracted_data.get("intent", "out_of_scope")
-                        print(f"[{str(intent_str).upper()}] User {sender_phone}: {text_body}")
-                        reply_text = _safe_non_stk35_reply(extracted_data)
-=======
                         # No hay conversación pendiente, procesar normalmente
                         extracted_data = await LLMService.process_message(text_body)
                         intent = extracted_data.get("intent", "out_of_scope")
@@ -718,7 +713,6 @@ async def handle_webhook(request: Request):
                             intent_str = extracted_data.get("intent", "out_of_scope")
                             print(f"[{str(intent_str).upper()}] User {sender_phone}: {text_body}")
                             reply_text = _safe_non_stk35_reply(extracted_data)
->>>>>>> STK-41-recordatorios-de-pagos-recurrentes-fijos
 
                     await send_whatsapp_message(sender_phone, reply_text)
 
