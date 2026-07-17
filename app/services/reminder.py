@@ -253,6 +253,28 @@ class ReminderService:
             session.close()
 
     @classmethod
+    def list_reminders_all(cls, user_id) -> ReminderListResult:
+        """Lista recordatorios activos y pausados (no eliminados) ordenados por día."""
+        session = SessionLocal()
+        try:
+            reminders = (
+                session.query(Recordatorio)
+                .filter(
+                    Recordatorio.usuario_id == user_id,
+                    Recordatorio.estado.in_({"activo", "pausado"}),
+                )
+                .order_by(Recordatorio.dia_del_mes.asc())
+                .all()
+            )
+            return ReminderListResult(
+                status="ok",
+                message="reminders listed",
+                reminders=[cls._reminder_to_dict(reminder) for reminder in reminders],
+            )
+        finally:
+            session.close()
+
+    @classmethod
     def update_reminder(
         cls,
         sender_phone: str,

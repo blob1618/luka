@@ -345,7 +345,7 @@ def test_handle_webhook_pause_reminder_routes_to_reminder_service():
 
     assert response.status_code == 200
     pause_reminder.assert_called_once()
-    assert send_message.await_args.args[1] == "✅ Recordatorio pausado."
+    assert send_message.await_args.args[1] == "✅ Dale, paué ese recordatorio. Aviáme si querés reactivarlo."
 
 
 def test_handle_webhook_update_reminder_routes_to_reminder_service():
@@ -368,7 +368,7 @@ def test_handle_webhook_update_reminder_routes_to_reminder_service():
 
     assert response.status_code == 200
     update_reminder.assert_called_once()
-    assert send_message.await_args.args[1] == "✅ Recordatorio actualizado."
+    assert send_message.await_args.args[1] == "✅ Listo, actualicé el recordatorio."
 
 
 def test_handle_webhook_delete_reminder_routes_to_reminder_service():
@@ -389,7 +389,7 @@ def test_handle_webhook_delete_reminder_routes_to_reminder_service():
 
     assert response.status_code == 200
     delete_reminder.assert_called_once()
-    assert send_message.await_args.args[1] == "✅ Recordatorio eliminado."
+    assert send_message.await_args.args[1] == "✅ Listo, eliminé el recordatorio."
 
 
 def test_handle_webhook_budget_query_with_accidental_movement_type_does_not_call_finance_service():

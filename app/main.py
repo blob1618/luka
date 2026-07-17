@@ -198,7 +198,15 @@ def _reminder_creation_reply(
     if result.status == "created":
         concept = extracted_data.get("reminder_concept") or "tu pago"
         day = extracted_data.get("reminder_day")
-        return f"✅ Listo, te voy a recordar {concept} el día {day} de cada mes."
+        amount = extracted_data.get("reminder_amount")
+        currency = str(extracted_data.get("reminder_currency") or "ARS").upper()
+        amount_text = ""
+        if amount:
+            amount_text = f" (${_format_amount(amount)} {currency})"
+        return f"✅ Dale, te aviso que pagués {concept}{amount_text} el día {day} de cada mes."
+
+    if result.status == "duplicate_title":
+        return result.message
 
     if result.status == "user_not_found":
         return "No encontré una cuenta vinculada a este WhatsApp."
@@ -215,29 +223,30 @@ def _reminder_creation_reply(
 def _reminder_list_reply(result: ReminderListResult) -> str:
     reminders = result.reminders or []
     if not reminders:
-        return "No tenés recordatorios activos."
+        return "No tenés recordatorios activos por ahora."
 
-    lines = ["📌 *Tus recordatorios activos:*"]
+    lines = ["📌 *Tus recordatorios:*"]
     for reminder in reminders:
         amount = reminder.get("monto")
         currency = str(reminder.get("moneda") or "ARS").upper()
         amount_text = ""
         if amount is not None:
-            amount_text = f" | Monto: ${_format_amount(amount)} {currency}"
+            amount_text = f" — ${_format_amount(amount)} {currency}"
+        estado = reminder.get("estado", "activo")
+        estado_icon = "⏸️" if estado == "pausado" else ""
         lines.append(
-            f"• {reminder.get('titulo')} - día {reminder.get('dia_del_mes')} - id {reminder.get('id')}"
-            f"{amount_text}"
+            f"{estado_icon}• *{reminder.get('titulo')}* — día {reminder.get('dia_del_mes')}{amount_text}"
         )
     return "\n".join(lines)
 
 
 def _reminder_update_reply(result: ReminderResult) -> str:
     if result.status == "updated":
-        return "✅ Recordatorio actualizado."
+        return "✅ Listo, actualicé el recordatorio."
     if result.status == "user_not_found":
         return "No encontré una cuenta vinculada a este WhatsApp."
     if result.status in {"not_found", "not_owned"}:
-        return "No encontré ese recordatorio para tu cuenta."
+        return "No encontré ese recordatorio. Chequeá el nombre con *mis recordatorios*."
     if result.status == "invalid_data":
         return result.message
     if result.status == "persistence_error":
@@ -248,12 +257,12 @@ def _reminder_update_reply(result: ReminderResult) -> str:
 def _reminder_state_reply(result: ReminderResult, action: str) -> str:
     if result.status == action:
         if action == "paused":
-            return "✅ Recordatorio pausado."
-        return "✅ Recordatorio activado."
+            return "✅ Dale, paué ese recordatorio. Aviáme si querés reactivarlo."
+        return "✅ Listo, reactivé el recordatorio."
     if result.status == "user_not_found":
         return "No encontré una cuenta vinculada a este WhatsApp."
     if result.status in {"not_found", "not_owned"}:
-        return "No encontré ese recordatorio para tu cuenta."
+        return "No encontré ese recordatorio. Chequeá el nombre con *mis recordatorios*."
     if result.status == "invalid_data":
         return result.message
     if result.status == "persistence_error":
@@ -263,11 +272,11 @@ def _reminder_state_reply(result: ReminderResult, action: str) -> str:
 
 def _reminder_delete_reply(result: ReminderResult) -> str:
     if result.status == "deleted":
-        return "✅ Recordatorio eliminado."
+        return "✅ Listo, eliminé el recordatorio."
     if result.status == "user_not_found":
         return "No encontré una cuenta vinculada a este WhatsApp."
     if result.status in {"not_found", "not_owned"}:
-        return "No encontré ese recordatorio para tu cuenta."
+        return "No encontré ese recordatorio. Chequeá el nombre con *mis recordatorios*."
     if result.status == "invalid_data":
         return result.message
     if result.status == "persistence_error":
@@ -284,7 +293,7 @@ async def _handle_list_reminders(sender_phone: str) -> str:
         if user is None:
             return "No encontré tu cuenta."
 
-        result = ReminderService.list_reminders(user.id)
+        result = ReminderService.list_reminders_all(user.id)
         return _reminder_list_reply(result)
     except Exception as exc:
         print(f"[REMINDER_LIST] Error: {type(exc).__name__}: {exc}")
@@ -582,6 +591,47 @@ async def handle_webhook(request: Request):
                     # Track last message time for 24h window
                     _update_ultimo_mensaje(sender_phone)
 
+                    # ----------------------------------------------------------
+                    # Multi-turn: si estamos esperando datos de recordatorio
+                    # ----------------------------------------------------------
+                    is_awaiting_reminder = await ConversationService.is_awaiting_reminder_data(sender_phone)
+
+                    if is_awaiting_reminder:
+                        pending = await ConversationService.get_pending_reminder(sender_phone)
+                        if pending is None:
+                            await ConversationService.clear_state(sender_phone)
+                            reply_text = "Se perdió el contexto. Podés volver a crear el recordatorio."
+                        else:
+                            # Extraer día del texto usando LLM
+                            extracted_data = await LLMService.process_message(text_body)
+                            new_day = extracted_data.get("reminder_day")
+                            # Fallback: extraer número del texto
+                            if new_day is None:
+                                import re
+                                match = re.search(r'\b(\d{1,2})\b', text_body)
+                                if match:
+                                    candidate = int(match.group(1))
+                                    if 1 <= candidate <= 31:
+                                        new_day = candidate
+
+                            if new_day is None:
+                                reply_text = "Necesito un día del mes (1 al 31). ¿Qué día vence?"
+                            else:
+                                llm_data = {
+                                    "reminder_concept": pending.reminder_concept,
+                                    "reminder_day": new_day,
+                                    "reminder_amount": float(pending.reminder_amount) if pending.reminder_amount else None,
+                                    "reminder_currency": pending.reminder_currency,
+                                }
+                                reminder_result = ReminderService.create_reminder(
+                                    sender_phone=sender_phone,
+                                    llm_result=llm_data,
+                                )
+                                await ConversationService.clear_state(sender_phone)
+                                reply_text = _reminder_creation_reply(reminder_result, llm_data)
+                        await send_whatsapp_message(sender_phone, reply_text)
+                        continue
+
                     # Procesar mensaje con LLM
                     extracted_data = await LLMService.process_message(text_body)
                     intent = extracted_data.get("intent", "out_of_scope")
@@ -609,16 +659,37 @@ async def handle_webhook(request: Request):
                         )
 
                     elif _is_create_reminder(extracted_data):
-                        reminder_result = ReminderService.create_reminder(
-                            sender_phone=sender_phone,
-                            llm_result=extracted_data,
-                        )
-                        print(
-                            "[REMINDER_CREATION]",
-                            f"user={sender_phone}",
-                            f"status={reminder_result.status}",
-                        )
-                        reply_text = _reminder_creation_reply(reminder_result, extracted_data)
+                        # Chequear si falta el día (multi-turno)
+                        if not extracted_data.get("reminder_day"):
+                            from app.services.conversation import PendingReminder
+                            pending_r = PendingReminder(
+                                sender_phone=sender_phone,
+                                reminder_concept=extracted_data.get("reminder_concept"),
+                                reminder_day=None,
+                                reminder_amount=(
+                                    Decimal(str(extracted_data["reminder_amount"]))
+                                    if extracted_data.get("reminder_amount") else None
+                                ),
+                                reminder_currency=extracted_data.get("reminder_currency") or "ARS",
+                            )
+                            await ConversationService.set_pending_reminder(sender_phone, pending_r)
+                            concept = extracted_data.get("reminder_concept") or "ese pago"
+                            reply_text = f"¿Qué día del mes querés que te avise de {concept}?"
+                        else:
+                            reminder_result = ReminderService.create_reminder(
+                                sender_phone=sender_phone,
+                                llm_result=extracted_data,
+                            )
+                            print(
+                                "[REMINDER_CREATION]",
+                                f"user={sender_phone}",
+                                f"status={reminder_result.status}",
+                            )
+                            reply_text = _reminder_creation_reply(reminder_result, extracted_data)
+
+                    elif intent in ("greeting", "out_of_scope", "reminder", "budget_query", "expense_summary"):
+                        print(f"[{intent.upper()}] User {sender_phone}: {text_body}")
+                        reply_text = _safe_non_stk35_reply(extracted_data)
 
                     else:
                         # No hay conversación pendiente, procesar normalmente
@@ -635,29 +706,59 @@ async def handle_webhook(request: Request):
                         elif intent == "list_reminders":
                             reply_text = await _handle_list_reminders(sender_phone)
                         elif intent == "update_reminder":
+                            reminder_concept = extracted_data.get("reminder_concept")
+                            reminder_id = extracted_data.get("reminder_id") or ""
+                            if reminder_concept:
+                                try:
+                                    found = ReminderService.find_by_title(sender_phone, reminder_concept)
+                                    if found:
+                                        reminder_id = str(found[0].id or "")
+                                except Exception:
+                                    pass
                             reminder_result = ReminderService.update_reminder(
                                 sender_phone=sender_phone,
-                                reminder_id=extracted_data.get("reminder_id"),
+                                reminder_id=reminder_id,
                                 llm_result=extracted_data,
                             )
                             reply_text = _reminder_update_reply(reminder_result)
                         elif intent == "pause_reminder":
-                            reminder_result = ReminderService.pause_reminder(
-                                sender_phone=sender_phone,
-                                reminder_id=extracted_data.get("reminder_id"),
-                            )
+                            concept = extracted_data.get("reminder_concept")
+                            if concept:
+                                reminder_result = ReminderService.pause_by_title(
+                                    sender_phone=sender_phone,
+                                    title=concept,
+                                )
+                            else:
+                                reminder_result = ReminderService.pause_reminder(
+                                    sender_phone=sender_phone,
+                                    reminder_id=extracted_data.get("reminder_id") or "",
+                                )
                             reply_text = _reminder_state_reply(reminder_result, "paused")
                         elif intent == "activate_reminder":
-                            reminder_result = ReminderService.activate_reminder(
-                                sender_phone=sender_phone,
-                                reminder_id=extracted_data.get("reminder_id"),
-                            )
+                            concept = extracted_data.get("reminder_concept")
+                            if concept:
+                                reminder_result = ReminderService.activate_by_title(
+                                    sender_phone=sender_phone,
+                                    title=concept,
+                                )
+                            else:
+                                reminder_result = ReminderService.activate_reminder(
+                                    sender_phone=sender_phone,
+                                    reminder_id=extracted_data.get("reminder_id") or "",
+                                )
                             reply_text = _reminder_state_reply(reminder_result, "activated")
                         elif intent == "delete_reminder":
-                            reminder_result = ReminderService.delete_reminder(
-                                sender_phone=sender_phone,
-                                reminder_id=extracted_data.get("reminder_id"),
-                            )
+                            concept = extracted_data.get("reminder_concept")
+                            if concept:
+                                reminder_result = ReminderService.delete_by_title(
+                                    sender_phone=sender_phone,
+                                    title=concept,
+                                )
+                            else:
+                                reminder_result = ReminderService.delete_reminder(
+                                    sender_phone=sender_phone,
+                                    reminder_id=extracted_data.get("reminder_id") or "",
+                                )
                             reply_text = _reminder_delete_reply(reminder_result)
                         elif _is_financial_movement(extracted_data):
                             # Movimiento financiero: ver si tiene categoría inferida
@@ -699,16 +800,33 @@ async def handle_webhook(request: Request):
                             # Estos intents no deberían llegar acá sin pending, pero por si acaso
                             reply_text = "No encontré un movimiento pendiente para confirmar."
                         elif _is_create_reminder(extracted_data):
-                            reminder_result = ReminderService.create_reminder(
-                                sender_phone=sender_phone,
-                                llm_result=extracted_data,
-                            )
-                            print(
-                                "[REMINDER_CREATION]",
-                                f"user={sender_phone}",
-                                f"status={reminder_result.status}",
-                            )
-                            reply_text = _reminder_creation_reply(reminder_result, extracted_data)
+                            # Chequear si falta el día (multi-turno)
+                            if not extracted_data.get("reminder_day"):
+                                from app.services.conversation import PendingReminder
+                                pending_r = PendingReminder(
+                                    sender_phone=sender_phone,
+                                    reminder_concept=extracted_data.get("reminder_concept"),
+                                    reminder_day=None,
+                                    reminder_amount=(
+                                        Decimal(str(extracted_data["reminder_amount"]))
+                                        if extracted_data.get("reminder_amount") else None
+                                    ),
+                                    reminder_currency=extracted_data.get("reminder_currency") or "ARS",
+                                )
+                                await ConversationService.set_pending_reminder(sender_phone, pending_r)
+                                concept = extracted_data.get("reminder_concept") or "ese pago"
+                                reply_text = f"¿Qué día del mes querés que te avise de {concept}?"
+                            else:
+                                reminder_result = ReminderService.create_reminder(
+                                    sender_phone=sender_phone,
+                                    llm_result=extracted_data,
+                                )
+                                print(
+                                    "[REMINDER_CREATION]",
+                                    f"user={sender_phone}",
+                                    f"status={reminder_result.status}",
+                                )
+                                reply_text = _reminder_creation_reply(reminder_result, extracted_data)
                         else:
                             intent_str = extracted_data.get("intent", "out_of_scope")
                             print(f"[{str(intent_str).upper()}] User {sender_phone}: {text_body}")

@@ -77,14 +77,14 @@ def _alert_day(dia_del_mes: int, reference_date: date) -> date:
 def _build_message(titulo: str, monto, moneda: str, vence_manana: bool, fecha_vencimiento: date) -> str:
     """Build the reminder WhatsApp message."""
     if vence_manana:
-        msg = f"🔔 Recordatorio: mañana vence tu pago de {titulo}."
+        msg = f"🔔 ¡Ey! Mañana vence tu pago de *{titulo}*."
     else:
         fecha_str = fecha_vencimiento.strftime("%d/%m")
-        msg = f"🔔 Recordatorio: tu pago de {titulo} vence el {fecha_str}."
+        msg = f"🔔 Tu pago de *{titulo}* vence el {fecha_str}."
 
     if monto is not None:
         moneda = moneda or "ARS"
-        msg += f"\nMonto: ${monto} {moneda}"
+        msg += f"\n💰 Monto: ${_format_amount(monto)} {moneda}"
 
     return msg
 
