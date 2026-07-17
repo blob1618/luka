@@ -152,7 +152,7 @@ def test_handle_webhook_registered_movement_confirms_after_persistence():
     )
     send_message.assert_awaited_once_with(
         "12345",
-        "✅ Registré tu egreso: supermercado por $5000 ARS.",
+        "✅ Registré tu egreso: supermercado por $5000 ARS.\n¿No estás de acuerdo con la categoría? Indicame y lo cambiamos.",
     )
 
 
