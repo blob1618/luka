@@ -197,6 +197,12 @@ class ReminderService:
             if user is None:
                 return cls._result("user_not_found", "user not found")
 
+            if cls.title_exists(session, user.id, validated_data["concept"]):
+                return cls._result(
+                    "duplicate_title",
+                    f"Ya tenés un recordatorio llamado \"{validated_data['concept']}\". ¿Querés usar otro nombre?",
+                )
+
             recordatorio = Recordatorio(
                 usuario_id=user.id,
                 titulo=validated_data["concept"],
@@ -473,3 +479,35 @@ class ReminderService:
             (r.titulo or "").lower() == search_term
             for r in reminders
         )
+
+    # ------------------------------------------------------------------
+    # Operaciones por título (sin UUID visible para el usuario)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def pause_by_title(cls, sender_phone: str, title: str) -> ReminderResult:
+        """Pausa el recordatorio que coincide con el título (parcial, case-insensitive)."""
+        reminder, error = cls.find_by_title(sender_phone, title, estados={"activo"})
+        if error is not None or reminder is None:
+            if error and error.status == "not_found":
+                return cls._result("not_found", "No encontré un recordatorio activo con ese nombre.")
+            return error or cls._result("not_found", "No encontré un recordatorio activo con ese nombre.")
+        return cls.pause_reminder(sender_phone, str(reminder.id))
+
+    @classmethod
+    def activate_by_title(cls, sender_phone: str, title: str) -> ReminderResult:
+        """Activa el recordatorio pausado que coincide con el título."""
+        reminder, error = cls.find_by_title(sender_phone, title, estados={"pausado"})
+        if error is not None or reminder is None:
+            if error and error.status == "not_found":
+                return cls._result("not_found", "No encontré un recordatorio pausado con ese nombre.")
+            return error or cls._result("not_found", "No encontré un recordatorio pausado con ese nombre.")
+        return cls.activate_reminder(sender_phone, str(reminder.id))
+
+    @classmethod
+    def delete_by_title(cls, sender_phone: str, title: str) -> ReminderResult:
+        """Elimina (soft-delete) el recordatorio que coincide con el título."""
+        reminder, error = cls.find_by_title(sender_phone, title)
+        if error is not None or reminder is None:
+            return error or cls._result("not_found", "No encontré un recordatorio con ese nombre.")
+        return cls.delete_reminder(sender_phone, str(reminder.id))

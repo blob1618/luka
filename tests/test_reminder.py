@@ -491,3 +491,121 @@ class TestReminderTitleExists:
         assert ReminderService.title_exists(session, user.id, "agua") is False
         session.close()
 
+
+class TestReminderByTitle:
+    def _setup(self, monkeypatch):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+        monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
+        session = TestSession()
+        user = _seed_user(session, "5491155570000")
+        session.close()
+        return TestSession, user
+
+    def test_pause_by_title(self, monkeypatch):
+        TestSession, user = self._setup(monkeypatch)
+        session = TestSession()
+        _seed_reminder(session, user, titulo="wifi", dia_del_mes=4)
+        session.close()
+
+        result = ReminderService.pause_by_title("5491155570000", "wifi")
+        assert result.status == "paused"
+
+        session = TestSession()
+        rec = session.query(Recordatorio).first()
+        assert rec.estado == "pausado"
+        session.close()
+
+    def test_activate_by_title(self, monkeypatch):
+        TestSession, user = self._setup(monkeypatch)
+        session = TestSession()
+        _seed_reminder(session, user, titulo="netflix", dia_del_mes=15, estado="pausado")
+        session.close()
+
+        result = ReminderService.activate_by_title("5491155570000", "netflix")
+        assert result.status == "activated"
+
+    def test_delete_by_title(self, monkeypatch):
+        TestSession, user = self._setup(monkeypatch)
+        session = TestSession()
+        _seed_reminder(session, user, titulo="luz", dia_del_mes=10)
+        session.close()
+
+        result = ReminderService.delete_by_title("5491155570000", "luz")
+        assert result.status == "deleted"
+
+    def test_delete_by_title_not_found(self, monkeypatch):
+        TestSession, user = self._setup(monkeypatch)
+
+        result = ReminderService.delete_by_title("5491155570000", "inexistente")
+        assert result.status == "not_found"
+
+    def test_pause_by_title_partial_match(self, monkeypatch):
+        """'luz' matches 'pago de luz'."""
+        TestSession, user = self._setup(monkeypatch)
+        session = TestSession()
+        _seed_reminder(session, user, titulo="pago de luz", dia_del_mes=10)
+        session.close()
+
+        result = ReminderService.pause_by_title("5491155570000", "luz")
+        assert result.status == "paused"
+
+
+class TestReminderDuplicateTitle:
+    def test_create_duplicate_title_rejected(self, monkeypatch):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+        monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
+
+        session = TestSession()
+        user = _seed_user(session, "5491155580000")
+        _seed_reminder(session, user, titulo="wifi", dia_del_mes=4)
+        session.close()
+
+        result = ReminderService.create_reminder(
+            sender_phone="5491155580000",
+            llm_result={"reminder_concept": "wifi", "reminder_day": 10},
+        )
+        assert result.status == "duplicate_title"
+        assert "wifi" in result.message
+
+    def test_create_duplicate_title_case_insensitive(self, monkeypatch):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+        monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
+
+        session = TestSession()
+        user = _seed_user(session, "5491155581111")
+        _seed_reminder(session, user, titulo="Luz", dia_del_mes=10)
+        session.close()
+
+        result = ReminderService.create_reminder(
+            sender_phone="5491155581111",
+            llm_result={"reminder_concept": "LUZ", "reminder_day": 15},
+        )
+        assert result.status == "duplicate_title"
+
+    def test_create_after_delete_allowed(self, monkeypatch):
+        """After soft-deleting a reminder, the same title can be reused."""
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+        monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
+
+        session = TestSession()
+        user = _seed_user(session, "5491155582222")
+        reminder = _seed_reminder(session, user, titulo="luz", dia_del_mes=10)
+        session.close()
+
+        # Soft-delete
+        ReminderService.delete_reminder("5491155582222", str(reminder.id))
+
+        # Should now be allowed
+        result = ReminderService.create_reminder(
+            sender_phone="5491155582222",
+            llm_result={"reminder_concept": "luz", "reminder_day": 15},
+        )
+        assert result.status == "created"
