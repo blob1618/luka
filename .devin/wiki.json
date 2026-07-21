@@ -1,0 +1,251 @@
+{
+  "repo_notes": [
+    {
+      "content": ""
+    }
+  ],
+  "pages": [
+    {
+      "title": "LUKA: WhatsApp Financial Assistant — Overview",
+      "purpose": "High-level introduction to LUKA, its purpose, architecture, and key concepts. Links to child pages for setup and core data flow.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Getting Started & Configuration",
+      "purpose": "Step-by-step guide for local development setup, environment variable configuration, and running the application for the first time.",
+      "parent": "LUKA: WhatsApp Financial Assistant — Overview",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "End-to-End Request Flow",
+      "purpose": "Detailed walkthrough of how a WhatsApp message travels through the system: from Meta webhook ingestion, through LLM extraction, to database persistence and reply dispatch.",
+      "parent": "LUKA: WhatsApp Financial Assistant — Overview",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Core Application Layer",
+      "purpose": "Overview of the FastAPI application, webhook handling, and outbound messaging. Links to child pages covering the webhook endpoints and the WhatsApp API client.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "FastAPI Application & Webhook Endpoints",
+      "purpose": "Detailed documentation of app/main.py: the FastAPI lifespan handler, Redis initialization, GET /webhook verification, POST /webhook event processing, and health-check endpoints.",
+      "parent": "Core Application Layer",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "WhatsApp API Client",
+      "purpose": "Documentation of app/api/whatsapp.py: the send_whatsapp_message function, Meta Graph API v18.0 integration, Bearer token authentication, and Argentina phone-number normalization logic.",
+      "parent": "Core Application Layer",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "LLM Service Layer",
+      "purpose": "Overview of how LUKA uses Large Language Models to extract structured expense data from natural language. Links to child pages covering the facade, provider abstraction, and concrete provider implementations.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "LLMService Facade",
+      "purpose": "Detailed documentation of app/services/llm.py: the LLMService class, process_text_expense pipeline, system instruction / literary-Spanish persona, JSON schema enforcement, amount validation, singleton provider lifecycle, and placeholder audio/image methods.",
+      "parent": "LLM Service Layer",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "LLM Provider Abstraction",
+      "purpose": "Documentation of the provider pattern: LLMProvider abstract base class (generate_json interface, _safe_json_loads utility), the create_provider factory function, and the _PROVIDERS registry in app/services/llm_providers/.",
+      "parent": "LLM Service Layer",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Gemini & Mistral Provider Implementations",
+      "purpose": "Detailed documentation of GeminiProvider (app/services/llm_providers/gemini.py) and MistralProvider (app/services/llm_providers/mistral.py): API endpoints, model fallback lists, retry/backoff logic, response parsing, and environment variable requirements.",
+      "parent": "LLM Service Layer",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Finance Service & Background Scheduler",
+      "purpose": "Overview of the financial business logic and background task system. Links to child pages covering the FinanceService and the APScheduler-based reminder system.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Finance Service",
+      "purpose": "Documentation of app/services/finance.py: check_dynamic_budget (dynamic reallocation logic, Espiral de Culpa mitigation), generate_expense_chart (matplotlib pie-chart pipeline, BytesIO PNG output), and the stateless FinanceService design.",
+      "parent": "Finance Service & Background Scheduler",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Background Scheduler",
+      "purpose": "Documentation of app/scheduler.py: AsyncIOScheduler initialization via start_scheduler(), the check_reminders job (24-hour interval), WhatsApp template message dispatch, and integration with the FastAPI lifespan handler.",
+      "parent": "Finance Service & Background Scheduler",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Data Models & Persistence",
+      "purpose": "Documentation of the SQLAlchemy ORM schema in app/models/database.py: User, Expense, Budget, and Reminder models, the engine/SessionLocal setup, SQLite vs. PostgreSQL switching, and Supabase integration.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Database Schema & ORM Models",
+      "purpose": "Detailed reference for each SQLAlchemy model: field definitions, foreign key relationships, nullable columns, UTC timestamping, and the is_active integer-boolean pattern used in Reminder.",
+      "parent": "Data Models & Persistence",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Database Configuration & Supabase Setup",
+      "purpose": "Guide to configuring DATABASE_URL for local SQLite and production PostgreSQL/Supabase, the psycopg3 driver adaptation, pool_pre_ping, check_same_thread, schema initialization commands, and PgBouncer recommendations.",
+      "parent": "Data Models & Persistence",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Testing",
+      "purpose": "Overview of the test suite structure and strategy. Links to child pages covering webhook tests, LLM service tests, and finance service tests.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Webhook & API Tests",
+      "purpose": "Documentation of tests/test_webhook.py: FastAPI TestClient usage, GET /webhook hub-challenge verification tests, POST /webhook payload parsing tests, mocking of LLMService and send_whatsapp_message, and the WHATSAPP_VERIFY_TOKEN test fixture.",
+      "parent": "Testing",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "LLM Service Tests",
+      "purpose": "Documentation of tests/test_llm.py: testing process_text_expense, mocking httpx.AsyncClient for Gemini and Mistral API responses, create_provider factory tests, _safe_json_loads edge cases, and error-handling assertions (RuntimeError, ValueError, JSONDecodeError).",
+      "parent": "Testing",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Finance Service Tests",
+      "purpose": "Documentation of tests/test_finance.py: check_dynamic_budget assertions, generate_expense_chart PNG validation (magic-byte check, non-empty bytes), and the test data categories (Comida, Transporte, Ocio).",
+      "parent": "Testing",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Deployment & Infrastructure",
+      "purpose": "Overview of how LUKA is containerized and deployed. Links to child pages covering the Dockerfile, Render configuration, and CI/CD pipeline.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Docker Containerization",
+      "purpose": "Documentation of the Dockerfile: python:3.11-slim base image, layer-caching optimization for requirements.txt, PYTHONUNBUFFERED, gunicorn + UvicornWorker startup command, dynamic PORT binding, and the /home/app workdir.",
+      "parent": "Deployment & Infrastructure",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Render Deployment Guide",
+      "purpose": "Step-by-step guide for deploying to Render: Web Service vs. Background Worker choice, render.yaml IaC configuration, environment variable injection (DATABASE_URL, WHATSAPP_VERIFY_TOKEN), gunicorn worker count, and APScheduler persistence requirements.",
+      "parent": "Deployment & Infrastructure",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "CI/CD Pipeline",
+      "purpose": "Documentation of .github/workflows/ci.yml: trigger conditions (push/PR to main), Python 3.11 environment setup with pip caching, ruff linting gate, pytest execution, and WHATSAPP_VERIFY_TOKEN injection for test isolation.",
+      "parent": "Deployment & Infrastructure",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    },
+    {
+      "title": "Glossary",
+      "purpose": "Definitions of all codebase-specific terms, abbreviations, domain concepts, and Spanish-language identifiers that an onboarding engineer needs to know, with code pointers.",
+      "page_notes": [
+        {
+          "content": ""
+        }
+      ]
+    }
+  ]
+}
