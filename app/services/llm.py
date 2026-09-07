@@ -157,7 +157,7 @@ class LLMService:
             intent = str(parsed.get("intent", "out_of_scope")).strip().lower()
             allowed_intents = {
                 "expense", "budget_query", "reminder",
-                "expense_summary", "greeting", "out_of_scope",
+                "expense_summary", "query_movements", "greeting", "out_of_scope",
                 "create_reminder",
                 "list_reminders", "update_reminder",
                 "pause_reminder", "activate_reminder",
@@ -174,6 +174,21 @@ class LLMService:
             amount = cls._normalize_amount(parsed.get("amount"))
 
             movement_type = cls._normalize_movement_type(parsed, intent)
+
+            # Normalizar campos de query_movements (STK-149)
+            date_from = parsed.get("date_from")
+            if date_from is not None:
+                date_from = str(date_from).strip() or None
+
+            date_to = parsed.get("date_to")
+            if date_to is not None:
+                date_to = str(date_to).strip() or None
+
+            query_limit = parsed.get("limit")
+            try:
+                query_limit = int(query_limit) if query_limit is not None else None
+            except (TypeError, ValueError):
+                query_limit = None
 
             # Normalizar campos de create_reminder
             reminder_day = parsed.get("reminder_day")
@@ -251,6 +266,9 @@ class LLMService:
                 "movement_type": movement_type,
                 "category": parsed.get("category"),
                 "description": parsed.get("description"),
+                "date_from": date_from,
+                "date_to": date_to,
+                "limit": query_limit,
                 "reminder_title": parsed.get("reminder_title"),
                 "reminder_date": parsed.get("reminder_date"),
                 "reminder_concept": reminder_concept,
@@ -277,6 +295,9 @@ class LLMService:
                 "movement_type": None,
                 "category": None,
                 "description": None,
+                "date_from": None,
+                "date_to": None,
+                "limit": None,
                 "reminder_title": None,
                 "reminder_date": None,
                 "reminder_concept": None,

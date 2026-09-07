@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.sql import func
@@ -26,8 +27,16 @@ from app.services.conversation import (
 )
 from app.services.budget import BudgetEvaluation, BudgetService, BudgetStatus
 from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkService
-from app.services.finance import FinanceService, MovementRegistrationResult
-from app.services.intent_routing import normalize_limit_intent, references_recent_limit
+from app.services.finance import (
+    FinanceService,
+    MovementQueryResult,
+    MovementRegistrationResult,
+)
+from app.services.intent_routing import (
+    normalize_limit_intent,
+    normalize_movement_query_intent,
+    references_recent_limit,
+)
 from app.services.limit import LimitService
 from app.services.llm import LLMService
 from app.services.llm_contract import resolve_relative_date
@@ -1257,6 +1266,127 @@ async def _handle_budget_query(sender_phone: str, extracted_data: dict) -> str:
     return "\n\n".join(_budget_status_reply(status) for status in result.budgets)
 
 
+def _format_query_movements_reply(
+    result: MovementQueryResult,
+    filters: dict[str, Any],
+) -> str:
+    if result.status == "user_not_found":
+        return "No encontré una cuenta vinculada a este WhatsApp."
+    if result.status == "invalid_filters":
+        return f"No pude realizar la consulta: {result.message}."
+    if result.status != "ok":
+        return "Hubo un problema al consultar tus movimientos. Por favor, intentá nuevamente."
+
+    if not result.movements:
+        movement_type = filters.get("movement_type")
+        category_name = filters.get("category_name")
+        if movement_type == "egreso" and category_name:
+            return f"No encontré gastos registrados en la categoría *{category_name}*."
+        elif movement_type == "egreso":
+            return "No encontré gastos registrados."
+        elif movement_type == "ingreso" and category_name:
+            return f"No encontré ingresos registrados en la categoría *{category_name}*."
+        elif movement_type == "ingreso":
+            return "No encontré ingresos registrados."
+        elif category_name:
+            return f"No encontré movimientos registrados en la categoría *{category_name}*."
+        return "No tenés movimientos registrados todavía."
+
+    movement_type = filters.get("movement_type")
+    category_name = filters.get("category_name")
+    if movement_type == "egreso" and category_name:
+        title = f"📋 *Tus últimos gastos en {category_name}:*"
+    elif movement_type == "egreso":
+        title = "📋 *Tus últimos gastos:*"
+    elif movement_type == "ingreso" and category_name:
+        title = f"📋 *Tus últimos ingresos en {category_name}:*"
+    elif movement_type == "ingreso":
+        title = "📋 *Tus últimos ingresos:*"
+    elif category_name:
+        title = f"📋 *Tus últimos movimientos en {category_name}:*"
+    else:
+        title = "📋 *Tus últimos movimientos:*"
+
+    lines = [title, ""]
+    movements_to_display = result.movements[:5]
+    for mov in movements_to_display:
+        sign = "+" if mov.tipo == "ingreso" else "-"
+        date_str = mov.fecha_movimiento.strftime("%d/%m/%Y")
+        desc = mov.descripcion or mov.tipo.capitalize()
+        cat_suffix = f" ({mov.categoria_nombre})" if mov.categoria_nombre and not category_name else ""
+        lines.append(f"• {date_str} - {desc}: {sign}${_format_amount(mov.cantidad)} {mov.moneda}{cat_suffix}")
+
+    if result.total_found > len(movements_to_display):
+        lines.append("")
+        lines.append(f"Mostrando los últimos {len(movements_to_display)} de {result.total_found} movimientos.")
+
+    return "\n".join(lines)
+
+
+async def _handle_query_movements(sender_phone: str, extracted_data: dict) -> str:
+    user_id = await asyncio.to_thread(_user_id_by_phone, sender_phone)
+    if user_id is None:
+        return "No encontré una cuenta vinculada a este WhatsApp."
+
+    reply_text = str(extracted_data.get("reply_text") or "").strip()
+    has_question = ("?" in reply_text or "¿" in reply_text)
+    has_filters = any([
+        extracted_data.get("movement_type"),
+        extracted_data.get("category"),
+        extracted_data.get("date_from"),
+        extracted_data.get("date_to"),
+    ])
+    if has_question and not has_filters:
+        return reply_text
+
+    movement_type = extracted_data.get("movement_type")
+    category_name = extracted_data.get("category")
+
+    raw_start = extracted_data.get("date_from") or extracted_data.get("start_date")
+    start_date = None
+    if raw_start:
+        try:
+            start_date = date.fromisoformat(str(raw_start).strip())
+        except ValueError:
+            return "No pude interpretar la fecha inicial de la consulta. ¿Podrías indicarme el período nuevamente?"
+
+    raw_end = extracted_data.get("date_to") or extracted_data.get("end_date")
+    end_date = None
+    if raw_end:
+        try:
+            end_date = date.fromisoformat(str(raw_end).strip())
+        except ValueError:
+            return "No pude interpretar la fecha final de la consulta. ¿Podrías indicarme el período nuevamente?"
+
+    limit_val = extracted_data.get("limit")
+    limit = 5
+    if limit_val is not None:
+        try:
+            limit = min(int(limit_val), 5)
+        except (ValueError, TypeError):
+            limit = 5
+
+    filters = {
+        "movement_type": movement_type,
+        "category_name": category_name,
+        "start_date": start_date,
+        "end_date": end_date,
+        "limit": limit,
+    }
+
+    result = await asyncio.to_thread(
+        FinanceService.query_movements,
+        user_id,
+        movement_type=movement_type,
+        category_name=category_name,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+    )
+
+    return _format_query_movements_reply(result, filters)
+
+
 async def _handle_delete_limit(sender_phone: str, extracted_data: dict) -> str:
     category_name = extracted_data.get("limit_category")
     month = extracted_data.get("limit_month")
@@ -1754,6 +1884,10 @@ async def process_incoming_message(
         last_limit=last_limit_for_routing,
         today=datetime.now(ARGENTINA_TZ).date(),
     )
+    extracted_data = normalize_movement_query_intent(
+        text_body,
+        extracted_data,
+    )
     intent = extracted_data.get("intent", "out_of_scope")
 
     # ----------------------------------------------------------
@@ -1778,6 +1912,10 @@ async def process_incoming_message(
     elif intent == "budget_query":
         reply_text = await _handle_budget_query(sender_phone, extracted_data)
         service_invoked = "budget"
+
+    elif intent == "query_movements":
+        reply_text = await _handle_query_movements(sender_phone, extracted_data)
+        service_invoked = "finance"
 
     elif intent == "change_category":
         reply_text = await _handle_change_category(sender_phone, extracted_data)

@@ -109,3 +109,40 @@ def normalize_limit_intent(
         _apply_relative_period(data, normalized, reference_date)
 
     return data
+
+
+_QUERY_MOVEMENTS = re.compile(
+    r"^(?:mostra(?:me)?|muestra(?:me)?|ver|lista(?:me)?|consultar|resumen\s+(?:de\s+)?)"
+    r"?\s*(?:mis\s+|los\s+)?(?:ultimos\s+)?(?:\d+\s+)?(?:movimientos|gastos|ingresos|transacciones)"
+    r"(?:\s+(?:de|del|en)\s+.*)?$"
+)
+
+
+def normalize_movement_query_intent(
+    text: str,
+    extracted_data: dict,
+) -> dict:
+    """Return a corrected copy for unambiguous movement query phrases."""
+    data = dict(extracted_data)
+    normalized = _normalize(text)
+
+    # Don't override if already determined by LLM as expense with amount
+    if data.get("intent") == "expense" and data.get("amount") is not None:
+        return data
+
+    if _QUERY_MOVEMENTS.fullmatch(normalized):
+        data["intent"] = "query_movements"
+        if re.search(r"\bgasto(?:s)?\b", normalized):
+            data["movement_type"] = "egreso"
+        elif re.search(r"\bingreso(?:s)?\b", normalized):
+            data["movement_type"] = "ingreso"
+
+        m_count = re.search(r"\b(\d+)\b", normalized)
+        if m_count:
+            try:
+                data["limit"] = min(int(m_count.group(1)), 5)
+            except ValueError:
+                pass
+        return data
+
+    return data
