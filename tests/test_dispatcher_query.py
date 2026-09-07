@@ -402,3 +402,52 @@ class TestDispatcherQueryIntegration:
             assert "Cena" in res.reply_text
             # Muy importante: la consulta no debe registrar movimientos
             mock_register.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_process_incoming_message_normalizes_period_summary_to_query_movements(self):
+        """STK-153: 'resumen de gastos de septiembre' no cae en legacy expense_summary sino en query_movements."""
+        u_id = uuid.uuid4()
+        m1 = make_movement(tipo="egreso", cantidad=Decimal("3500"), descripcion="Gasto Septiembre", fecha=date(2026, 9, 10))
+        fake_result = MovementQueryResult(status="ok", message="ok", movements=[m1], total_found=1)
+
+        llm_output = {
+            "intent": "expense_summary",
+            "movement_type": "egreso",
+            "category": None,
+            "date_from": "2026-09-01",
+            "date_to": "2026-09-30",
+            "limit": 5,
+            "reply_text": "Resumen de gastos.",
+        }
+
+        with (
+            patch("app.services.dispatcher._update_ultimo_mensaje"),
+            patch(
+                "app.services.onboarding.OnboardingService.prepare_whatsapp_message",
+                return_value=OnboardingResult(OnboardingDecision.KNOWN_USER),
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                AsyncMock(return_value=llm_output),
+            ),
+            patch("app.services.dispatcher._user_id_by_phone", return_value=u_id),
+            patch("app.services.dispatcher.FinanceService.query_movements", return_value=fake_result) as mock_query,
+            patch(
+                "app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text",
+            ) as mock_register,
+        ):
+            res = await process_incoming_message("5491100000001", "resumen de gastos de septiembre", "wamid.456")
+
+            assert res.service_invoked == "finance"
+            assert res.intent == "query_movements"
+            assert "📋 *Tus últimos gastos:*" in res.reply_text
+            assert "Gasto Septiembre" in res.reply_text
+            mock_register.assert_not_called()
+            mock_query.assert_called_once_with(
+                u_id,
+                movement_type="egreso",
+                category_name=None,
+                start_date=date(2026, 9, 1),
+                end_date=date(2026, 9, 30),
+                limit=5,
+            )

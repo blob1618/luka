@@ -85,7 +85,10 @@ def db_context(monkeypatch):
 
     session = testing_session_local()
     try:
-        yield {"session": session}
+        yield {
+            "session": session,
+            "session_factory": testing_session_local,
+        }
     finally:
         session.close()
         Base.metadata.drop_all(bind=engine)
@@ -587,3 +590,182 @@ class TestWebhookQueryMovementsIntegration:
             assert "Mostrando los últimos 5 de 8 movimientos." in reply
             # Enlace omitido
             assert "Ver este período en tu dashboard" not in reply
+
+    def test_webhook_query_movements_registered_user_zero_movements(self, db_context):
+        """STK-153: Webhook integral para un usuario registrado sin movimientos."""
+        session = db_context["session"]
+        create_user(session, whatsapp_id="5491100000001", auth_user_id=uuid.uuid4())
+
+        payload = make_webhook_payload("mis ultimos gastos", sender_phone="5491100000001")
+        llm_response = {
+            "intent": "query_movements",
+            "movement_type": "egreso",
+            "category": None,
+            "date_from": None,
+            "date_to": None,
+            "limit": 5,
+        }
+
+        with (
+            patch("app.services.dispatcher.LLMService.process_message", AsyncMock(return_value=llm_response)),
+            patch("app.main.send_whatsapp_message", AsyncMock(return_value=True)) as mock_send,
+            patch("app.services.dispatcher.DashboardLinkService.generate_or_reuse") as mock_link,
+        ):
+            response = client.post("/webhook", json=payload)
+            assert response.status_code == 200
+
+            mock_send.assert_called_once()
+            call_phone, reply = mock_send.call_args[0]
+            assert call_phone == "5491100000001"
+            assert "No encontré gastos registrados." in reply
+            assert "Ver este período en tu dashboard" not in reply
+            assert "token=" not in reply
+
+            mock_link.assert_not_called()
+
+    def test_webhook_query_movements_strict_financial_immutability(self, db_context):
+        """STK-153: Verificación fuerte de inmutabilidad financiera en webhook integral con sesión fresca y escalares."""
+        session = db_context["session"]
+        session_factory = db_context["session_factory"]
+        user = create_user(session, whatsapp_id="5491100000001", auth_user_id=uuid.uuid4())
+        cat = create_category(session, user.id, "Supermercado")
+        lim = LimiteCategoria(
+            id=uuid.uuid4(),
+            usuario_id=user.id,
+            categoria_id=cat.id,
+            cantidad_max=Decimal("45000.00"),
+            moneda="ARS",
+            inicio_periodo=date(2026, 9, 1),
+            fin_periodo=date(2026, 9, 30),
+        )
+        session.add(lim)
+        create_movement(session, user.id, tipo="egreso", cantidad=Decimal("1500.50"), descripcion="Coto", categoria_id=cat.id)
+        create_movement(session, user.id, tipo="ingreso", cantidad=Decimal("5000.00"), descripcion="Transferencia")
+        session.commit()
+
+        def get_financial_snapshot():
+            with session_factory() as fresh_session:
+                movements = fresh_session.query(
+                    MovimientoFinanciero.id,
+                    MovimientoFinanciero.usuario_id,
+                    MovimientoFinanciero.categoria_id,
+                    MovimientoFinanciero.tipo,
+                    MovimientoFinanciero.cantidad,
+                    MovimientoFinanciero.moneda,
+                    MovimientoFinanciero.descripcion,
+                    MovimientoFinanciero.fecha_movimiento,
+                    MovimientoFinanciero.origen,
+                    MovimientoFinanciero.whatsapp_message_id,
+                    MovimientoFinanciero.creado_en,
+                    MovimientoFinanciero.actualizado_en,
+                ).order_by(MovimientoFinanciero.id).all()
+
+                categories = fresh_session.query(
+                    Categoria.id,
+                    Categoria.usuario_id,
+                    Categoria.nombre,
+                    Categoria.es_default,
+                    Categoria.esta_eliminado,
+                    Categoria.creado_en,
+                ).order_by(Categoria.id).all()
+
+                limits = fresh_session.query(
+                    LimiteCategoria.id,
+                    LimiteCategoria.usuario_id,
+                    LimiteCategoria.categoria_id,
+                    LimiteCategoria.cantidad_max,
+                    LimiteCategoria.moneda,
+                    LimiteCategoria.inicio_periodo,
+                    LimiteCategoria.fin_periodo,
+                    LimiteCategoria.creado_en,
+                    LimiteCategoria.actualizado_en,
+                ).order_by(LimiteCategoria.id).all()
+
+                return movements, categories, limits
+
+        snapshot_before = get_financial_snapshot()
+
+        payload = make_webhook_payload("mis ultimos movimientos", sender_phone="5491100000001")
+        llm_response = {
+            "intent": "query_movements",
+            "movement_type": None,
+            "category": None,
+            "date_from": None,
+            "date_to": None,
+            "limit": 5,
+        }
+
+        with (
+            patch("app.services.dispatcher.LLMService.process_message", AsyncMock(return_value=llm_response)),
+            patch("app.main.send_whatsapp_message", AsyncMock(return_value=True)) as mock_send,
+            patch("app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text") as mock_reg,
+        ):
+            response = client.post("/webhook", json=payload)
+            assert response.status_code == 200
+
+            mock_send.assert_called_once()
+            mock_reg.assert_not_called()
+
+            snapshot_after = get_financial_snapshot()
+            # Los movimientos, montos, categorías y límites deben permanecer 100% inmutables
+            assert snapshot_after == snapshot_before
+
+    def test_period_summary_phrase_normalizes_to_query_movements_not_legacy_summary_or_register(self, db_context):
+        """STK-153: Frase inequívoca como 'resumen de gastos de septiembre' se normaliza a query_movements,
+        conserva filtros temporales, no cae en el flujo legacy expense_summary y no registra movimientos.
+        """
+        session = db_context["session"]
+        user = create_user(session, whatsapp_id="5491100000001")
+        cat = create_category(session, user.id, "Comida")
+
+        # Movimiento de septiembre (debe aparecer)
+        create_movement(
+            session,
+            user.id,
+            tipo="egreso",
+            cantidad=Decimal("3500.00"),
+            descripcion="Supermercado Septiembre",
+            categoria_id=cat.id,
+            fecha_movimiento=date(2026, 9, 15),
+        )
+        # Movimiento de agosto (fuera de período, no debe aparecer)
+        create_movement(
+            session,
+            user.id,
+            tipo="egreso",
+            cantidad=Decimal("1200.00"),
+            descripcion="Supermercado Agosto",
+            categoria_id=cat.id,
+            fecha_movimiento=date(2026, 8, 20),
+        )
+
+        payload = make_webhook_payload("resumen de gastos de septiembre", sender_phone="5491100000001")
+        # El LLM clasifica inicialmente como expense_summary con fechas de septiembre
+        llm_response = {
+            "intent": "expense_summary",
+            "movement_type": "egreso",
+            "category": None,
+            "date_from": "2026-09-01",
+            "date_to": "2026-09-30",
+            "limit": 5,
+            "reply_text": "Resumen de tus gastos de septiembre.",
+        }
+
+        with (
+            patch("app.services.dispatcher.LLMService.process_message", AsyncMock(return_value=llm_response)),
+            patch("app.main.send_whatsapp_message", AsyncMock(return_value=True)) as mock_send,
+            patch("app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text") as mock_reg,
+        ):
+            response = client.post("/webhook", json=payload)
+            assert response.status_code == 200
+
+            # No debe llamar al registro de movimientos
+            mock_reg.assert_not_called()
+
+            # Debe enviar respuesta visible con la consulta de movimientos del período
+            mock_send.assert_called_once()
+            _, reply = mock_send.call_args[0]
+            assert "📋 *Tus últimos gastos:*" in reply
+            assert "Supermercado Septiembre" in reply
+            assert "-$3500.00 ARS" in reply or "-$3500 ARS" in reply
+            assert "Supermercado Agosto" not in reply

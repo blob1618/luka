@@ -209,6 +209,78 @@ class TestFinanceQueryReadOnly:
         assert session.query(Usuario).count() == count_usr_before
         assert session.query(LimiteCategoria).count() == count_lim_before
 
+    def test_query_movements_strict_financial_immutability(self, db_context):
+        """STK-153: Comprueba que ningún atributo financiero mute, usando valores escalares en sesión fresca."""
+        session = db_context["session"]
+        session_factory = db_context["session_factory"]
+        user = create_user(session)
+        cat = create_category(session, user.id, "Servicios")
+        lim = LimiteCategoria(
+            id=uuid.uuid4(),
+            usuario_id=user.id,
+            categoria_id=cat.id,
+            cantidad_max=Decimal("50000.00"),
+            moneda="ARS",
+            inicio_periodo=date(2026, 9, 1),
+            fin_periodo=date(2026, 9, 30),
+        )
+        session.add(lim)
+        create_movement(session, user.id, tipo="egreso", cantidad=Decimal("1234.56"), categoria_id=cat.id, descripcion="Luz")
+        create_movement(session, user.id, tipo="ingreso", cantidad=Decimal("9876.54"), descripcion="Honorarios")
+        session.commit()
+
+        def get_financial_snapshot():
+            with session_factory() as fresh_session:
+                movements = fresh_session.query(
+                    MovimientoFinanciero.id,
+                    MovimientoFinanciero.usuario_id,
+                    MovimientoFinanciero.categoria_id,
+                    MovimientoFinanciero.tipo,
+                    MovimientoFinanciero.cantidad,
+                    MovimientoFinanciero.moneda,
+                    MovimientoFinanciero.descripcion,
+                    MovimientoFinanciero.fecha_movimiento,
+                    MovimientoFinanciero.origen,
+                    MovimientoFinanciero.whatsapp_message_id,
+                    MovimientoFinanciero.creado_en,
+                    MovimientoFinanciero.actualizado_en,
+                ).order_by(MovimientoFinanciero.id).all()
+
+                categories = fresh_session.query(
+                    Categoria.id,
+                    Categoria.usuario_id,
+                    Categoria.nombre,
+                    Categoria.es_default,
+                    Categoria.esta_eliminado,
+                    Categoria.creado_en,
+                ).order_by(Categoria.id).all()
+
+                limits = fresh_session.query(
+                    LimiteCategoria.id,
+                    LimiteCategoria.usuario_id,
+                    LimiteCategoria.categoria_id,
+                    LimiteCategoria.cantidad_max,
+                    LimiteCategoria.moneda,
+                    LimiteCategoria.inicio_periodo,
+                    LimiteCategoria.fin_periodo,
+                    LimiteCategoria.creado_en,
+                    LimiteCategoria.actualizado_en,
+                ).order_by(LimiteCategoria.id).all()
+
+                return movements, categories, limits
+
+        snapshot_before = get_financial_snapshot()
+
+        # Ejecutar varias consultas de movimientos
+        FinanceService.query_movements(user.id, session=session)
+        FinanceService.query_movements(user.id, movement_type="egreso", session=session)
+        FinanceService.query_movements(user.id, category_name="Servicios", session=session)
+        FinanceService.query_movements(user.id, start_date=date.today(), end_date=date.today(), session=session)
+        FinanceService.query_movements_by_phone(user.whatsapp_id)
+
+        snapshot_after = get_financial_snapshot()
+        assert snapshot_after == snapshot_before
+
 
 class TestFinanceQueryFilters:
     """Verifica el filtrado por tipo, categoría, rango de fechas y límites (STK-149/150)."""
@@ -367,3 +439,99 @@ class TestFinanceQueryFilters:
         actual_ids = [m.id for m in res1.movements]
         assert actual_ids == expected_ids
         assert [m.id for m in res1.movements] == [m.id for m in res2.movements]
+
+    def test_filter_by_date_range_exact_boundaries(self, db_context):
+        """STK-153: Verifica límites de período con movimientos dentro y fuera del rango."""
+        session = db_context["session"]
+        user = create_user(session)
+
+        d_before = date(2026, 9, 9)
+        d_start = date(2026, 9, 10)
+        d_mid = date(2026, 9, 12)
+        d_end = date(2026, 9, 15)
+        d_after = date(2026, 9, 16)
+
+        create_movement(session, user.id, descripcion="Before", fecha_movimiento=d_before)
+        create_movement(session, user.id, descripcion="Start", fecha_movimiento=d_start)
+        create_movement(session, user.id, descripcion="Mid", fecha_movimiento=d_mid)
+        create_movement(session, user.id, descripcion="End", fecha_movimiento=d_end)
+        create_movement(session, user.id, descripcion="After", fecha_movimiento=d_after)
+
+        # Rango d_start a d_end: debe incluir Start, Mid, End y excluir Before, After
+        res = FinanceService.query_movements(
+            user.id, start_date=d_start, end_date=d_end, session=session
+        )
+        assert res.status == "ok"
+        assert res.total_found == 3
+        descs = {m.descripcion for m in res.movements}
+        assert descs == {"Start", "Mid", "End"}
+        assert "Before" not in descs
+        assert "After" not in descs
+
+        # Rango de un solo día (start_date == end_date)
+        res_single = FinanceService.query_movements(
+            user.id, start_date=d_start, end_date=d_start, session=session
+        )
+        assert res_single.status == "ok"
+        assert res_single.total_found == 1
+        assert res_single.movements[0].descripcion == "Start"
+
+    def test_query_movements_combined_filters_with_mixed_tenant_data(self, db_context):
+        """STK-153: Integración real con datos mezclados que combina período, tipo, categoría y aislamiento multi-tenant."""
+        session = db_context["session"]
+        user_a = create_user(session, whatsapp_id="5491100000001")
+        user_b = create_user(session, whatsapp_id="5491100000002")
+
+        # Categorías homónimas en ambos usuarios
+        cat_comida_a = create_category(session, user_a.id, "Comida")
+        cat_transporte_a = create_category(session, user_a.id, "Transporte")
+        cat_comida_b = create_category(session, user_b.id, "Comida")
+
+        d_from = date(2026, 9, 1)
+        d_to = date(2026, 9, 10)
+        d_in = date(2026, 9, 5)
+        d_out = date(2026, 8, 25)
+
+        # Datos de User A
+        # 1. Match esperado: egreso en Comida dentro del período
+        create_movement(session, user_a.id, tipo="egreso", cantidad=Decimal("500"), descripcion="A Match Comida", categoria_id=cat_comida_a.id, fecha_movimiento=d_in)
+        # 2. Distractor de fecha: fuera del rango
+        create_movement(session, user_a.id, tipo="egreso", cantidad=Decimal("300"), descripcion="A Old Comida", categoria_id=cat_comida_a.id, fecha_movimiento=d_out)
+        # 3. Distractor de tipo: ingreso en lugar de egreso
+        create_movement(session, user_a.id, tipo="ingreso", cantidad=Decimal("10000"), descripcion="A Income Comida", categoria_id=cat_comida_a.id, fecha_movimiento=d_in)
+        # 4. Distractor de categoría: en Transporte
+        create_movement(session, user_a.id, tipo="egreso", cantidad=Decimal("200"), descripcion="A Match Transporte", categoria_id=cat_transporte_a.id, fecha_movimiento=d_in)
+
+        # Datos de User B (distractores de aislamiento)
+        create_movement(session, user_b.id, tipo="egreso", cantidad=Decimal("500"), descripcion="B Match Comida", categoria_id=cat_comida_b.id, fecha_movimiento=d_in)
+        create_movement(session, user_b.id, tipo="ingreso", cantidad=Decimal("8000"), descripcion="B Income Comida", categoria_id=cat_comida_b.id, fecha_movimiento=d_in)
+
+        # Consulta de User A con TODOS los filtros combinados
+        res = FinanceService.query_movements(
+            user_a.id,
+            movement_type="egreso",
+            category_name="Comida",
+            start_date=d_from,
+            end_date=d_to,
+            session=session,
+        )
+
+        assert res.status == "ok"
+        assert res.total_found == 1
+        assert len(res.movements) == 1
+        mov = res.movements[0]
+        assert mov.descripcion == "A Match Comida"
+        assert mov.tipo == "egreso"
+        assert mov.categoria_nombre == "Comida"
+        assert mov.fecha_movimiento == d_in
+        assert mov.cantidad == Decimal("500")
+
+    def test_query_movements_database_exception_returns_error_status(self, db_context):
+        """STK-153: Falla de base de datos controlada retorna status='error' sin propagar excepción."""
+        from unittest.mock import MagicMock
+        broken_session = MagicMock()
+        broken_session.query.side_effect = RuntimeError("database disk failure")
+
+        res = FinanceService.query_movements(uuid.uuid4(), session=broken_session)
+        assert res.status == "error"
+        assert res.message == "Error interno al consultar movimientos"
