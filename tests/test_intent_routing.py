@@ -2,7 +2,11 @@ from datetime import date
 from decimal import Decimal
 
 from app.services.conversation import LastCreatedLimit
-from app.services.intent_routing import normalize_limit_intent, references_recent_limit
+from app.services.intent_routing import (
+    normalize_limit_intent,
+    normalize_movement_query_intent,
+    references_recent_limit,
+)
 
 
 def recent_limit() -> LastCreatedLimit:
@@ -48,5 +52,32 @@ def test_unrelated_correction_is_not_forced_to_change_limit():
         "en realidad gasté 5000 en comida",
         {"intent": "expense"},
         last_limit=recent_limit(),
+    )
+    assert result["intent"] == "expense"
+
+
+def test_normalize_movement_query_intent_general():
+    result = normalize_movement_query_intent("mis últimos movimientos", {"intent": "out_of_scope"})
+    assert result["intent"] == "query_movements"
+    assert result.get("movement_type") is None
+
+
+def test_normalize_movement_query_intent_expenses_with_count():
+    result = normalize_movement_query_intent("ultimos 3 gastos", {"intent": "out_of_scope"})
+    assert result["intent"] == "query_movements"
+    assert result["movement_type"] == "egreso"
+    assert result["limit"] == 3
+
+
+def test_normalize_movement_query_intent_incomes():
+    result = normalize_movement_query_intent("mostrame mis ingresos", {"intent": "out_of_scope"})
+    assert result["intent"] == "query_movements"
+    assert result["movement_type"] == "ingreso"
+
+
+def test_normalize_movement_query_intent_does_not_override_expense_with_amount():
+    result = normalize_movement_query_intent(
+        "gasté 5000 en comida",
+        {"intent": "expense", "amount": 5000.0},
     )
     assert result["intent"] == "expense"

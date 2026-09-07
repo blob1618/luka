@@ -328,6 +328,35 @@ async def test_process_message_expense_summary():
 
 
 @pytest.mark.asyncio
+async def test_process_message_query_movements():
+    """Prueba: El bot reconoce y normaliza una consulta de movimientos (STK-149)."""
+    mock_response = {
+        "intent": "query_movements",
+        "movement_type": "egreso",
+        "category": "comida",
+        "date_from": "2026-09-01",
+        "date_to": "2026-09-07",
+        "limit": 5,
+        "reply_text": "Consultando tus movimientos.",
+    }
+
+    with patch.object(LLMService, "_get_provider") as mock_get_provider:
+        mock_provider = AsyncMock()
+        mock_provider.generate_json.return_value = mock_response
+        mock_get_provider.return_value = mock_provider
+
+        result = await LLMService.process_message("¿Qué gastos tuve en comida esta semana?")
+
+        assert result["intent"] == "query_movements"
+        assert result["movement_type"] == "egreso"
+        assert result["category"] == "comida"
+        assert result["date_from"] == "2026-09-01"
+        assert result["date_to"] == "2026-09-07"
+        assert result["limit"] == 5
+        assert result["reply_text"] == "Consultando tus movimientos."
+
+
+@pytest.mark.asyncio
 async def test_process_message_fallback_on_exception():
     """Prueba: Cuando el LLM falla, el servicio devuelve un mensaje de error controlado."""
     with patch.object(LLMService, "_get_provider") as mock_get_provider:

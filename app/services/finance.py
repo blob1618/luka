@@ -3,9 +3,10 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from uuid import UUID
 
 import matplotlib.pyplot as plt
-from sqlalchemy import func
+from sqlalchemy import and_, func
 from sqlalchemy.exc import IntegrityError
 
 from app.models.database import (
@@ -50,6 +51,25 @@ class CategoriesListResult:
     status: str
     message: str
     categories: list[CategoryWithTotals] = field(default_factory=list)
+
+
+@dataclass
+class MovementItem:
+    id: str
+    tipo: str
+    cantidad: Decimal
+    moneda: str
+    descripcion: str | None
+    fecha_movimiento: date
+    categoria_nombre: str | None
+
+
+@dataclass
+class MovementQueryResult:
+    status: str
+    message: str
+    movements: list[MovementItem] = field(default_factory=list)
+    total_found: int = 0
 
 
 class FinanceService:
@@ -693,6 +713,206 @@ class FinanceService:
             print(f"[MOVEMENT_REGISTRATION] Persistence error: {type(exc).__name__}: {exc}")
             return cls._result("persistence_error", "could not persist movement")
 
+        finally:
+            session.close()
+
+    @classmethod
+    def query_movements(
+        cls,
+        user_id: Any,
+        *,
+        movement_type: str | None = None,
+        category_name: str | None = None,
+        categoria_id: Any = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        limit: int = 5,
+        session=None,
+    ) -> MovementQueryResult:
+        """Consulta movimientos financieros con filtros deterministas y aislamiento estricto por usuario.
+
+        Contrato STK-150 / STK-149:
+        - Requiere usuario válido y filtra exclusivamente por su user_id.
+        - Filtros opcionales: tipo ('ingreso'/'egreso'), categoría (por id o nombre), y rango de fechas.
+        - Ordenamiento determinista: fecha_movimiento DESC, creado_en DESC.
+        - Límite máximo acotado a 5 movimientos.
+        - Consulta estrictamente de sólo lectura (sin inserciones ni modificaciones).
+        """
+        if user_id is None:
+            return MovementQueryResult(status="user_not_found", message="Usuario no especificado")
+
+        try:
+            parsed_user_id = UUID(str(user_id))
+        except (ValueError, TypeError, AttributeError):
+            return MovementQueryResult(status="invalid_filters", message="Identificador de usuario inválido")
+
+        normalized_type = None
+        if movement_type is not None:
+            val = str(movement_type).strip().lower()
+            if val in cls.VALID_MOVEMENT_TYPES:
+                normalized_type = val
+            else:
+                return MovementQueryResult(
+                    status="invalid_filters",
+                    message=f"Tipo de movimiento '{movement_type}' no válido. Usá 'ingreso' o 'egreso'.",
+                )
+
+        if start_date is not None and end_date is not None and start_date > end_date:
+            return MovementQueryResult(
+                status="invalid_filters",
+                message="La fecha de inicio no puede ser posterior a la fecha de fin.",
+            )
+
+        effective_limit = 5
+        if limit is not None:
+            try:
+                l_int = int(limit)
+                if l_int > 0:
+                    effective_limit = min(l_int, 5)
+            except (ValueError, TypeError):
+                effective_limit = 5
+
+        close_session = False
+        if session is None:
+            session = SessionLocal()
+            close_session = True
+
+        try:
+            user = session.query(Usuario).filter(Usuario.id == parsed_user_id).first()
+            if user is None:
+                return MovementQueryResult(status="user_not_found", message="Usuario no encontrado")
+
+            resolved_cat_id = None
+            if categoria_id is not None:
+                try:
+                    resolved_cat_id = UUID(str(categoria_id))
+                except (ValueError, TypeError, AttributeError):
+                    return MovementQueryResult(status="invalid_filters", message="Categoría inválida")
+                cat_exists = (
+                    session.query(Categoria.id)
+                    .filter(Categoria.id == resolved_cat_id)
+                    .filter(Categoria.usuario_id == parsed_user_id)
+                    .filter(Categoria.esta_eliminado.is_(False))
+                    .first()
+                )
+                if cat_exists is None:
+                    return MovementQueryResult(
+                        status="ok",
+                        message="Categoría no encontrada para el usuario.",
+                        movements=[],
+                        total_found=0,
+                    )
+            elif category_name is not None and str(category_name).strip():
+                clean_cat = str(category_name).strip()
+                active_names = cls._active_user_category_names(session, parsed_user_id)
+                resolved_name = resolve_category_for_user(clean_cat, active_names)
+                cat_obj = cls._find_category(session, parsed_user_id, resolved_name or clean_cat)
+                if cat_obj is None:
+                    return MovementQueryResult(
+                        status="ok",
+                        message=f"No se encontró la categoría '{clean_cat}'.",
+                        movements=[],
+                        total_found=0,
+                    )
+                resolved_cat_id = cat_obj.id
+
+            query = (
+                session.query(
+                    MovimientoFinanciero,
+                    Categoria.nombre.label("categoria_nombre"),
+                )
+                .outerjoin(
+                    Categoria,
+                    and_(
+                        MovimientoFinanciero.categoria_id == Categoria.id,
+                        Categoria.usuario_id == parsed_user_id,
+                    ),
+                )
+                .filter(MovimientoFinanciero.usuario_id == parsed_user_id)
+            )
+
+            if normalized_type is not None:
+                query = query.filter(MovimientoFinanciero.tipo == normalized_type)
+
+            if resolved_cat_id is not None:
+                query = query.filter(MovimientoFinanciero.categoria_id == resolved_cat_id)
+
+            if start_date is not None:
+                query = query.filter(MovimientoFinanciero.fecha_movimiento >= start_date)
+
+            if end_date is not None:
+                query = query.filter(MovimientoFinanciero.fecha_movimiento <= end_date)
+
+            query = query.order_by(
+                MovimientoFinanciero.fecha_movimiento.desc(),
+                MovimientoFinanciero.creado_en.desc(),
+                MovimientoFinanciero.id.desc(),
+            )
+
+            total_found = query.count()
+            rows = query.limit(effective_limit).all()
+
+            items = [
+                MovementItem(
+                    id=str(mov.id),
+                    tipo=mov.tipo,
+                    cantidad=mov.cantidad,
+                    moneda=mov.moneda,
+                    descripcion=mov.descripcion,
+                    fecha_movimiento=mov.fecha_movimiento,
+                    categoria_nombre=cat_nombre,
+                )
+                for mov, cat_nombre in rows
+            ]
+
+            return MovementQueryResult(
+                status="ok",
+                message="ok",
+                movements=items,
+                total_found=total_found,
+            )
+        except Exception as exc:
+            print(f"[QUERY_MOVEMENTS] Error: {type(exc).__name__}: {exc}")
+            return MovementQueryResult(
+                status="error",
+                message="Error interno al consultar movimientos",
+            )
+        finally:
+            if close_session:
+                session.close()
+
+    @classmethod
+    def query_movements_by_phone(
+        cls,
+        sender_phone: str,
+        *,
+        movement_type: str | None = None,
+        category_name: str | None = None,
+        categoria_id: Any = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        limit: int = 5,
+    ) -> MovementQueryResult:
+        """Busca el usuario por whatsapp_id y ejecuta la consulta de movimientos."""
+        if not sender_phone or not str(sender_phone).strip():
+            return MovementQueryResult(status="user_not_found", message="Teléfono no especificado")
+
+        session = SessionLocal()
+        try:
+            user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone.strip()).first()
+            if user is None:
+                return MovementQueryResult(status="user_not_found", message="Usuario no encontrado")
+
+            return cls.query_movements(
+                user.id,
+                movement_type=movement_type,
+                category_name=category_name,
+                categoria_id=categoria_id,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+                session=session,
+            )
         finally:
             session.close()
 
