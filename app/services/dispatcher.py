@@ -1269,6 +1269,8 @@ async def _handle_budget_query(sender_phone: str, extracted_data: dict) -> str:
 def _format_query_movements_reply(
     result: MovementQueryResult,
     filters: dict[str, Any],
+    dashboard_link_url: str | None = None,
+    link_ttl_minutes: int = 10,
 ) -> str:
     if result.status == "user_not_found":
         return "No encontré una cuenta vinculada a este WhatsApp."
@@ -1319,6 +1321,12 @@ def _format_query_movements_reply(
     if result.total_found > len(movements_to_display):
         lines.append("")
         lines.append(f"Mostrando los últimos {len(movements_to_display)} de {result.total_found} movimientos.")
+
+    if dashboard_link_url:
+        lines.append("")
+        lines.append("🔗 *Ver este período en tu dashboard:*")
+        lines.append(dashboard_link_url)
+        lines.append(f"_(El enlace vence en {link_ttl_minutes} minutos y sólo se puede usar una vez)_")
 
     return "\n".join(lines)
 
@@ -1388,7 +1396,31 @@ async def _handle_query_movements(sender_phone: str, extracted_data: dict) -> st
         print(f"[QUERY_MOVEMENTS_DISPATCHER] Error: {type(exc).__name__}: {exc}")
         return "Hubo un problema al consultar tus movimientos. Por favor, intentá nuevamente."
 
-    return _format_query_movements_reply(result, filters)
+    dashboard_link_url = None
+    link_ttl_minutes = 10
+    cantidad_mostrada = len(result.movements[:5])
+    has_date_filter = bool(start_date or end_date)
+    if result.status == "ok" and result.total_found > cantidad_mostrada and has_date_filter:
+        try:
+            link_result = await asyncio.to_thread(
+                DashboardLinkService.generate_or_reuse,
+                sender_phone,
+                date_from=start_date,
+                date_to=end_date,
+            )
+            if link_result.decision == DashboardLinkDecision.SEND_LINK and link_result.login_url:
+                dashboard_link_url = link_result.login_url
+                link_ttl_minutes = link_result.link_ttl_minutes
+        except Exception as exc:
+            print(f"[DASHBOARD_LINK_QUERY] Controlled error: {type(exc).__name__}: {exc}")
+            dashboard_link_url = None
+
+    return _format_query_movements_reply(
+        result,
+        filters,
+        dashboard_link_url=dashboard_link_url,
+        link_ttl_minutes=link_ttl_minutes,
+    )
 
 
 async def _handle_delete_limit(sender_phone: str, extracted_data: dict) -> str:

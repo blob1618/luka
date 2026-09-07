@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkResult
 from app.services.dispatcher import (
     _format_query_movements_reply,
     _handle_query_movements,
@@ -82,6 +83,17 @@ class TestFormatQueryMovementsReply:
         assert "Gasto 4" in text
         assert "Gasto 5" not in text
         assert "Mostrando los últimos 5 de 8 movimientos." in text
+
+    def test_format_movements_with_dashboard_link_footer(self):
+        movements = [make_movement(descripcion=f"Gasto {i}") for i in range(5)]
+        res = MovementQueryResult(status="ok", message="ok", movements=movements, total_found=10)
+        link = "http://localhost:8000/login?token=xyz123&date_from=2026-09-01&date_to=2026-09-07"
+        text = _format_query_movements_reply(res, {}, dashboard_link_url=link, link_ttl_minutes=10)
+
+        assert "Mostrando los últimos 5 de 10 movimientos." in text
+        assert "🔗 *Ver este período en tu dashboard:*" in text
+        assert link in text
+        assert "vence en 10 minutos" in text
 
 
 class TestHandleQueryMovements:
@@ -165,6 +177,172 @@ class TestHandleQueryMovements:
             reply = await _handle_query_movements("5491100000001", extracted)
             assert "No pude interpretar la fecha final de la consulta." in reply
             mock_query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_query_movements_deterministic_link_activation_when_more_found(self):
+        u_id = uuid.uuid4()
+        movements = [make_movement(descripcion=f"Gasto {i}") for i in range(5)]
+        fake_result = MovementQueryResult(status="ok", message="ok", movements=movements, total_found=8)
+        expected_url = "https://luka.app/login?token=safe_token_123&date_from=2026-09-01&date_to=2026-09-07"
+        fake_link_result = DashboardLinkResult(
+            decision=DashboardLinkDecision.SEND_LINK,
+            login_url=expected_url,
+            link_ttl_minutes=10,
+        )
+
+        with (
+            patch("app.services.dispatcher._user_id_by_phone", return_value=u_id),
+            patch("app.services.dispatcher.FinanceService.query_movements", return_value=fake_result),
+            patch("app.services.dispatcher.DashboardLinkService.generate_or_reuse", return_value=fake_link_result) as mock_link,
+        ):
+            extracted = {
+                "movement_type": "egreso",
+                "date_from": "2026-09-01",
+                "date_to": "2026-09-07",
+            }
+            reply = await _handle_query_movements("5491100000001", extracted)
+
+            mock_link.assert_called_once_with(
+                "5491100000001",
+                date_from=date(2026, 9, 1),
+                date_to=date(2026, 9, 7),
+            )
+            assert "Mostrando los últimos 5 de 8 movimientos." in reply
+            assert "🔗 *Ver este período en tu dashboard:*" in reply
+            assert expected_url in reply
+
+    @pytest.mark.asyncio
+    async def test_handle_query_movements_does_not_call_link_when_total_lte_displayed(self):
+        u_id = uuid.uuid4()
+        movements = [make_movement(descripcion=f"Gasto {i}") for i in range(3)]
+        fake_result = MovementQueryResult(status="ok", message="ok", movements=movements, total_found=3)
+
+        with (
+            patch("app.services.dispatcher._user_id_by_phone", return_value=u_id),
+            patch("app.services.dispatcher.FinanceService.query_movements", return_value=fake_result),
+            patch("app.services.dispatcher.DashboardLinkService.generate_or_reuse") as mock_link,
+        ):
+            extracted = {
+                "movement_type": "egreso",
+                "date_from": "2026-09-01",
+                "date_to": "2026-09-07",
+            }
+            reply = await _handle_query_movements("5491100000001", extracted)
+
+            mock_link.assert_not_called()
+            assert "Ver este período en tu dashboard" not in reply
+
+    @pytest.mark.asyncio
+    async def test_handle_query_movements_does_not_call_link_when_no_dates_even_if_more_found(self):
+        u_id = uuid.uuid4()
+        movements = [make_movement(descripcion=f"Gasto {i}") for i in range(5)]
+        fake_result = MovementQueryResult(status="ok", message="ok", movements=movements, total_found=8)
+
+        with (
+            patch("app.services.dispatcher._user_id_by_phone", return_value=u_id),
+            patch("app.services.dispatcher.FinanceService.query_movements", return_value=fake_result),
+            patch("app.services.dispatcher.DashboardLinkService.generate_or_reuse") as mock_link,
+        ):
+            extracted = {"movement_type": "egreso"}  # sin fechas
+            reply = await _handle_query_movements("5491100000001", extracted)
+
+            mock_link.assert_not_called()
+            assert "Mostrando los últimos 5 de 8 movimientos." in reply
+            assert "Ver este período en tu dashboard" not in reply
+
+    @pytest.mark.asyncio
+    async def test_handle_query_movements_omits_link_on_not_eligible(self):
+        u_id = uuid.uuid4()
+        movements = [make_movement(descripcion=f"Gasto {i}") for i in range(5)]
+        fake_result = MovementQueryResult(status="ok", message="ok", movements=movements, total_found=8)
+        not_eligible_result = DashboardLinkResult(decision=DashboardLinkDecision.NOT_ELIGIBLE)
+
+        with (
+            patch("app.services.dispatcher._user_id_by_phone", return_value=u_id),
+            patch("app.services.dispatcher.FinanceService.query_movements", return_value=fake_result),
+            patch("app.services.dispatcher.DashboardLinkService.generate_or_reuse", return_value=not_eligible_result) as mock_link,
+        ):
+            extracted = {
+                "movement_type": "egreso",
+                "date_from": "2026-09-01",
+                "date_to": "2026-09-07",
+            }
+            reply = await _handle_query_movements("5491100000001", extracted)
+
+            mock_link.assert_called_once()
+            assert "Mostrando los últimos 5 de 8 movimientos." in reply
+            assert "Ver este período en tu dashboard" not in reply
+
+    @pytest.mark.asyncio
+    async def test_handle_query_movements_omits_link_on_suppress_response(self):
+        u_id = uuid.uuid4()
+        movements = [make_movement(descripcion=f"Gasto {i}") for i in range(5)]
+        fake_result = MovementQueryResult(status="ok", message="ok", movements=movements, total_found=8)
+        suppress_result = DashboardLinkResult(decision=DashboardLinkDecision.SUPPRESS_RESPONSE)
+
+        with (
+            patch("app.services.dispatcher._user_id_by_phone", return_value=u_id),
+            patch("app.services.dispatcher.FinanceService.query_movements", return_value=fake_result),
+            patch("app.services.dispatcher.DashboardLinkService.generate_or_reuse", return_value=suppress_result) as mock_link,
+        ):
+            extracted = {
+                "movement_type": "egreso",
+                "date_from": "2026-09-01",
+                "date_to": "2026-09-07",
+            }
+            reply = await _handle_query_movements("5491100000001", extracted)
+
+            mock_link.assert_called_once()
+            assert "Mostrando los últimos 5 de 8 movimientos." in reply
+            assert "Ver este período en tu dashboard" not in reply
+            assert "Hubo un problema" not in reply
+
+    @pytest.mark.asyncio
+    async def test_handle_query_movements_omits_link_on_error_decision(self):
+        u_id = uuid.uuid4()
+        movements = [make_movement(descripcion=f"Gasto {i}") for i in range(5)]
+        fake_result = MovementQueryResult(status="ok", message="ok", movements=movements, total_found=8)
+        error_result = DashboardLinkResult(decision=DashboardLinkDecision.ERROR)
+
+        with (
+            patch("app.services.dispatcher._user_id_by_phone", return_value=u_id),
+            patch("app.services.dispatcher.FinanceService.query_movements", return_value=fake_result),
+            patch("app.services.dispatcher.DashboardLinkService.generate_or_reuse", return_value=error_result) as mock_link,
+        ):
+            extracted = {
+                "movement_type": "egreso",
+                "date_from": "2026-09-01",
+                "date_to": "2026-09-07",
+            }
+            reply = await _handle_query_movements("5491100000001", extracted)
+
+            mock_link.assert_called_once()
+            assert "Mostrando los últimos 5 de 8 movimientos." in reply
+            assert "Ver este período en tu dashboard" not in reply
+            assert "Hubo un problema" not in reply
+
+    @pytest.mark.asyncio
+    async def test_handle_query_movements_omits_link_on_exception(self):
+        u_id = uuid.uuid4()
+        movements = [make_movement(descripcion=f"Gasto {i}") for i in range(5)]
+        fake_result = MovementQueryResult(status="ok", message="ok", movements=movements, total_found=8)
+
+        with (
+            patch("app.services.dispatcher._user_id_by_phone", return_value=u_id),
+            patch("app.services.dispatcher.FinanceService.query_movements", return_value=fake_result),
+            patch("app.services.dispatcher.DashboardLinkService.generate_or_reuse", side_effect=RuntimeError("link error")) as mock_link,
+        ):
+            extracted = {
+                "movement_type": "egreso",
+                "date_from": "2026-09-01",
+                "date_to": "2026-09-07",
+            }
+            reply = await _handle_query_movements("5491100000001", extracted)
+
+            mock_link.assert_called_once()
+            assert "Mostrando los últimos 5 de 8 movimientos." in reply
+            assert "Ver este período en tu dashboard" not in reply
+            assert "Hubo un problema" not in reply
 
 
 class TestDispatcherQueryIntegration:

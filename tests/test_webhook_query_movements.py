@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.models.database as database_module
+import app.services.dashboard_link as dashboard_link_module
 import app.services.dispatcher as dispatcher_module
 import app.services.finance as finance_module
 import app.services.onboarding as onboarding_module
@@ -77,6 +78,7 @@ def db_context(monkeypatch):
     monkeypatch.setattr(onboarding_module, "SessionLocal", testing_session_local)
     monkeypatch.setattr(database_module, "SessionLocal", testing_session_local)
     monkeypatch.setattr(dispatcher_module, "SessionLocal", testing_session_local)
+    monkeypatch.setattr(dashboard_link_module, "SessionLocal", testing_session_local)
 
     monkeypatch.setenv("ONBOARDING_REGISTRATION_URL", "https://example.com/registro")
     monkeypatch.setenv("ONBOARDING_INVITATION_TTL_MINUTES", "30")
@@ -129,12 +131,13 @@ def make_webhook_payload(
     }
 
 
-def create_user(session, whatsapp_id="5491100000001"):
+def create_user(session, whatsapp_id="5491100000001", auth_user_id=None):
     user = Usuario(
         id=uuid.uuid4(),
         nombre="Luka User",
         email=f"user_{uuid.uuid4()}@example.com",
         whatsapp_id=whatsapp_id,
+        auth_user_id=auth_user_id,
     )
     session.add(user)
     session.commit()
@@ -427,3 +430,160 @@ class TestWebhookQueryMovementsIntegration:
                 end_date=date(2026, 9, 30),
                 limit=5,
             )
+
+    def test_webhook_query_movements_offers_dashboard_link_when_more_found(self, db_context):
+        """STK-152: Ofrece enlace canónico al dashboard cuando total_found > cantidad_mostrada (5)."""
+        session = db_context["session"]
+        # Usuario vinculado con auth_user_id
+        linked_auth_id = uuid.uuid4()
+        user = create_user(session, whatsapp_id="5491100000001", auth_user_id=linked_auth_id)
+
+        # Crear 8 movimientos
+        from datetime import timedelta
+        base_date = date(2026, 9, 7)
+        for i in range(8):
+            create_movement(
+                session,
+                user.id,
+                tipo="egreso",
+                cantidad=Decimal(f"100{i}"),
+                descripcion=f"Mov {i}",
+                fecha_movimiento=base_date - timedelta(days=i),
+            )
+
+        payload = make_webhook_payload("mis ultimos gastos", sender_phone="5491100000001")
+        llm_response = {
+            "intent": "query_movements",
+            "movement_type": "egreso",
+            "category": None,
+            "date_from": "2026-08-30",
+            "date_to": "2026-09-07",
+            "limit": 5,
+            "reply_text": "Consultando tus movimientos.",
+        }
+
+        with (
+            patch("app.services.dispatcher.LLMService.process_message", AsyncMock(return_value=llm_response)),
+            patch("app.main.send_whatsapp_message", AsyncMock(return_value=True)) as mock_send,
+        ):
+            response = client.post("/webhook", json=payload)
+            assert response.status_code == 200
+
+            mock_send.assert_called_once()
+            _, reply = mock_send.call_args[0]
+
+            # Verificación del texto de movimientos y contador
+            assert "Mostrando los últimos 5 de 8 movimientos." in reply
+
+            # Verificación del enlace web ofrecido
+            assert "🔗 *Ver este período en tu dashboard:*" in reply
+            assert "https://example.com/login?token=" in reply
+            assert "date_from=2026-08-30" in reply
+            assert "date_to=2026-09-07" in reply
+            assert "_(El enlace vence en 10 minutos y sólo se puede usar una vez)_" in reply
+
+            # Validación de seguridad: no expone identificadores sensibles
+            assert str(user.id) not in reply
+            assert str(linked_auth_id) not in reply
+            assert "5491100000001" not in reply
+
+    def test_webhook_query_movements_no_link_when_total_found_lte_displayed(self, db_context):
+        """STK-152: No ofrece enlace al dashboard cuando total_found <= cantidad_mostrada (<= 5)."""
+        session = db_context["session"]
+        user = create_user(session, whatsapp_id="5491100000001", auth_user_id=uuid.uuid4())
+
+        # Solo 3 movimientos
+        for i in range(3):
+            create_movement(session, user.id, descripcion=f"Gasto {i}")
+
+        payload = make_webhook_payload("gastos de esta semana", sender_phone="5491100000001")
+        llm_response = {
+            "intent": "query_movements",
+            "movement_type": "egreso",
+            "category": None,
+            "date_from": "2026-08-30",
+            "date_to": "2026-09-07",
+            "limit": 5,
+        }
+
+        with (
+            patch("app.services.dispatcher.LLMService.process_message", AsyncMock(return_value=llm_response)),
+            patch("app.main.send_whatsapp_message", AsyncMock(return_value=True)) as mock_send,
+            patch("app.services.dispatcher.DashboardLinkService.generate_or_reuse") as mock_link,
+        ):
+            response = client.post("/webhook", json=payload)
+            assert response.status_code == 200
+
+            # DashboardLinkService NO debe ser invocado
+            mock_link.assert_not_called()
+
+            mock_send.assert_called_once()
+            _, reply = mock_send.call_args[0]
+            assert "Ver este período en tu dashboard" not in reply
+
+    def test_webhook_query_movements_linked_user_no_dates_omits_link_when_more_found(self, db_context):
+        """STK-152: Usuario vinculado con más de 5 resultados pero sin fechas: no debe generarse enlace."""
+        session = db_context["session"]
+        user = create_user(session, whatsapp_id="5491100000001", auth_user_id=uuid.uuid4())
+
+        for i in range(8):
+            create_movement(session, user.id, descripcion=f"Gasto {i}")
+
+        payload = make_webhook_payload("mis ultimos gastos", sender_phone="5491100000001")
+        llm_response = {
+            "intent": "query_movements",
+            "movement_type": "egreso",
+            "category": None,
+            "date_from": None,
+            "date_to": None,
+            "limit": 5,
+        }
+
+        with (
+            patch("app.services.dispatcher.LLMService.process_message", AsyncMock(return_value=llm_response)),
+            patch("app.main.send_whatsapp_message", AsyncMock(return_value=True)) as mock_send,
+            patch("app.services.dispatcher.DashboardLinkService.generate_or_reuse") as mock_link,
+        ):
+            response = client.post("/webhook", json=payload)
+            assert response.status_code == 200
+
+            mock_link.assert_not_called()
+
+            mock_send.assert_called_once()
+            _, reply = mock_send.call_args[0]
+            assert "Mostrando los últimos 5 de 8 movimientos." in reply
+            assert "Ver este período en tu dashboard" not in reply
+
+    def test_webhook_query_movements_unlinked_user_omits_link_when_more_found(self, db_context):
+        """STK-152: Usuario no vinculado (NOT_ELIGIBLE) recibe movimientos pero se omite el enlace silenciosamente."""
+        session = db_context["session"]
+        # Usuario sin auth_user_id
+        user = create_user(session, whatsapp_id="5491100000001", auth_user_id=None)
+
+        for i in range(8):
+            create_movement(session, user.id, descripcion=f"Gasto {i}")
+
+        payload = make_webhook_payload("gastos de esta semana", sender_phone="5491100000001")
+        llm_response = {
+            "intent": "query_movements",
+            "movement_type": "egreso",
+            "category": None,
+            "date_from": "2026-08-30",
+            "date_to": "2026-09-07",
+            "limit": 5,
+        }
+
+        with (
+            patch("app.services.dispatcher.LLMService.process_message", AsyncMock(return_value=llm_response)),
+            patch("app.main.send_whatsapp_message", AsyncMock(return_value=True)) as mock_send,
+        ):
+            response = client.post("/webhook", json=payload)
+            assert response.status_code == 200
+
+            mock_send.assert_called_once()
+            _, reply = mock_send.call_args[0]
+
+            # Movimientos presentes normalmente
+            assert "Mostrando los últimos 5 de 8 movimientos." in reply
+            # Enlace omitido
+            assert "Ver este período en tu dashboard" not in reply

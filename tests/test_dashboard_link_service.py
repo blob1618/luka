@@ -1,6 +1,6 @@
 import hashlib
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -247,4 +247,64 @@ def test_session_creation_error_returns_controlled_decision(config):
         now=NOW,
     )
 
+    assert result.decision == DashboardLinkDecision.ERROR
+
+
+def test_generate_with_date_filters_builds_canonical_url(database, config):
+    create_linked_user(database)
+    result = DashboardLinkService.generate_or_reuse(
+        PHONE,
+        session_factory=database,
+        config=config,
+        now=NOW,
+        date_from=date(2026, 9, 1),
+        date_to=date(2026, 9, 7),
+    )
+
+    assert result.decision == DashboardLinkDecision.SEND_LINK
+    assert result.login_url is not None
+
+    parsed = urlsplit(result.login_url)
+    assert parsed.path == "/login"
+    query = parse_qs(parsed.query)
+
+    # Debe contener token, date_from y date_to
+    assert "token" in query and len(query["token"][0]) > 0
+    assert query["date_from"] == ["2026-09-01"]
+    assert query["date_to"] == ["2026-09-07"]
+
+    # No debe incluir next, tipo, categoria ni datos sensibles
+    assert "next" not in query
+    assert "tipo" not in query
+    assert "categoria" not in query
+    assert "user_id" not in query
+    assert "usuario_id" not in query
+    assert "whatsapp_id" not in query
+    assert PHONE not in result.login_url
+
+
+def test_generate_without_date_filters_preserves_clean_token_url(database, config):
+    create_linked_user(database)
+    result = DashboardLinkService.generate_or_reuse(
+        PHONE,
+        session_factory=database,
+        config=config,
+        now=NOW,
+    )
+
+    assert result.decision == DashboardLinkDecision.SEND_LINK
+    parsed = urlsplit(result.login_url)
+    query = parse_qs(parsed.query)
+    assert set(query.keys()) == {"token"}
+
+
+def test_generate_with_invalid_date_type_returns_error(database, config):
+    create_linked_user(database)
+    result = DashboardLinkService.generate_or_reuse(
+        PHONE,
+        session_factory=database,
+        config=config,
+        now=NOW,
+        date_from="2026-09-01",  # string no permitido, debe ser date | None
+    )
     assert result.decision == DashboardLinkDecision.ERROR

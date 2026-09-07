@@ -2,7 +2,7 @@ import hashlib
 import os
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
@@ -94,8 +94,15 @@ class DashboardLinkService:
         session_factory=None,
         config: DashboardLinkConfig | None = None,
         now: datetime | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
     ) -> DashboardLinkResult:
         if not isinstance(whatsapp_id, str) or not whatsapp_id.strip():
+            return DashboardLinkResult(DashboardLinkDecision.ERROR)
+
+        if date_from is not None and not isinstance(date_from, date):
+            return DashboardLinkResult(DashboardLinkDecision.ERROR)
+        if date_to is not None and not isinstance(date_to, date):
             return DashboardLinkResult(DashboardLinkDecision.ERROR)
 
         config = config or DashboardLinkConfig.from_env()
@@ -110,15 +117,34 @@ class DashboardLinkService:
 
             pending_link = cls._pending_link(session, usuario_id)
             if pending_link is not None:
-                return cls._handle_pending(session, pending_link, current_time, config)
+                return cls._handle_pending(
+                    session,
+                    pending_link,
+                    current_time,
+                    config,
+                    date_from=date_from,
+                    date_to=date_to,
+                )
 
-            return cls._create_pending(session, usuario_id, current_time, config)
+            return cls._create_pending(
+                session,
+                usuario_id,
+                current_time,
+                config,
+                date_from=date_from,
+                date_to=date_to,
+            )
         except IntegrityError:
             if session is None:
                 return DashboardLinkResult(DashboardLinkDecision.ERROR)
             session.rollback()
             return cls._recover_from_concurrent_insert(
-                session, whatsapp_id, current_time, config
+                session,
+                whatsapp_id,
+                current_time,
+                config,
+                date_from=date_from,
+                date_to=date_to,
             )
         except Exception as exc:
             if session is not None:
@@ -160,11 +186,27 @@ class DashboardLinkService:
         )
 
     @classmethod
-    def _handle_pending(cls, session, link, now, config):
+    def _handle_pending(
+        cls,
+        session,
+        link,
+        now,
+        config,
+        *,
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ):
         if _utc_datetime(link.expira_en) <= now:
             link.estado = "vencido"
             session.flush()
-            return cls._create_pending(session, link.usuario_id, now, config)
+            return cls._create_pending(
+                session,
+                link.usuario_id,
+                now,
+                config,
+                date_from=date_from,
+                date_to=date_to,
+            )
 
         if link.reenvios >= config.max_resends:
             return DashboardLinkResult(DashboardLinkDecision.SUPPRESS_RESPONSE)
@@ -182,10 +224,19 @@ class DashboardLinkService:
         link.reenvios += 1
         link.ultimo_envio_en = now
         session.commit()
-        return cls._send_result(token, config)
+        return cls._send_result(token, config, date_from=date_from, date_to=date_to)
 
     @classmethod
-    def _create_pending(cls, session, usuario_id, now, config):
+    def _create_pending(
+        cls,
+        session,
+        usuario_id,
+        now,
+        config,
+        *,
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ):
         token = secrets.token_urlsafe(32)
         link = DashboardLoginLink(
             usuario_id=usuario_id,
@@ -199,10 +250,19 @@ class DashboardLinkService:
         )
         session.add(link)
         session.commit()
-        return cls._send_result(token, config)
+        return cls._send_result(token, config, date_from=date_from, date_to=date_to)
 
     @classmethod
-    def _recover_from_concurrent_insert(cls, session, whatsapp_id, now, config):
+    def _recover_from_concurrent_insert(
+        cls,
+        session,
+        whatsapp_id,
+        now,
+        config,
+        *,
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ):
         try:
             usuario_id = cls._linked_usuario_id(session, whatsapp_id)
             if usuario_id is None:
@@ -210,7 +270,14 @@ class DashboardLinkService:
             pending_link = cls._pending_link(session, usuario_id)
             if pending_link is None:
                 return DashboardLinkResult(DashboardLinkDecision.ERROR)
-            return cls._handle_pending(session, pending_link, now, config)
+            return cls._handle_pending(
+                session,
+                pending_link,
+                now,
+                config,
+                date_from=date_from,
+                date_to=date_to,
+            )
         except Exception as exc:
             session.rollback()
             print(f"[DASHBOARD_LINK] Controlled recovery error: {type(exc).__name__}")
@@ -221,14 +288,26 @@ class DashboardLinkService:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _send_result(token: str, config: DashboardLinkConfig) -> DashboardLinkResult:
+    def _send_result(
+        token: str,
+        config: DashboardLinkConfig,
+        *,
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ) -> DashboardLinkResult:
+        query_params: dict[str, str] = {"token": token}
+        if date_from is not None:
+            query_params["date_from"] = date_from.isoformat()
+        if date_to is not None:
+            query_params["date_to"] = date_to.isoformat()
+
         parsed = urlsplit(config.login_url)
         login_url = urlunsplit(
             (
                 parsed.scheme,
                 parsed.netloc,
                 parsed.path,
-                urlencode({"token": token}),
+                urlencode(query_params),
                 "",
             )
         )
