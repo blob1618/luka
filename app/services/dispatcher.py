@@ -1374,15 +1374,19 @@ async def _handle_query_movements(sender_phone: str, extracted_data: dict) -> st
         "limit": limit,
     }
 
-    result = await asyncio.to_thread(
-        FinanceService.query_movements,
-        user_id,
-        movement_type=movement_type,
-        category_name=category_name,
-        start_date=start_date,
-        end_date=end_date,
-        limit=limit,
-    )
+    try:
+        result = await asyncio.to_thread(
+            FinanceService.query_movements,
+            user_id,
+            movement_type=movement_type,
+            category_name=category_name,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+        )
+    except Exception as exc:
+        print(f"[QUERY_MOVEMENTS_DISPATCHER] Error: {type(exc).__name__}: {exc}")
+        return "Hubo un problema al consultar tus movimientos. Por favor, intentá nuevamente."
 
     return _format_query_movements_reply(result, filters)
 

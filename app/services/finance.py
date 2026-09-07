@@ -875,7 +875,7 @@ class FinanceService:
             print(f"[QUERY_MOVEMENTS] Error: {type(exc).__name__}: {exc}")
             return MovementQueryResult(
                 status="error",
-                message=f"Error al consultar movimientos: {exc}",
+                message="Error interno al consultar movimientos",
             )
         finally:
             if close_session:
