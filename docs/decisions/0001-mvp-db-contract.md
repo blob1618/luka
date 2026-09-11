@@ -56,7 +56,7 @@ Si en una release futura el frontend consulta Supabase directamente, deberán de
 ## Consecuencias
 
 - Backend y frontend deben adaptarse al contrato oficial del MVP.
-- El contrato se implementa mediante migraciones versionadas en `database/migrations/`, comenzando por `001_mvp_movimientos_financieros.sql`.
+- El contrato se implementa mediante migraciones timestamped y forward-only en `supabase/migrations/`. El estado heredado quedó consolidado en una migración base; todo cambio posterior se agrega como una migración nueva.
 - STK-35 debe persistir movimientos en `public.movimientos_financieros` cuando exista la migración correspondiente.
 - `public.evento` debe usarse para auditoría/trazabilidad, no como tabla principal de movimientos.
 - El dashboard de Release 1 debe obtener datos financieros mediante endpoints del backend.

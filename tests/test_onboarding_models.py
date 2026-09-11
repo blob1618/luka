@@ -1,6 +1,5 @@
 import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, event, insert
@@ -355,32 +354,3 @@ def test_acceptance_can_represent_unknown_legacy_origin(session):
     session.commit()
 
     assert acceptance.origen == "legacy_desconocido"
-
-
-def test_rollback_does_not_disable_row_level_security():
-    rollback_path = (
-        Path(__file__).parents[1]
-        / "database"
-        / "migrations"
-        / "003_onboarding_identity_consent.rollback.sql"
-    )
-
-    rollback_sql = rollback_path.read_text(encoding="utf-8").upper()
-
-    assert "DISABLE ROW LEVEL SECURITY" not in rollback_sql
-
-
-def test_migration_rejects_preexisting_auth_user_id_column():
-    migration_path = (
-        Path(__file__).parents[1]
-        / "database"
-        / "migrations"
-        / "003_onboarding_identity_consent.sql"
-    )
-
-    migration_sql = migration_path.read_text(encoding="utf-8").upper()
-
-    assert "ADD COLUMN IF NOT EXISTS AUTH_USER_ID" not in migration_sql
-    assert "PG_CATALOG.PG_ATTRIBUTE" in migration_sql
-    assert "PUBLIC.USUARIO.AUTH_USER_ID PREEXISTENTE" in migration_sql
-    assert "ALTER TABLE PUBLIC.USUARIO\n  ADD COLUMN AUTH_USER_ID UUID NULL;" in migration_sql
