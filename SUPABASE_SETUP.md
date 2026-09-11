@@ -3,7 +3,7 @@
 LUKA usa SQLite por defecto para desarrollo local y PostgreSQL/Supabase en entornos compartidos. Son escenarios distintos:
 
 - En local se pueden crear tablas temporales o de desarrollo desde los modelos SQLAlchemy.
-- En Supabase compartido, todo cambio de esquema debe estar versionado en `database/migrations/` y coordinarse antes de aplicarlo.
+- En Supabase compartido, todo cambio de esquema debe estar versionado en `supabase/migrations/`.
 - `database/reference/schema_supabase_inicial_legacy.sql` es un snapshot histórico no ejecutable. No representa el estado remoto actual y no debe usarse para reconstruir ni reparar la base.
 
 El contrato vigente de Release 1 está documentado en `docs/decisions/0001-mvp-db-contract.md`: `public.usuario` es la tabla oficial de usuarios y `public.movimientos_financieros` es la tabla oficial para ingresos y egresos.
@@ -61,21 +61,20 @@ python -c "from app.models.database import engine, Base; Base.metadata.create_al
 
 ## Paso 5: Gestionar el esquema compartido
 
-El repositorio `blob1618/luka` es propietario de las migraciones; `blob1618/luka_frontend` consume el esquema, pero no lo administra. Las migraciones versionadas comienzan en `database/migrations/001_mvp_movimientos_financieros.sql`. La migración 003 prepara identidad, onboarding y consentimiento, y la 005 implementa el contrato de presupuestos de HU-PRE-01/STK-47. Aunque todavía no hay una herramienta formal de migraciones configurada, no debe afirmarse que el proyecto carece de migraciones.
+El repositorio `blob1618/luka` es propietario de las migraciones; `blob1618/luka_frontend` consume el esquema, pero no lo administra. Supabase CLI usa `supabase/migrations/` como única fuente versionada. `20260911010815_baseline_remote_schema.sql` representa el esquema remoto existente al habilitar el flujo y ya figura como aplicada en el historial remoto.
 
-La existencia de una migración en GitHub describe el contrato esperado, pero no confirma que haya sido aplicada en Supabase. Antes de depender de una columna, tabla o índice en producción, el equipo debe verificar su aplicación mediante el proceso operativo autorizado. Después deberá generar un snapshot nuevo mediante un procedimiento controlado; el snapshot histórico no se reemplaza ni se ejecuta para este fin.
+Para un cambio nuevo:
 
-En particular, deben verificarse en el entorno remoto:
+```bash
+supabase migration new nombre_del_cambio
+# editar el archivo generado en supabase/migrations/
+supabase db reset
+supabase db lint --level warning
+```
 
-- `public.usuario.whatsapp_id` y su índice productivo.
-- `public.movimientos_financieros` y sus índices de consulta.
-- El índice único parcial sobre `public.movimientos_financieros.whatsapp_message_id`, necesario para reforzar la deduplicación ante concurrencia.
-- RLS habilitado en `public.movimientos_financieros`, sin asumir acceso directo para roles públicos.
-- La tabla, restricciones e índices de `public.limite_categoria` definidos por la migración 005.
-- El índice parcial `movimientos_financieros_presupuesto_egresos_idx` usado para calcular consumo por categoría, moneda y período.
-- El estado previo de `acuerdo_aceptado`, la compatibilidad de los roles backend con RLS y todos los objetos de la migración 003 antes de aplicarla.
+Las migraciones son forward-only: no agregar archivos `*.rollback.sql`. Si un cambio publicado debe revertirse, crear otra migración timestamped que corrija el estado. La integración de GitHub de Supabase observa `main` con directorio de trabajo `.` y aplica automáticamente las migraciones nuevas. CI reconstruye una base local en cada push y pull request; para usar ese control como barrera previa a producción, integrar a `main` mediante pull request con los checks requeridos.
 
-Esta guía no define ni ejecuta el procedimiento de aplicación de migraciones en Supabase.
+La existencia del archivo no confirma el despliegue. Después de integrar un cambio se debe comprobar que los timestamps local y remoto coincidan con `supabase migration list` y validar los objetos afectados en la base remota.
 
 ## Paso 6: Verificar la conexión (opcional)
 

@@ -35,3 +35,24 @@ jobs:
       - name: Lint with Ruff
         run: |
           ruff check .
+
+  database-migrations:
+    name: Supabase Migration Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.117.0
+
+      - name: Rebuild database from migrations
+        run: |
+          supabase start --exclude gotrue,realtime,storage-api,imgproxy,kong,mailpit,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor
+          supabase db reset
+
+      - name: Lint database schema
+        run: supabase db lint --level warning

@@ -564,7 +564,12 @@ class TestWebhookQueryMovementsIntegration:
         user = create_user(session, whatsapp_id="5491100000001", auth_user_id=None)
 
         for i in range(8):
-            create_movement(session, user.id, descripcion=f"Gasto {i}")
+            create_movement(
+                session,
+                user.id,
+                descripcion=f"Gasto {i}",
+                fecha_movimiento=date(2026, 9, 7),
+            )
 
         payload = make_webhook_payload("gastos de esta semana", sender_phone="5491100000001")
         llm_response = {

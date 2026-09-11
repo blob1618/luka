@@ -35,7 +35,7 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 ### Contrato DB MVP / Release 1
 
 - `public.movimientos_financieros` es la entidad central para ingresos y egresos; `public.usuario` es la tabla oficial de usuarios, mapeada por `public.usuario.whatsapp_id`.
-- No ejecutar SQL ni tocar Supabase directamente; todo cambio de schema se versiona primero (ver `docs/database.md` y `database/migrations/`).
+- No ejecutar SQL ni tocar Supabase directamente; todo cambio de schema se versiona primero (ver `docs/database.md` y `supabase/migrations/`).
 - `public.movimientos_financieros` tiene RLS habilitado; no asumir policies de acceso público (roles `anon`/`authenticated`). No hay frontend -> Supabase directo salvo nueva ADR.
 
 ### Invariantes del registro por texto
@@ -46,7 +46,7 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 - Requiere usuario previamente registrado y vinculado por `whatsapp_id`; STK-35 no crea usuarios.
 - `categoria_id` solo si existe una categoría activa del usuario; si no, queda `null`. No crear categorías automáticamente.
 - No persistir como movimientos los intents `greeting`, `out_of_scope`, `reminder`, `budget_query`, `expense_summary`.
-- No asumir que una migración versionada o el snapshot local prueban el estado aplicado en Supabase; los índices productivos se verifican por el proceso operativo.
+- No asumir que una migración versionada o el snapshot local prueban el estado aplicado en Supabase; comprobar el historial con `supabase migration list` y verificar los objetos afectados en remoto.
 
 ## Gotchas específicos
 

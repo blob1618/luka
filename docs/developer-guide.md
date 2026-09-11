@@ -89,9 +89,9 @@ Para crear las tablas actuales desde los modelos SQLAlchemy en una base local de
 python -c "from app.models.database import engine, Base; Base.metadata.create_all(bind=engine)"
 ```
 
-El repositorio contiene migraciones SQL versionadas en `database/migrations/`, aunque todavía no hay una herramienta formal de migraciones configurada. No usar `Base.metadata.create_all()` para actualizar una base compartida de Supabase. Si un cambio toca el esquema, debe versionarse y coordinarse con el equipo antes de aplicarlo; ver `docs/database.md`.
+El repositorio usa Supabase CLI y migraciones timestamped en `supabase/migrations/`. No usar `Base.metadata.create_all()` para actualizar una base compartida. Crear cada cambio con `supabase migration new <nombre>`, validarlo con `supabase db reset` y publicarlo mediante el flujo de GitHub; ver `docs/database.md`.
 
-`database/reference/schema_supabase_inicial_legacy.sql` es un snapshot histórico no ejecutable: no representa el estado actual y no debe usarse para reconstruir ni reparar Supabase. Las migraciones versionadas describen el contrato esperado, pero solo Supabase remoto demuestra qué cambios están realmente aplicados. Después de aplicar y verificar una migración deberá generarse un snapshot nuevo mediante un procedimiento controlado.
+`database/reference/schema_supabase_inicial_legacy.sql` es un snapshot histórico no ejecutable: no representa el estado actual y no debe usarse para reconstruir ni reparar Supabase. El historial efectivo se comprueba con `supabase migration list`; una migración local por sí sola no demuestra que haya sido desplegada.
 
 ## Limitaciones conocidas y trabajo relacionado
 

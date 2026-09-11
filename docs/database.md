@@ -10,11 +10,11 @@ El repositorio contiene fuentes con propósitos distintos:
 | --- | --- | --- |
 | `docs/decisions/0001-mvp-db-contract.md` | Decisión vigente sobre tablas oficiales y acceso mediado por backend. | Que el contrato ya esté aplicado en cada entorno. |
 | `app/models/database.py` | Modelos SQLAlchemy que usa el backend actual. | El estado exacto de una base remota. |
-| `database/migrations/` | Cambios de esquema versionados esperados por el contrato. | Que las migraciones se hayan ejecutado en Supabase. |
+| `supabase/migrations/` | Historial canónico de cambios de esquema para Supabase CLI. | Que una migración todavía no integrada haya llegado al entorno remoto. |
 | `database/reference/schema_supabase_inicial_legacy.sql` | Snapshot histórico inicial, conservado solo como referencia. | El estado actual o un script apto para reconstruir o reparar la base. |
 | Supabase remoto | Estado aplicado de producción o del entorno compartido. | No puede inferirse únicamente desde GitHub; requiere verificación operativa autorizada. |
 
-`blob1618/luka` es propietario del contrato y de las migraciones. `blob1618/luka_frontend` consume el mismo esquema mediante su propio backend, pero no lo administra. Las migraciones versionadas de `database/migrations/` definen los cambios esperados; Supabase remoto representa lo realmente aplicado.
+`blob1618/luka` es propietario del contrato y de las migraciones. `blob1618/luka_frontend` consume el mismo esquema mediante su propio backend, pero no lo administra. `supabase/migrations/` es la única ubicación ejecutable por la integración de GitHub; Supabase remoto representa lo realmente aplicado.
 
 `database/reference/schema_supabase_inicial_legacy.sql` es histórico y no ejecutable. No debe usarse para reconstruir ni reparar la base. Después de aplicar y verificar una migración en Supabase se deberá generar un snapshot nuevo mediante un procedimiento controlado; STK-143 no genera todavía ese snapshot.
 
@@ -52,9 +52,9 @@ El gasto consumido, disponible, exceso y porcentaje no se persisten como columna
 
 Después de registrar un egreso con un límite aplicable, la respuesta informa el valor del límite, el gasto acumulado, el disponible y el porcentaje consumido. `should_alert` queda reservado para distinguir un exceso; no controla si el estado calculado se muestra o no.
 
-La migración `005_presupuesto_control_gasto.sql` agrega moneda, restricciones, unicidad e índices para límites y para la agregación de egresos. También habilita RLS en `limite_categoria` sin otorgar acceso a roles públicos. Su presencia en el repositorio no demuestra que esté aplicada en Supabase.
+El esquema base contiene moneda, restricciones, unicidad e índices para límites y para la agregación de egresos. También habilita RLS en `limite_categoria` sin otorgar acceso a roles públicos.
 
-La migración `006_categorias_usuario_nombre_unico.sql` agrega un índice único parcial para impedir dos categorías activas con el mismo nombre normalizado dentro de un usuario. Antes de crear el índice audita duplicados y aborta con un error explícito si encuentra datos que requieran reconciliación.
+El índice único parcial `categorias_usuario_nombre_activo_uidx` impide dos categorías activas con el mismo nombre normalizado dentro de un usuario.
 
 
 ## Modelos actuales del backend
@@ -149,27 +149,20 @@ Todo mensaje de texto entrante se reclama atómicamente en Redis por su `message
 
 Además, el backend consulta `whatsapp_message_id` antes de insertar un movimiento. Si ya existe, devuelve `duplicate` y evita una segunda fila. Esta restricción de base se conserva como defensa adicional para los movimientos, aunque el reclamo global de Redis ya protege saludos, límites, categorías, recordatorios y consultas.
 
-La migración versionada `database/migrations/001_mvp_movimientos_financieros.sql` y el ORM declaran un índice único parcial sobre `movimientos_financieros.whatsapp_message_id`. La migración también declara índices para búsqueda de usuario y consultas de movimientos.
+La migración base y el ORM declaran un índice único parcial sobre `movimientos_financieros.whatsapp_message_id`, además de índices para búsqueda de usuario y consultas de movimientos.
 
-Esto define el contrato esperado, pero no prueba el estado productivo. Queda pendiente verificar en Supabase:
-
-- El índice de `public.usuario.whatsapp_id`.
-- El índice único parcial real de `public.movimientos_financieros.whatsapp_message_id`.
-- Los índices por usuario, fecha, tipo y categoría necesarios para consultas productivas.
-- El índice parcial `categorias_usuario_nombre_activo_uidx` después de aplicar la migración 006.
-
-Hasta esa verificación, la deduplicación de aplicación reduce duplicados secuenciales, pero la protección robusta ante concurrencia depende del índice único aplicado en la base.
+Al crear la migración base se compararon el esquema remoto y una reconstrucción local: ambos presentaron 12 tablas públicas, 34 índices y 6 tablas con RLS. Toda migración posterior debe volver a verificar específicamente los objetos que modifica.
 
 ## Migraciones y desarrollo local
 
-Sí existen migraciones SQL versionadas en GitHub dentro de `database/migrations/`. HU-PRE-01/STK-47 agrega `005_presupuesto_control_gasto.sql` y la creación dinámica segura de categorías agrega `006_categorias_usuario_nombre_unico.sql`, ambas con rollback controlado. Ninguna migración nueva se considera aplicada por el solo hecho de estar versionada: debe revisarse contra el estado y los roles reales de Supabase antes de ejecutarla.
+Supabase CLI es el flujo único de migraciones. El historial previo quedó consolidado en `supabase/migrations/20260911010815_baseline_remote_schema.sql`, cuyo timestamp coincide con el historial remoto.
 
-Todavía no hay una herramienta formal como Alembic o Supabase CLI configurada como flujo único de aplicación. Por lo tanto:
-
-1. Todo cambio de esquema debe versionarse en el repositorio antes de aplicarse.
-2. La aplicación en un entorno compartido debe coordinarse mediante el proceso operativo del equipo.
-3. Después de aplicar y verificar cambios remotos, debe generarse un snapshot nuevo mediante un procedimiento controlado.
-4. La creación desde `Base.metadata.create_all()` queda limitada a SQLite o bases locales descartables; no sustituye migraciones en Supabase.
+1. Crear cada cambio con `supabase migration new <nombre>` y editar solo el archivo nuevo.
+2. Ejecutar `supabase db reset` y `supabase db lint --level warning` antes de abrir o integrar el cambio.
+3. Integrar a `main`; la integración de GitHub de Supabase aplica automáticamente los timestamps que falten.
+4. Confirmar después del despliegue con `supabase migration list` y una verificación puntual de los objetos modificados.
+5. Corregir un cambio publicado mediante una nueva migración forward-only; no guardar rollbacks dentro de `supabase/migrations/`.
+6. Limitar `Base.metadata.create_all()` a SQLite o bases locales descartables; no sustituye migraciones en Supabase.
 
 Configuración local por defecto:
 
@@ -188,9 +181,7 @@ Para Release 1, el acceso financiero es mediado por backend:
 
 No se permite que un dashboard consulte directamente los movimientos financieros de Supabase en esta etapa. El backend debe aplicar autorización y filtrar siempre por el usuario correspondiente.
 
-Las migraciones declaran `ENABLE ROW LEVEL SECURITY` para las tablas alcanzadas. La migración 003 lo habilita en `usuario`, `onboarding_invitacion`, `acuerdo_version` y `acuerdo_aceptado`; la migración 005 lo habilita en `limite_categoria`. Ninguna agrega policies ni `GRANT` para `anon` o `authenticated`. El estado efectivo y la compatibilidad de los roles de conexión backend deben verificarse en Supabase antes de aplicarlas.
-
-El rollback de la migración 003 no ejecuta `DISABLE ROW LEVEL SECURITY` sobre tablas preexistentes: deja RLS habilitado porque no puede conocer de forma segura el estado anterior y deshabilitarlo podría reducir protecciones existentes.
+La migración base declara `ENABLE ROW LEVEL SECURITY` para las tablas protegidas que ya lo tenían. `20260911011601_protect_movimientos_financieros.sql` corrige las diferencias detectadas en la tabla financiera central: habilita RLS y agrega los índices de deduplicación y consulta que faltaban. No se agregan policies públicas; el backend usa un rol con `BYPASSRLS`. El estado efectivo debe volver a verificarse cuando una migración toque permisos o RLS.
 
 El micrositio/dashboard y su acceso seguro mediante Magic Link están relacionados con STK-54. Requieren coordinación entre backend y frontend y no fueron implementados por STK-35.
 
@@ -209,11 +200,8 @@ Estas capacidades pueden formar parte de la arquitectura objetivo, pero no deben
 
 ## Pendientes operativos y de seguridad/costos
 
-- Reexportar el schema después de confirmar el estado real de Supabase.
-- Verificar índices productivos y el índice único parcial de deduplicación.
 - Agregar observabilidad de latencia para webhook, LLM, base y respuesta. Durante pruebas manuales se observó una latencia aproximada de 5–10 segundos en el flujo completo, pendiente de medición formal por etapa.
 - Investigar typing indicator y mark as read en WhatsApp Business API.
 - Incorporar rate limiting y protecciones frente a abuso de tokens.
 - Evitar llamar al LLM para usuarios no registrados o mensajes ya procesados.
 - Evaluar un pre-router para saludos y solicitudes claramente fuera de alcance.
-- Definir una herramienta y procedimiento formal de migraciones.
