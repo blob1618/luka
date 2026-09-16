@@ -70,6 +70,16 @@ El índice único parcial `categorias_usuario_nombre_activo_uidx` impide dos cat
 - `Recordatorio` -> `recordatorio`
 - `Evento` -> `evento`
 - `MovimientoFinanciero` -> `movimientos_financieros`
+- `ConversationFlow` -> `conversation_flow`
+- `ConversationFlowVersion` -> `conversation_flow_version`
+
+Los flujos conversacionales son configuración global del backend, no datos
+financieros de un usuario. `conversation_flow` conserva la identidad, el evento
+y el estado activo/retirado; `conversation_flow_version` conserva definiciones
+JSON versionadas con un único borrador y una única versión publicada por flujo.
+La migración incremental correspondiente es
+`20260916174000_add_conversation_flows.sql`. Habilita RLS sin agregar policies
+públicas: el panel nunca accede a estas tablas y opera mediante la API interna.
 
 Diagrama de las entidades financieras principales:
 

@@ -87,7 +87,7 @@ comenzar.
 
 ### Tipos de nodo
 
-- `text`: cuerpo de texto y finalización opcional.
+- `text`: cuerpo de texto y finalización obligatoria del recorrido configurable.
 - `reply_button`: cuerpo y opciones mostradas como botones de respuesta.
 - `list`: cuerpo, etiqueta del botón de apertura, secciones y opciones.
 
