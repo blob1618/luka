@@ -53,6 +53,19 @@ def make_text_message(body="Gaste 5000 en supermercado"):
     }
 
 
+def make_interactive_message(option_id="cf.version.option"):
+    return {
+        "from": "12345",
+        "id": "wamid.interactive",
+        "timestamp": "1603059201",
+        "type": "interactive",
+        "interactive": {
+            "type": "button_reply",
+            "button_reply": {"id": option_id, "title": "Texto no confiable"},
+        },
+    }
+
+
 def make_webhook_payload(messages=None, statuses=None):
     value = {
         "messaging_product": "whatsapp",
@@ -247,6 +260,29 @@ def test_handle_webhook_duplicate_message_is_suppressed_before_dispatch():
     assert response.status_code == 200
     process_message.assert_not_awaited()
     send_message.assert_not_awaited()
+
+
+def test_handle_webhook_routes_interactive_reply_by_id():
+    payload = make_webhook_payload(messages=[make_interactive_message()])
+    result = type("Result", (), {"reply_text": "Listo", "reply_message": None})()
+    with (
+        patch(
+            "app.main.process_incoming_interactive_reply",
+            new_callable=AsyncMock,
+            return_value=result,
+        ) as process_reply,
+        patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
+    ):
+        response = client.post("/webhook", json=payload)
+
+    assert response.status_code == 200
+    process_reply.assert_awaited_once_with(
+        sender_phone="12345",
+        option_id="cf.version.option",
+        reply_type="button_reply",
+        whatsapp_message_id="wamid.interactive",
+    )
+    send_message.assert_awaited_once_with("12345", "Listo")
 
 
 def test_handle_webhook_user_not_found():

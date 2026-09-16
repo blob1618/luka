@@ -6,6 +6,7 @@ from sqlalchemy import (
     Boolean, Date, Integer, Numeric, CheckConstraint, Index, UniqueConstraint
 )
 from sqlalchemy.types import Uuid, JSON
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.sql import func
 
@@ -378,5 +379,99 @@ class MovimientoFinanciero(Base):
             "fecha_movimiento",
             postgresql_where=(tipo == "egreso") & categoria_id.isnot(None),
             sqlite_where=(tipo == "egreso") & categoria_id.isnot(None),
+        ),
+    )
+
+
+class ConversationFlow(Base):
+    __tablename__ = "conversation_flow"
+
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    slug = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    event_key = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="active")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("slug", name="conversation_flow_slug_key"),
+        UniqueConstraint("event_key", name="conversation_flow_event_key_key"),
+        CheckConstraint("trim(slug) <> ''", name="conversation_flow_slug_no_vacio_check"),
+        CheckConstraint("trim(name) <> ''", name="conversation_flow_name_no_vacio_check"),
+        CheckConstraint(
+            "trim(event_key) <> ''",
+            name="conversation_flow_event_key_no_vacio_check",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'archived')",
+            name="conversation_flow_status_check",
+        ),
+    )
+
+
+class ConversationFlowVersion(Base):
+    __tablename__ = "conversation_flow_version"
+
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    flow_id = Column(
+        Uuid(as_uuid=True),
+        ForeignKey("conversation_flow.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    version_number = Column(Integer, nullable=False)
+    status = Column(String, nullable=False, default="draft")
+    definition = Column(JSON().with_variant(JSONB, "postgresql"), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        onupdate=func.now(),
+    )
+    published_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "flow_id",
+            "version_number",
+            name="conversation_flow_version_flow_number_key",
+        ),
+        CheckConstraint(
+            "version_number > 0",
+            name="conversation_flow_version_number_check",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'published', 'retired')",
+            name="conversation_flow_version_status_check",
+        ),
+        CheckConstraint(
+            "(status = 'draft' AND published_at IS NULL) OR "
+            "(status IN ('published', 'retired') AND published_at IS NOT NULL)",
+            name="conversation_flow_version_publication_check",
+        ),
+        Index(
+            "conversation_flow_version_draft_uidx",
+            "flow_id",
+            unique=True,
+            postgresql_where=(status == "draft"),
+            sqlite_where=(status == "draft"),
+        ),
+        Index(
+            "conversation_flow_version_published_uidx",
+            "flow_id",
+            unique=True,
+            postgresql_where=(status == "published"),
+            sqlite_where=(status == "published"),
+        ),
+        Index(
+            "conversation_flow_version_flow_status_idx",
+            "flow_id",
+            "status",
         ),
     )

@@ -12,7 +12,9 @@ import pytest
 from app.services.conversation import (
     ConversationService,
     ConversationState,
+    ConversationStateUnavailable,
     LastRegisteredMovement,
+    PendingConversationFlow,
     PendingMovement,
     PendingReminder,
 )
@@ -62,6 +64,13 @@ class MockRedisClient:
         if "setex" in self.fail_methods:
             raise ConnectionError("redis down")
         self.storage[key] = value
+
+    async def set(self, key, value, *, ex=None):
+        del ex
+        if "set" in self.fail_methods:
+            raise ConnectionError("redis down")
+        self.storage[key] = value
+        return True
 
     async def get(self, key):
         if "get" in self.fail_methods:
@@ -177,6 +186,47 @@ async def test_clear_state_logs_error_on_redis_failure(monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert "clear_state error" in captured.out
+
+
+@pytest.mark.asyncio
+async def test_dynamic_flow_state_round_trip_and_clear(monkeypatch):
+    _install_mock_client(monkeypatch)
+    pending = PendingConversationFlow(
+        flow_id="flow-1",
+        version_id="version-1",
+        event_key="category.confirmation_required",
+        node_id="question",
+        variables={"category": "Agua"},
+    )
+
+    await ConversationService.set_pending_conversation_flow("5491100000001", pending)
+    restored = await ConversationService.get_pending_conversation_flow(
+        "5491100000001"
+    )
+    await ConversationService.clear_pending_conversation_flow("5491100000001")
+
+    assert restored == pending
+    assert (
+        await ConversationService.get_pending_conversation_flow("5491100000001")
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_dynamic_flow_state_does_not_degrade_silently(monkeypatch):
+    _install_mock_client(monkeypatch, fail_methods=("set",))
+    pending = PendingConversationFlow(
+        flow_id="flow-1",
+        version_id="version-1",
+        event_key="category.confirmation_required",
+        node_id="question",
+    )
+
+    with pytest.raises(ConversationStateUnavailable):
+        await ConversationService.set_pending_conversation_flow(
+            "5491100000001",
+            pending,
+        )
 
 
 # ---------------------------------------------------------------------------

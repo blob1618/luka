@@ -248,6 +248,52 @@ class TestLinkCommand:
 
         assert result.service_invoked == "dashboard_link"
 
+    @pytest.mark.asyncio
+    async def test_link_does_not_block_a_following_expense(self):
+        abandon = AsyncMock()
+        render_event = AsyncMock(return_value=None)
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.DashboardLinkService.generate_or_reuse",
+                return_value=self.make_link_result(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationFlowRuntime.abandon",
+                abandon,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationFlowRuntime.render_event",
+                render_event,
+            ),
+        ):
+            link_result = await process_incoming_message("12345", "/link")
+
+        with (
+            common_patches(),
+            patch(
+                "app.services.dispatcher.ConversationFlowRuntime.abandon",
+                abandon,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationFlowRuntime.render_event",
+                render_event,
+            ),
+        ):
+            expense_result = await process_incoming_message(
+                "12345",
+                "hoy gasté 3000 pesos en agua",
+                "wamid.after-link",
+            )
+
+        assert link_result.service_invoked == "dashboard_link"
+        assert expense_result.service_invoked == "finance"
+        assert expense_result.intent == "expense"
+        assert abandon.await_count == 2
+
 
 # ---------------------------------------------------------------------------
 # Financial movements

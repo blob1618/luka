@@ -6,8 +6,10 @@ import pytest
 
 from app.services.webhook_idempotency import (
     WebhookIdempotencyService,
+    process_interactive_message_once,
     process_text_message_once,
 )
+from app.api.whatsapp import InboundInteractiveReply, WhatsAppText
 
 
 class FakeRedis:
@@ -98,3 +100,41 @@ async def test_failed_send_releases_claim_for_retry():
 
     retry = await WebhookIdempotencyService.claim(redis, "wamid.retry")
     assert retry is not None
+
+
+@pytest.mark.asyncio
+async def test_interactive_reply_is_processed_and_sent_once():
+    redis = FakeRedis()
+    reply = InboundInteractiveReply(
+        message_id="wamid.interactive",
+        sender_phone="5491111111111",
+        reply_type="button_reply",
+        option_id="flow.v1.node.confirm",
+    )
+    process_reply = AsyncMock(
+        return_value=SimpleNamespace(reply_message=WhatsAppText("Listo"))
+    )
+    send_message = AsyncMock(return_value=True)
+
+    first = await process_interactive_message_once(
+        redis_client=redis,
+        interactive_reply=reply,
+        process_reply=process_reply,
+        send_message=send_message,
+    )
+    duplicate = await process_interactive_message_once(
+        redis_client=redis,
+        interactive_reply=reply,
+        process_reply=process_reply,
+        send_message=send_message,
+    )
+
+    assert first == "completed"
+    assert duplicate == "duplicate"
+    process_reply.assert_awaited_once_with(
+        sender_phone="5491111111111",
+        option_id="flow.v1.node.confirm",
+        reply_type="button_reply",
+        whatsapp_message_id="wamid.interactive",
+    )
+    send_message.assert_awaited_once_with("5491111111111", WhatsAppText("Listo"))

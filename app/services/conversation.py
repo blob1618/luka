@@ -195,6 +195,30 @@ class ConversationState:
         )
 
 
+@dataclass(frozen=True)
+class PendingConversationFlow:
+    flow_id: str
+    version_id: str
+    event_key: str
+    node_id: str
+    variables: dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PendingConversationFlow":
+        return cls(
+            flow_id=str(data["flow_id"]),
+            version_id=str(data["version_id"]),
+            event_key=str(data["event_key"]),
+            node_id=str(data["node_id"]),
+            variables={
+                str(key): str(value)
+                for key, value in dict(data.get("variables") or {}).items()
+            },
+        )
+
 @dataclass
 class LastRegisteredMovement:
     """
@@ -228,6 +252,11 @@ class LastRegisteredMovement:
 CONVERSATION_TTL = timedelta(minutes=30)
 LAST_MOVEMENT_TTL = timedelta(minutes=60)
 LAST_LIMIT_TTL = timedelta(minutes=60)
+CONVERSATION_FLOW_TTL = timedelta(minutes=30)
+
+
+class ConversationStateUnavailable(RuntimeError):
+    pass
 
 
 def _key(whatsapp_id: str) -> str:
@@ -240,6 +269,10 @@ def _last_movement_key(whatsapp_id: str) -> str:
 
 def _last_limit_key(whatsapp_id: str) -> str:
     return f"last_limit:{whatsapp_id}"
+
+
+def _conversation_flow_key(whatsapp_id: str) -> str:
+    return f"conversation_flow:{whatsapp_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +336,52 @@ class ConversationService:
             await client.delete(_key(whatsapp_id))
         except Exception as exc:
             print(f"[ConversationService] clear_state error: {type(exc).__name__}: {exc}")
+
+    @classmethod
+    async def get_pending_conversation_flow(
+        cls,
+        whatsapp_id: str,
+    ) -> PendingConversationFlow | None:
+        try:
+            client = await cls._get_client()
+            raw = await client.get(_conversation_flow_key(whatsapp_id))
+            if raw is None:
+                return None
+            return PendingConversationFlow.from_dict(json.loads(raw))
+        except Exception as exc:
+            raise ConversationStateUnavailable(
+                "No se pudo leer el recorrido pendiente."
+            ) from exc
+
+    @classmethod
+    async def set_pending_conversation_flow(
+        cls,
+        whatsapp_id: str,
+        pending: PendingConversationFlow,
+    ) -> None:
+        try:
+            client = await cls._get_client()
+            stored = await client.set(
+                _conversation_flow_key(whatsapp_id),
+                json.dumps(pending.to_dict()),
+                ex=int(CONVERSATION_FLOW_TTL.total_seconds()),
+            )
+            if stored is False:
+                raise RuntimeError("Redis did not store the conversation flow")
+        except Exception as exc:
+            raise ConversationStateUnavailable(
+                "No se pudo guardar el recorrido pendiente."
+            ) from exc
+
+    @classmethod
+    async def clear_pending_conversation_flow(cls, whatsapp_id: str) -> None:
+        try:
+            client = await cls._get_client()
+            await client.delete(_conversation_flow_key(whatsapp_id))
+        except Exception as exc:
+            raise ConversationStateUnavailable(
+                "No se pudo limpiar el recorrido pendiente."
+            ) from exc
 
     @classmethod
     async def set_pending_movement(cls, whatsapp_id: str, pending: PendingMovement) -> None:
