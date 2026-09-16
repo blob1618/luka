@@ -11,6 +11,7 @@ from app.models.database import (
     ConversationFlowVersion,
     SessionLocal,
 )
+from app.services.conversation_flow_contract import validate_flow_definition
 
 
 class ConversationFlowError(Exception):
@@ -48,6 +49,7 @@ class FlowSnapshot:
     updated_at: datetime
     draft: FlowVersionSnapshot | None = None
     published: FlowVersionSnapshot | None = None
+    versions: tuple[FlowVersionSnapshot, ...] = ()
 
 
 class ConversationFlowService:
@@ -61,6 +63,7 @@ class ConversationFlowService:
         definition: dict[str, Any],
         session_factory=None,
     ) -> FlowSnapshot:
+        definition = validate_flow_definition(event_key.strip(), definition)
         session = (session_factory or SessionLocal)()
         try:
             flow = ConversationFlow(
@@ -131,6 +134,8 @@ class ConversationFlowService:
                     raise ConversationFlowConflict("El nombre no puede estar vacio.")
                 flow.name = normalized_name
 
+            definition = validate_flow_definition(flow.event_key, definition)
+
             draft = cls._version_for_status(session, flow_id, "draft")
             if draft is None:
                 last_number = (
@@ -179,6 +184,10 @@ class ConversationFlowService:
             if draft is None:
                 raise ConversationFlowConflict("No hay un borrador para publicar.")
 
+            draft.definition = validate_flow_definition(
+                flow.event_key, draft.definition
+            )
+
             published = cls._version_for_status(session, flow_id, "published")
             if published is not None:
                 published.status = "retired"
@@ -193,6 +202,30 @@ class ConversationFlowService:
             raise ConversationFlowConflict(
                 "No se pudo publicar por un cambio concurrente."
             ) from exc
+        finally:
+            session.close()
+
+    @classmethod
+    def discard_draft(
+        cls,
+        flow_id: UUID,
+        *,
+        session_factory=None,
+    ) -> FlowSnapshot:
+        session = (session_factory or SessionLocal)()
+        try:
+            cls._flow_or_raise(session, flow_id)
+            draft = cls._version_for_status(session, flow_id, "draft")
+            if draft is None:
+                raise ConversationFlowConflict("No hay un borrador para descartar.")
+            published = cls._version_for_status(session, flow_id, "published")
+            if published is None:
+                raise ConversationFlowConflict(
+                    "El borrador inicial no se descarta; retire el recurso completo."
+                )
+            session.delete(draft)
+            session.commit()
+            return cls._snapshot(session, flow_id)
         finally:
             session.close()
 
@@ -239,6 +272,12 @@ class ConversationFlowService:
         flow = cls._flow_or_raise(session, flow_id)
         draft = cls._version_for_status(session, flow_id, "draft")
         published = cls._version_for_status(session, flow_id, "published")
+        versions = (
+            session.query(ConversationFlowVersion)
+            .filter(ConversationFlowVersion.flow_id == flow_id)
+            .order_by(ConversationFlowVersion.version_number.desc())
+            .all()
+        )
         return FlowSnapshot(
             id=flow.id,
             slug=flow.slug,
@@ -249,6 +288,7 @@ class ConversationFlowService:
             updated_at=cls._as_utc(flow.updated_at),
             draft=cls._version_snapshot(draft),
             published=cls._version_snapshot(published),
+            versions=tuple(cls._version_snapshot(version) for version in versions),
         )
 
     @classmethod

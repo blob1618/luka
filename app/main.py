@@ -1,5 +1,7 @@
 import os
+import secrets
 from contextlib import asynccontextmanager
+from uuid import UUID
 
 import redis.asyncio as redis
 from dotenv import load_dotenv
@@ -11,6 +13,19 @@ load_dotenv()
 
 from app.api.whatsapp import send_whatsapp_message  # noqa: E402
 from app.scheduler import start_scheduler  # noqa: E402
+from app.services.conversation_flow import (  # noqa: E402
+    ConversationFlowConflict,
+    ConversationFlowNotFound,
+    ConversationFlowService,
+)
+from app.services.conversation_flow_contract import (  # noqa: E402
+    ConversationFlowDefinitionInvalid,
+    CreateConversationFlowRequest,
+    SaveConversationFlowDraftRequest,
+    ValidateConversationFlowRequest,
+    available_contract,
+    validate_flow_definition,
+)
 from app.services.dispatcher import process_incoming_message  # noqa: E402
 from app.services.webhook_idempotency import (  # noqa: E402
     IdempotencyUnavailable,
@@ -57,9 +72,145 @@ app = FastAPI(title="Luka WhatsApp FinBot", lifespan=lifespan)
 VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "fallback_token")
 
 
+def _require_flow_admin(request: Request) -> None:
+    expected_key = os.getenv("FLOW_ADMIN_API_KEY", "").strip()
+    if not expected_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Conversation flow administration is not configured",
+        )
+    authorization = request.headers.get("authorization", "")
+    scheme, separator, supplied_key = authorization.partition(" ")
+    if (
+        not separator
+        or scheme.lower() != "bearer"
+        or not secrets.compare_digest(supplied_key, expected_key)
+    ):
+        raise HTTPException(status_code=401, detail="Invalid administrative credential")
+
+
+def _raise_flow_http_error(exc: Exception):
+    if isinstance(exc, ConversationFlowNotFound):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, ConversationFlowConflict):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, ConversationFlowDefinitionInvalid):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_flow_definition",
+                "errors": [
+                    {"path": issue.path, "message": issue.message}
+                    for issue in exc.issues
+                ],
+            },
+        ) from exc
+    raise exc
+
+
 @app.get("/")
 def read_root():
     return {"message": "Luka API is running"}
+
+
+@app.get("/admin/conversation-flows/contracts")
+def get_conversation_flow_contract(request: Request):
+    _require_flow_admin(request)
+    return available_contract()
+
+
+@app.get("/admin/conversation-flows")
+def list_conversation_flows(request: Request):
+    _require_flow_admin(request)
+    return ConversationFlowService.list()
+
+
+@app.post("/admin/conversation-flows", status_code=201)
+def create_conversation_flow(
+    payload: CreateConversationFlowRequest,
+    request: Request,
+):
+    _require_flow_admin(request)
+    try:
+        return ConversationFlowService.create(**payload.model_dump())
+    except (
+        ConversationFlowConflict,
+        ConversationFlowDefinitionInvalid,
+    ) as exc:
+        _raise_flow_http_error(exc)
+
+
+@app.post("/admin/conversation-flows/validate")
+def validate_conversation_flow(
+    payload: ValidateConversationFlowRequest,
+    request: Request,
+):
+    _require_flow_admin(request)
+    try:
+        normalized = validate_flow_definition(payload.event_key, payload.definition)
+        return {"valid": True, "definition": normalized}
+    except ConversationFlowDefinitionInvalid as exc:
+        _raise_flow_http_error(exc)
+
+
+@app.get("/admin/conversation-flows/{flow_id}")
+def get_conversation_flow(flow_id: UUID, request: Request):
+    _require_flow_admin(request)
+    try:
+        return ConversationFlowService.get(flow_id)
+    except ConversationFlowNotFound as exc:
+        _raise_flow_http_error(exc)
+
+
+@app.put("/admin/conversation-flows/{flow_id}/draft")
+def save_conversation_flow_draft(
+    flow_id: UUID,
+    payload: SaveConversationFlowDraftRequest,
+    request: Request,
+):
+    _require_flow_admin(request)
+    try:
+        return ConversationFlowService.save_draft(
+            flow_id,
+            **payload.model_dump(),
+        )
+    except (
+        ConversationFlowConflict,
+        ConversationFlowDefinitionInvalid,
+        ConversationFlowNotFound,
+    ) as exc:
+        _raise_flow_http_error(exc)
+
+
+@app.delete("/admin/conversation-flows/{flow_id}/draft")
+def discard_conversation_flow_draft(flow_id: UUID, request: Request):
+    _require_flow_admin(request)
+    try:
+        return ConversationFlowService.discard_draft(flow_id)
+    except (ConversationFlowConflict, ConversationFlowNotFound) as exc:
+        _raise_flow_http_error(exc)
+
+
+@app.post("/admin/conversation-flows/{flow_id}/publish")
+def publish_conversation_flow(flow_id: UUID, request: Request):
+    _require_flow_admin(request)
+    try:
+        return ConversationFlowService.publish(flow_id)
+    except (
+        ConversationFlowConflict,
+        ConversationFlowDefinitionInvalid,
+        ConversationFlowNotFound,
+    ) as exc:
+        _raise_flow_http_error(exc)
+
+
+@app.post("/admin/conversation-flows/{flow_id}/archive")
+def archive_conversation_flow(flow_id: UUID, request: Request):
+    _require_flow_admin(request)
+    try:
+        return ConversationFlowService.archive(flow_id)
+    except ConversationFlowNotFound as exc:
+        _raise_flow_http_error(exc)
 
 
 @app.get("/redis-test")

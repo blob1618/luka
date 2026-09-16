@@ -47,7 +47,7 @@ def create_flow(session_factory, **overrides):
     values = {
         "slug": f"flow-{unique}",
         "name": "Flujo de prueba",
-        "event_key": f"test.event.{unique}",
+        "event_key": "movement.registered",
         "definition": definition("Borrador 1"),
         "session_factory": session_factory,
     }
@@ -71,7 +71,7 @@ def test_slug_and_event_are_unique(session_factory):
         create_flow(
             session_factory,
             slug=flow.slug,
-            event_key=f"other.event.{uuid.uuid4().hex}",
+            event_key="movement.invalid_data",
         )
 
 
@@ -131,6 +131,35 @@ def test_republish_retires_previous_version(session_factory):
         session.close()
 
 
+def test_discard_draft_preserves_published_version(session_factory):
+    flow = create_flow(session_factory)
+    ConversationFlowService.publish(flow.id, session_factory=session_factory)
+    ConversationFlowService.save_draft(
+        flow.id,
+        definition=definition("Cambio descartable"),
+        session_factory=session_factory,
+    )
+
+    current = ConversationFlowService.discard_draft(
+        flow.id,
+        session_factory=session_factory,
+    )
+
+    assert current.draft is None
+    assert current.published.version_number == 1
+    assert current.published.definition == definition("Borrador 1")
+
+
+def test_initial_draft_cannot_be_discarded(session_factory):
+    flow = create_flow(session_factory)
+
+    with pytest.raises(ConversationFlowConflict):
+        ConversationFlowService.discard_draft(
+            flow.id,
+            session_factory=session_factory,
+        )
+
+
 def test_archive_stops_editing_and_publishing(session_factory):
     flow = create_flow(session_factory)
     archived = ConversationFlowService.archive(
@@ -156,7 +185,11 @@ def test_unknown_flow_is_reported(session_factory):
 
 def test_list_returns_created_flows(session_factory):
     first = create_flow(session_factory, name="A")
-    second = create_flow(session_factory, name="B")
+    second = create_flow(
+        session_factory,
+        name="B",
+        event_key="movement.invalid_data",
+    )
 
     flows = ConversationFlowService.list(session_factory=session_factory)
 
