@@ -1,45 +1,132 @@
 import os
+import re
+from dataclasses import dataclass
+from typing import TypeAlias
+
 import httpx
 
-WHATSAPP_API_TOKEN = os.getenv("WHATSAPP_API_TOKEN")
-WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID")
 
-async def send_whatsapp_message(
+DEFAULT_WHATSAPP_GRAPH_API_VERSION = "v26.0"
+
+
+@dataclass(frozen=True)
+class WhatsAppText:
+    body: str
+
+
+@dataclass(frozen=True)
+class WhatsAppReplyButton:
+    id: str
+    title: str
+
+
+@dataclass(frozen=True)
+class WhatsAppReplyButtons:
+    body: str
+    buttons: tuple[WhatsAppReplyButton, ...]
+    header: str | None = None
+    footer: str | None = None
+
+
+@dataclass(frozen=True)
+class WhatsAppListRow:
+    id: str
+    title: str
+    description: str | None = None
+
+
+@dataclass(frozen=True)
+class WhatsAppListSection:
+    rows: tuple[WhatsAppListRow, ...]
+    title: str | None = None
+
+
+@dataclass(frozen=True)
+class WhatsAppList:
+    body: str
+    button: str
+    sections: tuple[WhatsAppListSection, ...]
+    header: str | None = None
+    footer: str | None = None
+
+
+OutboundWhatsAppMessage: TypeAlias = WhatsAppText | WhatsAppReplyButtons | WhatsAppList
+
+
+@dataclass(frozen=True)
+class InboundInteractiveReply:
+    message_id: str
+    sender_phone: str
+    reply_type: str
+    option_id: str
+    title: str | None = None
+
+
+def normalize_whatsapp_number(to_number: str) -> str:
+    if to_number.startswith("549") and len(to_number) == 13:
+        return "54" + to_number[3:]
+    return to_number
+
+
+def whatsapp_graph_api_version() -> str | None:
+    version = os.getenv(
+        "WHATSAPP_GRAPH_API_VERSION",
+        DEFAULT_WHATSAPP_GRAPH_API_VERSION,
+    ).strip()
+    if not re.fullmatch(r"v[1-9][0-9]*\.0", version):
+        return None
+    return version
+
+
+def parse_interactive_reply(message: dict) -> InboundInteractiveReply | None:
+    if message.get("type") != "interactive":
+        return None
+    interactive = message.get("interactive")
+    if not isinstance(interactive, dict):
+        return None
+    reply_type = interactive.get("type")
+    if reply_type not in {"button_reply", "list_reply"}:
+        return None
+    reply = interactive.get(reply_type)
+    if not isinstance(reply, dict):
+        return None
+
+    message_id = str(message.get("id") or "").strip()
+    sender_phone = str(message.get("from") or "").strip()
+    option_id = str(reply.get("id") or "").strip()
+    if not message_id or not sender_phone or not option_id:
+        return None
+
+    title = reply.get("title")
+    return InboundInteractiveReply(
+        message_id=message_id,
+        sender_phone=sender_phone,
+        reply_type=reply_type,
+        option_id=option_id,
+        title=str(title) if title is not None else None,
+    )
+
+
+def build_whatsapp_payload(
     to_number: str,
-    message_text: str | None = None,
+    message: str | OutboundWhatsAppMessage | None = None,
     *,
     template_name: str | None = None,
     template_parameters: list[str] | None = None,
-):
-    """
-    Envía un mensaje de texto o template a través de la API de WhatsApp de Meta.
-    """
-    # Corrección para números argentinos: la API de Meta requiere el número sin el '9'
-    if to_number.startswith("549") and len(to_number) == 13:
-        to_number = "54" + to_number[3:]
-
-    if not WHATSAPP_API_TOKEN or not WHATSAPP_PHONE_ID:
-        print("Falta WHATSAPP_API_TOKEN o WHATSAPP_PHONE_ID. No se puede enviar el mensaje.")
-        return False
-
-    url = f"https://graph.facebook.com/v18.0/{WHATSAPP_PHONE_ID}/messages"
-    
-    headers = {
-        "Authorization": f"Bearer {WHATSAPP_API_TOKEN}",
-        "Content-Type": "application/json"
+) -> dict:
+    recipient = normalize_whatsapp_number(to_number)
+    base = {
+        "messaging_product": "whatsapp",
+        "to": recipient,
     }
-
     if template_name:
         parameters = template_parameters or []
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": to_number,
+        return {
+            **base,
             "type": "template",
             "template": {
                 "name": template_name,
-                "language": {
-                    "code": "es_AR",
-                },
+                "language": {"code": "es_AR"},
                 "components": [
                     {
                         "type": "body",
@@ -51,21 +138,174 @@ async def send_whatsapp_message(
                 ],
             },
         }
-    else:
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": to_number,
-            "type": "text",
-            "text": {
-                "body": message_text or "",
-            },
-        }
-    
+
+    if isinstance(message, str) or message is None:
+        message = WhatsAppText(message or "")
+    if isinstance(message, WhatsAppText):
+        _bounded_text(message.body, field="body", minimum=1, maximum=4096)
+        return {**base, "type": "text", "text": {"body": message.body}}
+    if isinstance(message, WhatsAppReplyButtons):
+        return {**base, "type": "interactive", "interactive": _buttons_payload(message)}
+    if isinstance(message, WhatsAppList):
+        return {**base, "type": "interactive", "interactive": _list_payload(message)}
+    raise TypeError("Unsupported WhatsApp message type")
+
+
+def _buttons_payload(message: WhatsAppReplyButtons) -> dict:
+    _bounded_text(message.body, field="body", minimum=1, maximum=1024)
+    _optional_bounded_text(message.header, field="header", maximum=60)
+    _optional_bounded_text(message.footer, field="footer", maximum=60)
+    if not 1 <= len(message.buttons) <= 3:
+        raise ValueError("reply buttons must contain between 1 and 3 options")
+
+    interactive = _interactive_shell(
+        interactive_type="button",
+        body=message.body,
+        header=message.header,
+        footer=message.footer,
+    )
+    seen_ids: set[str] = set()
+    buttons = []
+    for button in message.buttons:
+        _stable_id(button.id, seen_ids)
+        _bounded_text(button.title, field="button title", minimum=1, maximum=20)
+        buttons.append(
+            {
+                "type": "reply",
+                "reply": {"id": button.id, "title": button.title},
+            }
+        )
+    interactive["action"] = {"buttons": buttons}
+    return interactive
+
+
+def _list_payload(message: WhatsAppList) -> dict:
+    _bounded_text(message.body, field="body", minimum=1, maximum=1024)
+    _bounded_text(message.button, field="list button", minimum=1, maximum=20)
+    _optional_bounded_text(message.header, field="header", maximum=60)
+    _optional_bounded_text(message.footer, field="footer", maximum=60)
+    if not 1 <= len(message.sections) <= 10:
+        raise ValueError("lists must contain between 1 and 10 sections")
+    if len(message.sections) > 1 and any(not section.title for section in message.sections):
+        raise ValueError("every section needs a title when a list has multiple sections")
+
+    interactive = _interactive_shell(
+        interactive_type="list",
+        body=message.body,
+        header=message.header,
+        footer=message.footer,
+    )
+    seen_ids: set[str] = set()
+    row_count = 0
+    sections = []
+    for section in message.sections:
+        if not section.rows:
+            raise ValueError("list sections cannot be empty")
+        _optional_bounded_text(section.title, field="section title", maximum=24)
+        rows = []
+        for row in section.rows:
+            row_count += 1
+            _stable_id(row.id, seen_ids)
+            _bounded_text(row.title, field="row title", minimum=1, maximum=24)
+            _optional_bounded_text(
+                row.description,
+                field="row description",
+                maximum=72,
+            )
+            row_payload = {"id": row.id, "title": row.title}
+            if row.description:
+                row_payload["description"] = row.description
+            rows.append(row_payload)
+        section_payload = {"rows": rows}
+        if section.title:
+            section_payload["title"] = section.title
+        sections.append(section_payload)
+    if row_count > 10:
+        raise ValueError("lists can contain at most 10 rows")
+    interactive["action"] = {"button": message.button, "sections": sections}
+    return interactive
+
+
+def _interactive_shell(
+    *,
+    interactive_type: str,
+    body: str,
+    header: str | None,
+    footer: str | None,
+) -> dict:
+    payload = {"type": interactive_type, "body": {"text": body}}
+    if header:
+        payload["header"] = {"type": "text", "text": header}
+    if footer:
+        payload["footer"] = {"text": footer}
+    return payload
+
+
+def _stable_id(value: str, seen_ids: set[str]) -> None:
+    if not value or len(value) > 200 or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._:-]*", value
+    ):
+        raise ValueError("interactive option IDs must be stable opaque identifiers")
+    if value in seen_ids:
+        raise ValueError("interactive option IDs must be unique")
+    seen_ids.add(value)
+
+
+def _bounded_text(value: str, *, field: str, minimum: int, maximum: int) -> None:
+    if not minimum <= len(value) <= maximum:
+        raise ValueError(f"{field} must contain between {minimum} and {maximum} characters")
+
+
+def _optional_bounded_text(
+    value: str | None,
+    *,
+    field: str,
+    maximum: int,
+) -> None:
+    if value is not None:
+        _bounded_text(value, field=field, minimum=1, maximum=maximum)
+
+
+async def send_whatsapp_message(
+    to_number: str,
+    message_text: str | OutboundWhatsAppMessage | None = None,
+    *,
+    template_name: str | None = None,
+    template_parameters: list[str] | None = None,
+):
+    """Send a text, interactive message or approved template through Meta."""
+    api_token = os.getenv("WHATSAPP_API_TOKEN")
+    phone_id = os.getenv("WHATSAPP_PHONE_ID")
+    api_version = whatsapp_graph_api_version()
+    if not api_token or not phone_id:
+        print("Falta WHATSAPP_API_TOKEN o WHATSAPP_PHONE_ID. No se puede enviar el mensaje.")
+        return False
+    if api_version is None:
+        print("WHATSAPP_GRAPH_API_VERSION tiene un formato invalido.")
+        return False
+
+    try:
+        payload = build_whatsapp_payload(
+            to_number,
+            message_text,
+            template_name=template_name,
+            template_parameters=template_parameters,
+        )
+    except (TypeError, ValueError) as exc:
+        print(f"Mensaje saliente de WhatsApp invalido: {exc}")
+        return False
+
+    url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {api_token}",
+        "Content-Type": "application/json",
+    }
+
     async with httpx.AsyncClient() as client:
         response = await client.post(url, headers=headers, json=payload)
         if response.status_code != 200:
             print(f"Error al enviar el mensaje: {response.text}")
             return False
 
-        print(f"Mensaje enviado a {to_number}")
+        print(f"Mensaje enviado a {payload['to']}")
         return True

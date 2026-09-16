@@ -96,16 +96,15 @@ class WebhookIdempotencyService:
         return bool(result)
 
 
-async def process_text_message_once(
+async def process_inbound_message_once(
     *,
     redis_client: Any,
     sender_phone: str,
-    text_body: str,
     whatsapp_message_id: str,
     process_message,
     send_message,
 ) -> str:
-    """Claim, process and reply to one message at most once."""
+    """Claim, process and reply to any inbound message at most once."""
     claim = await WebhookIdempotencyService.claim(redis_client, whatsapp_message_id)
     if claim is None:
         print(
@@ -122,13 +121,12 @@ async def process_text_message_once(
     )
     send_succeeded = False
     try:
-        result = await process_message(
-            sender_phone=sender_phone,
-            text_body=text_body,
-            whatsapp_message_id=whatsapp_message_id,
-        )
-        if result.reply_text:
-            send_result = await send_message(sender_phone, result.reply_text)
+        result = await process_message()
+        reply = getattr(result, "reply_message", None)
+        if reply is None:
+            reply = getattr(result, "reply_text", None)
+        if reply:
+            send_result = await send_message(sender_phone, reply)
             send_succeeded = send_result is not False
             if send_result is False:
                 raise RuntimeError("WhatsApp reply could not be sent")
@@ -152,3 +150,52 @@ async def process_text_message_once(
                     f"error={type(release_error).__name__}",
                 )
         raise
+
+
+async def process_text_message_once(
+    *,
+    redis_client: Any,
+    sender_phone: str,
+    text_body: str,
+    whatsapp_message_id: str,
+    process_message,
+    send_message,
+) -> str:
+    async def process_text():
+        return await process_message(
+            sender_phone=sender_phone,
+            text_body=text_body,
+            whatsapp_message_id=whatsapp_message_id,
+        )
+
+    return await process_inbound_message_once(
+        redis_client=redis_client,
+        sender_phone=sender_phone,
+        whatsapp_message_id=whatsapp_message_id,
+        process_message=process_text,
+        send_message=send_message,
+    )
+
+
+async def process_interactive_message_once(
+    *,
+    redis_client: Any,
+    interactive_reply,
+    process_reply,
+    send_message,
+) -> str:
+    async def process_interactive():
+        return await process_reply(
+            sender_phone=interactive_reply.sender_phone,
+            option_id=interactive_reply.option_id,
+            reply_type=interactive_reply.reply_type,
+            whatsapp_message_id=interactive_reply.message_id,
+        )
+
+    return await process_inbound_message_once(
+        redis_client=redis_client,
+        sender_phone=interactive_reply.sender_phone,
+        whatsapp_message_id=interactive_reply.message_id,
+        process_message=process_interactive,
+        send_message=send_message,
+    )
