@@ -113,6 +113,56 @@ class ConversationFlowService:
             session.close()
 
     @classmethod
+    def find_published_by_event(
+        cls,
+        event_key: str,
+        *,
+        session_factory=None,
+    ) -> FlowSnapshot | None:
+        session = (session_factory or SessionLocal)()
+        try:
+            flow_id = (
+                session.query(ConversationFlow.id)
+                .join(
+                    ConversationFlowVersion,
+                    ConversationFlowVersion.flow_id == ConversationFlow.id,
+                )
+                .filter(
+                    ConversationFlow.event_key == event_key,
+                    ConversationFlow.status == "active",
+                    ConversationFlowVersion.status == "published",
+                )
+                .scalar()
+            )
+            return cls._snapshot(session, flow_id) if flow_id else None
+        finally:
+            session.close()
+
+    @classmethod
+    def get_version(
+        cls,
+        flow_id: UUID,
+        version_id: UUID,
+        *,
+        session_factory=None,
+    ) -> tuple[FlowSnapshot, FlowVersionSnapshot]:
+        session = (session_factory or SessionLocal)()
+        try:
+            version = (
+                session.query(ConversationFlowVersion)
+                .filter(
+                    ConversationFlowVersion.id == version_id,
+                    ConversationFlowVersion.flow_id == flow_id,
+                )
+                .first()
+            )
+            if version is None:
+                raise ConversationFlowNotFound("Version del recorrido no encontrada.")
+            return cls._snapshot(session, flow_id), cls._version_snapshot(version)
+        finally:
+            session.close()
+
+    @classmethod
     def save_draft(
         cls,
         flow_id: UUID,

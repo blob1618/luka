@@ -11,7 +11,10 @@ from fastapi.responses import PlainTextResponse
 # Cargar variables de entorno desde .env ANTES de importar submodulos
 load_dotenv()
 
-from app.api.whatsapp import send_whatsapp_message  # noqa: E402
+from app.api.whatsapp import (  # noqa: E402
+    parse_interactive_reply,
+    send_whatsapp_message,
+)
 from app.scheduler import start_scheduler  # noqa: E402
 from app.services.conversation_flow import (  # noqa: E402
     ConversationFlowConflict,
@@ -26,9 +29,13 @@ from app.services.conversation_flow_contract import (  # noqa: E402
     available_contract,
     validate_flow_definition,
 )
-from app.services.dispatcher import process_incoming_message  # noqa: E402
+from app.services.dispatcher import (  # noqa: E402
+    process_incoming_interactive_reply,
+    process_incoming_message,
+)
 from app.services.webhook_idempotency import (  # noqa: E402
     IdempotencyUnavailable,
+    process_interactive_message_once,
     process_text_message_once,
 )
 
@@ -278,21 +285,31 @@ async def handle_webhook(request: Request):
                     sender_phone = message.get("from")
                     message_type = message.get("type")
 
-                    if message_type != "text":
-                        continue
-
                     whatsapp_message_id = message.get("id")
-                    text_body = message.get("text", {}).get("body", "")
 
                     try:
-                        await process_text_message_once(
-                            redis_client=redis_client,
-                            sender_phone=sender_phone,
-                            text_body=text_body,
-                            whatsapp_message_id=whatsapp_message_id,
-                            process_message=process_incoming_message,
-                            send_message=send_whatsapp_message,
-                        )
+                        if message_type == "text":
+                            text_body = message.get("text", {}).get("body", "")
+                            await process_text_message_once(
+                                redis_client=redis_client,
+                                sender_phone=sender_phone,
+                                text_body=text_body,
+                                whatsapp_message_id=whatsapp_message_id,
+                                process_message=process_incoming_message,
+                                send_message=send_whatsapp_message,
+                            )
+                        elif message_type == "interactive":
+                            interactive_reply = parse_interactive_reply(message)
+                            if interactive_reply is None:
+                                continue
+                            await process_interactive_message_once(
+                                redis_client=redis_client,
+                                interactive_reply=interactive_reply,
+                                process_reply=process_incoming_interactive_reply,
+                                send_message=send_whatsapp_message,
+                            )
+                        else:
+                            continue
                     except IdempotencyUnavailable as exc:
                         print(
                             "[INBOUND_MESSAGE]",

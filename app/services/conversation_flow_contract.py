@@ -93,6 +93,12 @@ class ListNode(StrictModel):
     def at_most_ten_rows(self):
         if sum(len(section.options) for section in self.sections) > 10:
             raise ValueError("una lista admite como maximo 10 filas")
+        if len(self.sections) > 1 and any(
+            not section.title for section in self.sections
+        ):
+            raise ValueError(
+                "todas las secciones necesitan titulo cuando hay mas de una"
+            )
         return self
 
 
@@ -136,21 +142,30 @@ class ValidateConversationFlowRequest(StrictModel):
 class EventPolicy:
     variables: frozenset[str] = frozenset()
     actions: frozenset[str] = frozenset()
+    terminal_only: bool = False
 
 
 EVENT_POLICIES: dict[str, EventPolicy] = {
     "onboarding.invitation": EventPolicy(
-        frozenset({"registration_url", "ttl_minutes"})
+        frozenset({"registration_url", "ttl_minutes"}),
+        terminal_only=True,
     ),
-    "onboarding.error": EventPolicy(),
-    "dashboard.link.sent": EventPolicy(frozenset({"login_url", "ttl_minutes"})),
-    "dashboard.link.not_eligible": EventPolicy(),
-    "dashboard.link.error": EventPolicy(),
+    "onboarding.error": EventPolicy(terminal_only=True),
+    "dashboard.link.sent": EventPolicy(
+        frozenset({"login_url", "ttl_minutes"}),
+        terminal_only=True,
+    ),
+    "dashboard.link.not_eligible": EventPolicy(terminal_only=True),
+    "dashboard.link.error": EventPolicy(terminal_only=True),
     "movement.registered": EventPolicy(
-        frozenset({"movement_type", "description", "amount", "currency"})
+        frozenset({"movement_type", "description", "amount", "currency"}),
+        terminal_only=True,
     ),
-    "movement.invalid_data": EventPolicy(frozenset({"reason"})),
-    "movement.persistence_error": EventPolicy(),
+    "movement.invalid_data": EventPolicy(
+        frozenset({"reason"}),
+        terminal_only=True,
+    ),
+    "movement.persistence_error": EventPolicy(terminal_only=True),
     "movement.category_hint": EventPolicy(
         actions=frozenset({"request_category_change"})
     ),
@@ -204,7 +219,7 @@ EVENT_POLICIES: dict[str, EventPolicy] = {
     "limit.deleted": EventPolicy(frozenset({"category", "period"})),
     "limit.month_selection": EventPolicy(
         frozenset({"year"}),
-        frozenset({"select_limit_month", "cancel_pending_operation"}),
+        frozenset({"cancel_pending_operation"}),
     ),
     "budget.result": EventPolicy(frozenset({"summary"})),
     "movements.query_result": EventPolicy(frozenset({"summary"})),
@@ -261,6 +276,7 @@ def available_contract() -> dict[str, Any]:
                 "event_key": event_key,
                 "variables": sorted(policy.variables),
                 "actions": sorted(policy.actions),
+                "terminal_only": policy.terminal_only,
             }
             for event_key, policy in sorted(EVENT_POLICIES.items())
         ],
@@ -275,6 +291,17 @@ def _semantic_issues(
     issues: list[FlowValidationIssue] = []
     nodes_by_id: dict[str, FlowNode] = {}
     option_ids: set[str] = set()
+
+    if policy.terminal_only and (
+        len(definition.nodes) != 1
+        or not isinstance(definition.nodes[0], TextNode)
+    ):
+        issues.append(
+            FlowValidationIssue(
+                "nodes",
+                "el evento es terminal y solo admite un nodo de texto",
+            )
+        )
 
     for node_index, node in enumerate(definition.nodes):
         if node.id in nodes_by_id:

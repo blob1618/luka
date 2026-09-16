@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.sql import func
 
+from app.api.whatsapp import OutboundWhatsAppMessage
 from app.models.database import Categoria, SessionLocal, Usuario
 from app.services.conversation import (
     ConversationService,
@@ -25,6 +26,7 @@ from app.services.conversation import (
     PendingMovement,
     PendingReminder,
 )
+from app.services.conversation_flow_runtime import ConversationFlowRuntime
 from app.services.budget import BudgetEvaluation, BudgetService, BudgetStatus
 from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkService
 from app.services.finance import (
@@ -55,6 +57,9 @@ class DispatchResult:
     service_invoked: str | None = None
     intent: str | None = None
     debug_info: dict = field(default_factory=dict)
+    event_key: str | None = None
+    event_variables: dict[str, Any] = field(default_factory=dict)
+    reply_message: OutboundWhatsAppMessage | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -613,11 +618,26 @@ async def _register_single_with_hint(
     )
 
     if result.status == "needs_category_confirmation":
+        extracted_data["_conversation_event_key"] = (
+            "category.confirmation_required"
+        )
+        extracted_data["_conversation_event_variables"] = {
+            "category": category_name or "",
+        }
         return _route_needs_category_confirmation(
             sender_phone, whatsapp_message_id, text_body, llm_result, category_name
         )
 
     if result.status != "registered":
+        if result.status == "invalid_data":
+            extracted_data["_conversation_event_key"] = "movement.invalid_data"
+            extracted_data["_conversation_event_variables"] = {
+                "reason": result.message or "datos invalidos",
+            }
+        elif result.status == "persistence_error":
+            extracted_data["_conversation_event_key"] = (
+                "movement.persistence_error"
+            )
         return _registration_dispatch_reply(result, llm_result)
 
     # Guardar el último movimiento en Redis para posible cambio de categoría
@@ -636,6 +656,13 @@ async def _register_single_with_hint(
     description = _movement_description(llm_result)
     amount = _format_amount(llm_result.get("amount"))
     currency = str(llm_result.get("currency") or "ARS").upper()
+    extracted_data["_conversation_event_key"] = "movement.registered"
+    extracted_data["_conversation_event_variables"] = {
+        "movement_type": movement_type,
+        "description": description,
+        "amount": amount,
+        "currency": currency,
+    }
 
     reply = f"✅ Registré tu {movement_type}: {description} por ${amount} {currency}."
     reply += f"\n📁 Categoría: {category_name}."
@@ -1475,7 +1502,7 @@ async def _clear_deleted_last_limit(sender_phone: str, deleted_limit_id: str | N
 # ---------------------------------------------------------------------------
 
 
-async def process_incoming_message(
+async def _dispatch_incoming_message(
     sender_phone: str,
     text_body: str,
     whatsapp_message_id: str | None = None,
@@ -1506,6 +1533,11 @@ async def process_incoming_message(
                 onboarding_result.invitation_ttl_minutes,
             ),
             service_invoked="onboarding",
+            event_key="onboarding.invitation",
+            event_variables={
+                "registration_url": onboarding_result.registration_url,
+                "ttl_minutes": onboarding_result.invitation_ttl_minutes,
+            },
         )
     if onboarding_result.decision == OnboardingDecision.SUPPRESS_RESPONSE:
         return DispatchResult(reply_text="", service_invoked="onboarding")
@@ -1513,6 +1545,7 @@ async def process_incoming_message(
         return DispatchResult(
             reply_text="No pude verificar tu cuenta. Intentá nuevamente en unos minutos.",
             service_invoked="onboarding",
+            event_key="onboarding.error",
         )
 
     # ------------------------------------------------------------------
@@ -1525,13 +1558,29 @@ async def process_incoming_message(
                 dashboard_link_result.login_url,
                 dashboard_link_result.link_ttl_minutes,
             )
+            event_key = "dashboard.link.sent"
+            event_variables = {
+                "login_url": dashboard_link_result.login_url,
+                "ttl_minutes": dashboard_link_result.link_ttl_minutes,
+            }
         elif dashboard_link_result.decision == DashboardLinkDecision.NOT_ELIGIBLE:
             reply_text = _DASHBOARD_LINK_NOT_ELIGIBLE_REPLY
+            event_key = "dashboard.link.not_eligible"
+            event_variables = {}
         elif dashboard_link_result.decision == DashboardLinkDecision.ERROR:
             reply_text = "No pude generar tu enlace. Intentá nuevamente en unos minutos."
+            event_key = "dashboard.link.error"
+            event_variables = {}
         else:  # SUPPRESS_RESPONSE
             reply_text = ""
-        return DispatchResult(reply_text=reply_text, service_invoked="dashboard_link")
+            event_key = None
+            event_variables = {}
+        return DispatchResult(
+            reply_text=reply_text,
+            service_invoked="dashboard_link",
+            event_key=event_key,
+            event_variables=event_variables,
+        )
 
     # Track last message time for 24h window
     _update_ultimo_mensaje(sender_phone)
@@ -2107,4 +2156,159 @@ async def process_incoming_message(
         raw_llm_response=extracted_data,
         service_invoked=service_invoked,
         intent=intent,
+        event_key=extracted_data.pop("_conversation_event_key", None),
+        event_variables=extracted_data.pop(
+            "_conversation_event_variables",
+            {},
+        ),
     )
+
+
+async def process_incoming_message(
+    sender_phone: str,
+    text_body: str,
+    whatsapp_message_id: str | None = None,
+) -> DispatchResult:
+    """Route free text, then apply a published presentation when one exists."""
+    await ConversationFlowRuntime.abandon(sender_phone)
+    result = await _dispatch_incoming_message(
+        sender_phone=sender_phone,
+        text_body=text_body,
+        whatsapp_message_id=whatsapp_message_id,
+    )
+    if result.event_key:
+        configured = await ConversationFlowRuntime.render_event(
+            sender_phone=sender_phone,
+            event_key=result.event_key,
+            variables=result.event_variables,
+        )
+        if configured is not None:
+            result.reply_message = configured
+    return result
+
+
+async def process_incoming_interactive_reply(
+    *,
+    sender_phone: str,
+    option_id: str,
+    reply_type: str,
+    whatsapp_message_id: str | None = None,
+):
+    del whatsapp_message_id
+
+    async def handle_action(action: str) -> DispatchResult:
+        return await _handle_configured_action(sender_phone, action)
+
+    result = await ConversationFlowRuntime.handle_reply(
+        sender_phone=sender_phone,
+        option_id=option_id,
+        reply_type=reply_type,
+        action_handler=handle_action,
+    )
+    if isinstance(result, DispatchResult) and result.event_key:
+        configured = await ConversationFlowRuntime.render_event(
+            sender_phone=sender_phone,
+            event_key=result.event_key,
+            variables=result.event_variables,
+        )
+        if configured is not None:
+            result.reply_message = configured
+    return result
+
+
+async def _handle_configured_action(
+    sender_phone: str,
+    action: str,
+) -> DispatchResult:
+    if action == "cancel_pending_operation":
+        await ConversationService.clear_state(sender_phone)
+        return DispatchResult(
+            reply_text="Listo, cancelé la operación pendiente.",
+            service_invoked="conversation_flow",
+        )
+    if action in {"reject_category", "reject_limit"}:
+        await ConversationService.clear_state(sender_phone)
+        return DispatchResult(
+            reply_text="Listo, no hice ningún cambio.",
+            service_invoked="conversation_flow",
+        )
+    if action == "request_category_change":
+        return DispatchResult(
+            reply_text="Decime qué categoría querés usar.",
+            service_invoked="conversation_flow",
+        )
+    if action == "confirm_category":
+        return await _confirm_pending_category_action(sender_phone)
+    if action in {"confirm_limit_year", "confirm_limit_category"}:
+        return await _confirm_pending_limit_action(sender_phone, action)
+    return DispatchResult(
+        reply_text="Esa opción ya no está disponible. Escribime qué querés hacer.",
+        service_invoked="conversation_flow",
+    )
+
+
+async def _confirm_pending_category_action(sender_phone: str) -> DispatchResult:
+    pending = await ConversationService.get_pending_movement(sender_phone)
+    if pending is None or not pending.inferred_category:
+        return DispatchResult(
+            reply_text="Se perdió el contexto. Volvé a registrar el movimiento.",
+            service_invoked="conversation_flow",
+        )
+    result = await asyncio.to_thread(
+        FinanceService.register_movement_with_category,
+        sender_phone=sender_phone,
+        whatsapp_message_id=pending.whatsapp_message_id,
+        original_text=pending.original_text,
+        movement_type=pending.movement_type,
+        amount=pending.amount,
+        currency=pending.currency,
+        description=pending.description,
+        category_name=pending.inferred_category,
+        create_category_if_missing=True,
+        fecha_movimiento=resolve_relative_date(
+            pending.llm_result_extra.get("fecha"),
+            date.today(),  # noqa: DTZ011
+        ),
+    )
+    if result.status in {"registered", "duplicate"}:
+        await ConversationService.clear_state(sender_phone)
+    reply_text = _registration_dispatch_reply(
+        result,
+        {
+            "movement_type": pending.movement_type,
+            "amount": pending.amount,
+            "currency": pending.currency,
+            "description": pending.description,
+        },
+    )
+    return DispatchResult(
+        reply_text=reply_text,
+        service_invoked="finance",
+        event_key=("movement.registered" if result.status == "registered" else None),
+        event_variables={
+            "movement_type": pending.movement_type,
+            "description": pending.description,
+            "amount": _format_amount(pending.amount),
+            "currency": pending.currency,
+        },
+    )
+
+
+async def _confirm_pending_limit_action(
+    sender_phone: str,
+    action: str,
+) -> DispatchResult:
+    pending = await ConversationService.get_pending_limit(sender_phone)
+    if pending is None:
+        return DispatchResult(
+            reply_text="Se perdió el contexto. Volvé a crear el límite.",
+            service_invoked="conversation_flow",
+        )
+    reply_text = await _handle_create_limit(
+        sender_phone,
+        _limit_base_data(pending),
+        last_limit=_last_limit_from_pending(pending),
+        edit=pending.is_edit,
+        allow_category_creation=(action == "confirm_limit_category"),
+    )
+    return DispatchResult(reply_text=reply_text, service_invoked="limit")

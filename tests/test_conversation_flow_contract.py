@@ -104,6 +104,32 @@ def test_backend_url_variable_is_accepted():
     assert definition["nodes"][0]["body"] == "Entrá en {login_url}"
 
 
+def test_dashboard_link_event_cannot_leave_interactive_state():
+    interactive = {
+        "start_node": "question",
+        "nodes": [
+            {
+                "id": "question",
+                "type": "reply_button",
+                "body": "Abrí {login_url}",
+                "options": [
+                    {
+                        "id": "next",
+                        "title": "Continuar",
+                        "next_node": "done",
+                    }
+                ],
+            },
+            {"id": "done", "type": "text", "body": "Listo", "terminal": True},
+        ],
+    }
+
+    with pytest.raises(ConversationFlowDefinitionInvalid) as exc_info:
+        validate_flow_definition("dashboard.link.sent", interactive)
+
+    assert "evento es terminal" in issue_messages(exc_info)[0]
+
+
 def test_missing_start_node_is_rejected():
     invalid = text_definition()
     invalid["start_node"] = "missing"
@@ -115,13 +141,13 @@ def test_missing_start_node_is_rejected():
 
 
 def test_unreachable_node_is_rejected():
-    invalid = text_definition()
+    invalid = button_definition()
     invalid["nodes"].append(
         {"id": "orphan", "type": "text", "body": "Nunca", "terminal": True}
     )
 
     with pytest.raises(ConversationFlowDefinitionInvalid) as exc_info:
-        validate_flow_definition("movement.registered", invalid)
+        validate_flow_definition("category.confirmation_required", invalid)
 
     assert "no es alcanzable" in issue_messages(exc_info)[0]
 
