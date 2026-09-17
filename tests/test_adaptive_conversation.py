@@ -330,6 +330,152 @@ async def test_delete_named_movement_after_listing(conversation_db, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_slash_movement_queries_bypass_llm_and_list_correct_type(conversation_db, monkeypatch):
+    session, user, _ = conversation_db
+    for kind, description in (("egreso", "ventilador"), ("ingreso", "sueldo")):
+        session.add(MovimientoFinanciero(
+            usuario_id=user.id, tipo=kind, cantidad=Decimal(1000), moneda="ARS",
+            descripcion=description, fecha_movimiento=date(2026, 9, 17), origen="whatsapp_text",
+        ))
+    session.commit()
+    llm = AsyncMock(return_value={"intent": "out_of_scope", "reply_text": "¿Qué querés registrar?"})
+    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", llm)
+    all_reply = await process_incoming_message(user.whatsapp_id, "/movimientos")
+    expense_reply = await process_incoming_message(user.whatsapp_id, "/egresos")
+    assert "ventilador" in all_reply.reply_text and "sueldo" in all_reply.reply_text
+    assert "ventilador" in expense_reply.reply_text and "sueldo" not in expense_reply.reply_text
+    llm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_last_two_shown_movements_atomically(conversation_db, monkeypatch):
+    session, user, state = conversation_db
+    for index, description in enumerate(("tv", "ventilador", "camisa")):
+        session.add(MovimientoFinanciero(
+            usuario_id=user.id, tipo="egreso", cantidad=Decimal(1000 + index),
+            moneda="ARS", descripcion=description,
+            fecha_movimiento=date(2026, 9, 17 - index), origen="whatsapp_text",
+        ))
+    session.commit()
+    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", AsyncMock(
+        return_value={"intent": "out_of_scope"}
+    ))
+    await process_incoming_message(user.whatsapp_id, "/movimientos")
+    shown_ids = [item["id"] for item in state["recent"].items]
+    reply = await process_incoming_message(user.whatsapp_id, "Borrá los últimos dos")
+    assert "Eliminé 2 movimientos" in reply.reply_text
+    session.expire_all()
+    annulled = {str(item.id) for item in session.query(MovimientoFinanciero)
+               if item.anulado_en is not None}
+    assert annulled == set(shown_ids[:2])
+
+
+@pytest.mark.asyncio
+async def test_delete_two_named_movements_even_if_llm_references_one(conversation_db, monkeypatch):
+    session, user, _ = conversation_db
+    for description in ("tv", "ventilador", "camisa"):
+        session.add(MovimientoFinanciero(
+            usuario_id=user.id, tipo="egreso", cantidad=Decimal(1000),
+            moneda="ARS", descripcion=description,
+            fecha_movimiento=date(2026, 9, 17), origen="whatsapp_text",
+        ))
+    session.commit()
+    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", AsyncMock(
+        return_value={"intent": "out_of_scope"}
+    ))
+    await process_incoming_message(user.whatsapp_id, "/movimientos")
+    reply = await process_incoming_message(user.whatsapp_id, "Borrá ventilador y tv")
+    assert "Eliminé 2 movimientos" in reply.reply_text
+    session.expire_all()
+    annulled = {item.descripcion for item in session.query(MovimientoFinanciero)
+               if item.anulado_en is not None}
+    assert annulled == {"ventilador", "tv"}
+
+
+@pytest.mark.asyncio
+async def test_batch_delete_rejects_stale_snapshot_without_partial_change(conversation_db):
+    session, user, _ = conversation_db
+    for description in ("tv", "ventilador"):
+        session.add(MovimientoFinanciero(
+            usuario_id=user.id, tipo="egreso", cantidad=Decimal(1000),
+            moneda="ARS", descripcion=description,
+            fecha_movimiento=date(2026, 9, 17), origen="whatsapp_text",
+        ))
+    session.commit()
+    selected = dispatcher_module._movement_context_items(
+        finance_module.FinanceService.find_movement_candidates(user.whatsapp_id)
+    )
+    row = session.query(MovimientoFinanciero).filter_by(descripcion="tv").one()
+    row.cantidad = Decimal(2000)
+    session.commit()
+    result = finance_module.FinanceService.annul_movements(user.whatsapp_id, selected)
+    assert result.status == "stale_context"
+    session.expire_all()
+    assert session.query(MovimientoFinanciero).filter(MovimientoFinanciero.anulado_en.isnot(None)).count() == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_movement_selection_accepts_ambos(conversation_db, monkeypatch):
+    session, user, _ = conversation_db
+    for amount in (5000, 7000):
+        session.add(MovimientoFinanciero(
+            usuario_id=user.id, tipo="egreso", cantidad=Decimal(amount),
+            moneda="ARS", descripcion="verduras",
+            fecha_movimiento=date(2026, 9, 17), origen="whatsapp_text",
+        ))
+    session.commit()
+    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", AsyncMock(
+        return_value={"intent": "delete_movement", "reference": {"description": "verduras"}}
+    ))
+    asked = await process_incoming_message(user.whatsapp_id, "Borrá el movimiento de verduras")
+    assert "Encontré varios" in asked.reply_text
+    reply = await process_incoming_message(user.whatsapp_id, "Ambos")
+    assert "Eliminé 2 movimientos" in reply.reply_text
+    session.expire_all()
+    assert session.query(MovimientoFinanciero).filter(MovimientoFinanciero.anulado_en.isnot(None)).count() == 2
+
+
+@pytest.mark.asyncio
+async def test_multi_name_delete_never_removes_only_one_match(conversation_db, monkeypatch):
+    session, user, _ = conversation_db
+    session.add(MovimientoFinanciero(
+        usuario_id=user.id, tipo="egreso", cantidad=Decimal(1000),
+        moneda="ARS", descripcion="ventilador",
+        fecha_movimiento=date(2026, 9, 17), origen="whatsapp_text",
+    ))
+    session.commit()
+    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", AsyncMock(
+        return_value={"intent": "delete_movement", "reference": {"description": "ventilador"}}
+    ))
+    reply = await process_incoming_message(user.whatsapp_id, "Borrá ventilador y tv")
+    assert "No pude identificar" in reply.reply_text
+    session.expire_all()
+    assert session.query(MovimientoFinanciero).filter(MovimientoFinanciero.anulado_en.isnot(None)).count() == 0
+
+
+def test_batch_delete_rejects_other_users_movement_atomically(conversation_db):
+    session, user, _ = conversation_db
+    other = Usuario(nombre="Otro", email=f"{uuid.uuid4()}@example.com", whatsapp_id="5491222222222")
+    session.add(other)
+    session.flush()
+    for owner, description in ((user, "tv"), (other, "ventilador")):
+        session.add(MovimientoFinanciero(
+            usuario_id=owner.id, tipo="egreso", cantidad=Decimal(1000),
+            moneda="ARS", descripcion=description,
+            fecha_movimiento=date(2026, 9, 17), origen="whatsapp_text",
+        ))
+    session.commit()
+    selected = dispatcher_module._movement_context_items([
+        finance_module.FinanceService.find_movement_candidates(owner.whatsapp_id)[0]
+        for owner in (user, other)
+    ])
+    result = finance_module.FinanceService.annul_movements(user.whatsapp_id, selected)
+    assert result.status == "not_found"
+    session.expire_all()
+    assert session.query(MovimientoFinanciero).filter(MovimientoFinanciero.anulado_en.isnot(None)).count() == 0
+
+
+@pytest.mark.asyncio
 async def test_multi_movement_message_retains_distinct_ids_for_ordinal_correction(conversation_db, monkeypatch):
     session, user, state = conversation_db
     monkeypatch.setattr(

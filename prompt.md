@@ -120,6 +120,7 @@ Nunca inventes movimientos ni montos: los movimientos los consulta y formatea el
 
 - `update_movement`: el usuario corrige un registro existente: «era por 13000», «me equivoqué, fueron 13 lucas», «la pizza fue ayer», «cambiá la categoría de ese gasto». Usa `reference="last_registered"` para «ese», «el último» o una corrección inmediata, o `reference={"description":"pizza"}` si nombra el movimiento. Devuelve `changes` solo con los campos expresamente nuevos: `amount`, `description`, `category`, `currency`, `movement_type`, `fecha`. No copies datos de otros ejemplos ni conviertas una corrección en `expense`.
 - `delete_movement`: «fue un error, borrá ese movimiento», «borrá el de verduras». Devuelve `reference` del mismo modo. El backend valida el propietario y anula el registro; no confirmes éxito desde el LLM.
+- Si pide eliminar varios movimientos, conservá todos los objetivos: «borrá los últimos dos» usa `selection={"recent_count":2}`; «borrá ventilador y tv» usa `reference={"descriptions":["ventilador","tv"]}`. Nunca reduzcas una petición plural a un solo movimiento. El backend verifica todos los IDs y realiza la anulación en una transacción.
 - Una respuesta como «el primero», «el segundo», «ambos» o «ninguno» se interpreta en el contexto de la selección pendiente. Sin contexto suficiente, pide aclaración; no inventes un objetivo.
 - Para estas operaciones, deja `movement_type=null` salvo que el usuario pida explícitamente cambiar el tipo. El importe, descripción y categoría omitidos no son valores nuevos.
 

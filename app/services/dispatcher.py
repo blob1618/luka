@@ -49,7 +49,8 @@ from app.services.llm_contract import resolve_relative_date
 from app.services.onboarding import OnboardingDecision, OnboardingService
 from app.services.reminder import ReminderListResult, ReminderResult, ReminderService
 from app.services.reference_resolution import (
-    select_items, select_named_months, selects_all, selects_recent,
+    named_movement_targets, normalize_text, recent_count, select_items,
+    select_named_months, selects_all, selects_recent,
 )
 
 
@@ -349,6 +350,31 @@ async def _apply_movement_action(
     return f"{reply}\n\n{budget}" if budget else reply
 
 
+async def _apply_movement_batch_action(sender_phone: str, items: list[dict]) -> str:
+    result = await asyncio.to_thread(FinanceService.annul_movements, sender_phone, items)
+    logger.info("movement_mutation intent=delete_movement candidates=%s status=%s",
+                len(items), result.status)
+    if result.status == "not_found":
+        return "Alguno de esos movimientos ya no está disponible. Consultá /movimientos otra vez."
+    if result.status == "already_annulled":
+        return "Alguno de esos movimientos ya estaba eliminado. Consultá /movimientos otra vez."
+    if result.status == "stale_context":
+        return "Alguno de esos movimientos cambió desde que lo mostramos. Consultá /movimientos otra vez."
+    if result.status != "annulled":
+        return "No pude eliminar esos movimientos. No se modificó ninguno."
+    await ConversationService.set_recent_items(sender_phone, RecentItems("movement", []))
+    last = await ConversationService.get_last_movement(sender_phone)
+    if last is not None and last.movement_id in {item.id for item in result.movements}:
+        await ConversationService.clear_last_movement(sender_phone)
+    details = ", ".join(
+        f"{item.descripcion} (${_format_amount(item.cantidad)} {item.moneda})"
+        for item in result.movements
+    )
+    reply = f"✅ Eliminé {len(result.movements)} movimientos: {details}."
+    budget = await _movement_budget_after_change(sender_phone, *result.movements)
+    return f"{reply}\n\n{budget}" if budget else reply
+
+
 async def _handle_movement_action(
     sender_phone: str, text_body: str, extracted_data: dict
 ) -> str:
@@ -357,6 +383,53 @@ async def _handle_movement_action(
     reference = extracted_data.get("reference")
     recent = await ConversationService.get_recent_items(sender_phone)
     items = recent.items if recent is not None and recent.entity == "movement" else []
+    if intent == "delete_movement":
+        count = recent_count(text_body)
+        if count is None and re.search(r"\b(?:ultimos|ultimas|recientes)\b", normalize_text(text_body)):
+            selection = extracted_data.get("selection")
+            raw_count = selection.get("recent_count") if isinstance(selection, dict) else None
+            if isinstance(raw_count, int) and 2 <= raw_count <= 5:
+                count = raw_count
+            else:
+                return "Indicame entre 2 y 5 movimientos recientes para eliminar."
+        if count is not None:
+            if len(items) < count:
+                candidates = await asyncio.to_thread(
+                    FinanceService.find_movement_candidates, sender_phone, limit=count
+                )
+                items = _movement_context_items(candidates)
+            if len(items) < count:
+                return f"Encontré menos de {count} movimientos para eliminar."
+            return await _apply_movement_batch_action(sender_phone, items[:count])
+        names = named_movement_targets(text_body)
+        coordinated = " y " in normalize_text(text_body)
+        if (not names and coordinated and isinstance(reference, dict)
+                and isinstance(reference.get("descriptions"), list)):
+            names = [str(name) for name in reference["descriptions"] if str(name).strip()]
+        if len(names) >= 2:
+            selected = []
+            for name in names:
+                matches = [item for item in items
+                           if normalize_text(str(item.get("description") or item.get("label") or ""))
+                           == normalize_text(name)]
+                if not matches:
+                    candidates = await asyncio.to_thread(
+                        FinanceService.find_movement_candidates, sender_phone,
+                        description=name, limit=6,
+                    )
+                    matches = _movement_context_items([
+                        item for item in candidates
+                        if normalize_text(item.descripcion or "") == normalize_text(name)
+                    ])
+                if len(matches) != 1:
+                    return (f"No pude identificar un único movimiento de {name}. "
+                            "Consultá /movimientos e indicame cuáles querés eliminar.")
+                selected.append(matches[0])
+            if len({item["id"] for item in selected}) != len(selected):
+                return "No pude distinguir esos movimientos. Consultá /movimientos otra vez."
+            return await _apply_movement_batch_action(sender_phone, selected)
+        if coordinated:
+            return "No pude distinguir todos los movimientos que querés eliminar. Indicame sus descripciones."
     description = reference.get("description") if isinstance(reference, dict) else None
     if not description:
         match = re.search(r"\b(?:movimiento|gasto|compra|el) de (.+)$", text_body, re.IGNORECASE)
@@ -1847,6 +1920,15 @@ async def _dispatch_incoming_message(
     # Track last message time for 24h window
     _update_ultimo_mensaje(sender_phone)
 
+    command = text_body.strip().lower()
+    if command in {"/movimientos", "/egresos"}:
+        await ConversationService.clear_pending_selection(sender_phone)
+        query = {"intent": "query_movements"}
+        if command == "/egresos":
+            query["movement_type"] = "egreso"
+        reply = await _handle_query_movements(sender_phone, query)
+        return DispatchResult(reply, service_invoked="finance", intent="query_movements")
+
     selection_reply = re.search(
         r"\b(?:primero|primera|segundo|segunda|tercero|tercera|ambos|"
         r"los dos|todos|ninguno|cancelar|el de)\b",
@@ -1866,7 +1948,16 @@ async def _dispatch_incoming_message(
         if text_body.strip().lower() in {"cancelar", "cancelalo", "ninguno", "ninguna"}:
             await ConversationService.clear_pending_selection(sender_phone)
             return DispatchResult("Listo, no hice ningún cambio.", service_invoked="conversation")
-        selected = select_items(text_body, pending_selection.items)
+        selected = select_items(
+            text_body, pending_selection.items,
+            allow_all=(pending_selection.entity == "movement"
+                       and pending_selection.intent == "delete_movement"),
+        )
+        if (len(selected) > 1 and pending_selection.entity == "movement"
+                and pending_selection.intent == "delete_movement"):
+            await ConversationService.clear_pending_selection(sender_phone)
+            reply = await _apply_movement_batch_action(sender_phone, selected)
+            return DispatchResult(reply, service_invoked="finance", intent="delete_movement")
         if len(selected) == 1 and pending_selection.entity == "movement":
             await ConversationService.clear_pending_selection(sender_phone)
             event_data = {}
@@ -2297,6 +2388,12 @@ async def _dispatch_incoming_message(
 
     # Procesar mensaje con LLM (fecha + categorías del usuario como contexto)
     extracted_data = await extract_message_once()
+    if re.match(r"^(?:borra|elimina|anula)\b", normalize_text(text_body)) and (
+        recent_count(text_body) is not None or named_movement_targets(text_body)
+    ):
+        recent_for_action = await ConversationService.get_recent_items(sender_phone)
+        if recent_for_action is not None and recent_for_action.entity == "movement":
+            extracted_data["intent"] = "delete_movement"
     last_limit_for_routing = None
     if references_recent_limit(text_body):
         last_limit_for_routing = await get_last_limit_once()

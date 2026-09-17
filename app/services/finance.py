@@ -80,6 +80,12 @@ class MovementMutationResult:
     after: MovementItem | None = None
 
 
+@dataclass
+class MovementBatchMutationResult:
+    status: str
+    movements: list[MovementItem] = field(default_factory=list)
+
+
 class FinanceService:
     VALID_MOVEMENT_TYPES = {"ingreso", "egreso"}
 
@@ -256,6 +262,61 @@ class FinanceService:
             session.rollback()
             print(f"[FINANCE] annul_movement error: {type(exc).__name__}: {exc}")
             return MovementMutationResult("persistence_error")
+        finally:
+            session.close()
+
+    @classmethod
+    def annul_movements(
+        cls, sender_phone: str, selected: list[dict[str, Any]],
+    ) -> MovementBatchMutationResult:
+        """Annul a shown set atomically after checking ownership and snapshots."""
+        if not 2 <= len(selected) <= 5:
+            return MovementBatchMutationResult("invalid_data")
+        try:
+            ids = [UUID(str(item["id"])) for item in selected]
+        except (KeyError, TypeError, ValueError):
+            return MovementBatchMutationResult("invalid_data")
+        if len(set(ids)) != len(ids):
+            return MovementBatchMutationResult("invalid_data")
+        session = SessionLocal()
+        try:
+            user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
+            if user is None:
+                return MovementBatchMutationResult("user_not_found")
+            rows = (
+                session.query(MovimientoFinanciero)
+                .filter(MovimientoFinanciero.id.in_(ids))
+                .filter(MovimientoFinanciero.usuario_id == user.id)
+                .with_for_update()
+                .all()
+            )
+            by_id = {row.id: row for row in rows}
+            if len(by_id) != len(ids):
+                return MovementBatchMutationResult("not_found")
+            if any(by_id[identifier].anulado_en is not None for identifier in ids):
+                return MovementBatchMutationResult("already_annulled")
+            if any(not cls._matches_shown(by_id[identifier], expected)
+                   for identifier, expected in zip(ids, selected)):
+                return MovementBatchMutationResult("stale_context")
+            categories = {
+                row.id: session.get(Categoria, row.categoria_id)
+                if row.categoria_id else None
+                for row in rows
+            }
+            before = [
+                cls._movement_item(by_id[identifier],
+                                   categories[identifier].nombre if categories[identifier] else None)
+                for identifier in ids
+            ]
+            now = datetime.now(timezone.utc)
+            for identifier in ids:
+                by_id[identifier].anulado_en = now
+            session.commit()
+            return MovementBatchMutationResult("annulled", before)
+        except Exception as exc:
+            session.rollback()
+            print(f"[FINANCE] annul_movements error: {type(exc).__name__}: {exc}")
+            return MovementBatchMutationResult("persistence_error")
         finally:
             session.close()
 

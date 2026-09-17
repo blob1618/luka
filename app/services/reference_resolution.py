@@ -27,6 +27,37 @@ def selects_recent(text: str) -> bool:
     return bool(re.search(r"\b(ese|esa|ultimo|ultima|anterior|recien|lo|la)\b", normalized))
 
 
+def recent_count(text: str) -> int | None:
+    """Recognize a bounded request for the newest shown movements."""
+    normalized = normalize_text(text)
+    match = re.search(
+        r"\b(?:(?:ultimos|ultimas)\s+(dos|tres|cuatro|cinco|[2-5])|"
+        r"(dos|tres|cuatro|cinco|[2-5])\s+(?:ultimos|ultimas|mas recientes))\b",
+        normalized,
+    )
+    if match is None:
+        return None
+    value = match.group(1) or match.group(2)
+    return {"dos": 2, "tres": 3, "cuatro": 4, "cinco": 5}.get(
+        value, int(value) if value.isdigit() else None
+    )
+
+
+def named_movement_targets(text: str) -> list[str]:
+    """Extract explicit coordinated names such as 'borrá ventilador y tv'."""
+    normalized = normalize_text(text)
+    match = re.match(r"^(?:borra|borrar|elimina|eliminar|anula|anular)\s+(.+)$", normalized)
+    if match is None or " y " not in match.group(1):
+        return []
+    names = []
+    for part in match.group(1).split(" y "):
+        name = re.sub(r"^(?:(?:el|la|los|las|de|del|un|una|movimiento|movimientos|gasto|gastos|compra|compras)\s+)*", "", part).strip()
+        if not name or re.search(r"\b(?:ultimos|ultimas|todos|todas)\b", name):
+            return []
+        names.append(name)
+    return names if len(names) >= 2 and len(set(names)) == len(names) else []
+
+
 def select_named_months(text: str, items: list[dict]) -> list[dict]:
     """Return a batch only when several months were explicitly named and unambiguous."""
     normalized = normalize_text(text)
