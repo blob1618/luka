@@ -6,6 +6,7 @@ environment can invoke the same logic.
 """
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -25,6 +26,8 @@ from app.services.conversation import (
     PendingLimitDelete,
     PendingMovement,
     PendingReminder,
+    PendingSelection,
+    RecentItems,
 )
 from app.services.conversation_flow_runtime import ConversationFlowRuntime
 from app.services.budget import BudgetEvaluation, BudgetService, BudgetStatus
@@ -37,6 +40,7 @@ from app.services.finance import (
 from app.services.intent_routing import (
     normalize_limit_intent,
     normalize_movement_query_intent,
+    normalize_movement_action,
     references_recent_limit,
 )
 from app.services.limit import LimitService
@@ -44,9 +48,13 @@ from app.services.llm import LLMService
 from app.services.llm_contract import resolve_relative_date
 from app.services.onboarding import OnboardingDecision, OnboardingService
 from app.services.reminder import ReminderListResult, ReminderResult, ReminderService
+from app.services.reference_resolution import (
+    select_items, select_named_months, selects_all, selects_recent,
+)
 
 
 ARGENTINA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -108,13 +116,6 @@ def _category_confirmation_reply(category_name: str) -> str:
     return (
         f"📁 Detecté la categoría *{category_name}*. "
         "¿Confirmás que es correcta? Respondé 'sí' para confirmar o decime la categoría correcta."
-    )
-
-
-def _category_changed_reply(description: str, amount: str, currency: str, category_name: str) -> str:
-    return (
-        f"✅ Listo, se guardó el {description} por ${amount} {currency} "
-        f"con la categoría {category_name}."
     )
 
 
@@ -197,7 +198,7 @@ def _safe_non_stk35_reply(extracted_data: dict) -> str:
     reply_text = extracted_data.get("reply_text") or ""
 
     # Estos intents se manejan aparte en el flujo STK-39
-    if intent in {"confirm_category", "reject_category", "delete_category", "list_categories", "change_category"}:
+    if intent in {"confirm_category", "reject_category", "delete_category", "list_categories"}:
         return reply_text
 
     return reply_text or "No pude interpretar tu mensaje. ¿Podés reformularlo?"
@@ -233,6 +234,175 @@ def build_user_context(sender_phone: str) -> str:
         return date_line
     nombres = ", ".join(c.nombre for c in categorias)
     return f"{date_line}\nCATEGORÍAS DISPONIBLES DEL USUARIO: {nombres}"
+
+
+def _movement_context_items(movements) -> list[dict]:
+    return [
+        {"id": movement.id, "label": movement.descripcion or "movimiento",
+         "description": movement.descripcion,
+         "amount": str(movement.cantidad), "currency": movement.moneda,
+         "date": movement.fecha_movimiento.isoformat()}
+        for movement in movements
+    ]
+
+
+async def _movement_budget_after_change(sender_phone: str, *movements) -> str:
+    try:
+        user_id = await asyncio.to_thread(_user_id_by_phone, sender_phone)
+    except Exception as exc:
+        logger.warning("movement_budget_lookup_failed error=%s", type(exc).__name__)
+        return ""
+    if user_id is None:
+        return ""
+    replies = []
+    seen = set()
+    for movement in movements:
+        if movement is None or movement.tipo != "egreso" or not movement.categoria_nombre:
+            continue
+        key = (movement.categoria_nombre, movement.fecha_movimiento.year,
+               movement.fecha_movimiento.month, movement.moneda)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            result = await asyncio.to_thread(
+                BudgetService.get_status, user_id, movement.categoria_nombre,
+                movement.fecha_movimiento, movement.moneda,
+            )
+        except Exception as exc:
+            logger.warning("movement_budget_status_failed error=%s", type(exc).__name__)
+            continue
+        if result.status == "ok" and result.budget is not None:
+            replies.append(_budget_status_reply(result.budget))
+    return "\n\n".join(replies)
+
+
+async def _apply_movement_action(
+    sender_phone: str, intent: str, target_id: str, changes: dict,
+    event_data: dict | None = None, expected: dict | None = None,
+) -> str:
+    if intent == "update_movement":
+        if not changes:
+            if expected is not None:
+                await ConversationService.set_recent_items(
+                    sender_phone, RecentItems("movement", [expected])
+                )
+            return "¿Qué dato querés corregir del movimiento?"
+        result = await asyncio.to_thread(
+            FinanceService.update_movement, sender_phone, target_id, changes, expected
+        )
+    else:
+        result = await asyncio.to_thread(
+            FinanceService.annul_movement, sender_phone, target_id, expected
+        )
+    logger.info("movement_mutation intent=%s reference=shown_id candidates=1 status=%s",
+                intent, result.status)
+    if result.status == "not_found":
+        return "Ese movimiento ya no está disponible."
+    if result.status == "already_annulled":
+        return "Ese movimiento ya estaba eliminado."
+    if result.status == "stale_context":
+        return "Ese movimiento cambió desde que lo mostramos. Consultá /movimientos otra vez."
+    if result.status == "category_not_found":
+        return "No encontré esa categoría activa. Indicame una de tus categorías."
+    if result.status not in {"updated", "annulled"}:
+        return "No pude modificar ese movimiento. Revisá los datos e intentá de nuevo."
+    before = result.before
+    if result.status == "updated":
+        after = result.after
+        reply = (
+            f"✅ Corregí {before.descripcion}: ahora es ${_format_amount(after.cantidad)} "
+            f"{after.moneda}. Categoría: {after.categoria_nombre or 'sin categoría'}."
+        )
+        await ConversationService.set_recent_items(
+            sender_phone, RecentItems("movement", _movement_context_items([after]))
+        )
+        await ConversationService.set_last_movement(
+            sender_phone, LastRegisteredMovement(
+                movement_id=after.id, sender_phone=sender_phone,
+                movement_type=after.tipo, amount=after.cantidad,
+                currency=after.moneda, description=after.descripcion or "movimiento",
+                category_name=after.categoria_nombre,
+            ),
+        )
+        budget = await _movement_budget_after_change(sender_phone, before, after)
+        if event_data is not None:
+            event_data["_conversation_event_key"] = "movement.updated"
+            event_data["_conversation_event_variables"] = {
+                "description": after.descripcion or "movimiento",
+                "amount": _format_amount(after.cantidad), "currency": after.moneda,
+                "category": after.categoria_nombre or "sin categoría",
+            }
+    else:
+        reply = f"✅ Eliminé {before.descripcion} por ${_format_amount(before.cantidad)} {before.moneda}."
+        await ConversationService.set_recent_items(sender_phone, RecentItems("movement", []))
+        last = await ConversationService.get_last_movement(sender_phone)
+        if last is not None and last.movement_id == target_id:
+            await ConversationService.clear_last_movement(sender_phone)
+        budget = await _movement_budget_after_change(sender_phone, before)
+        if event_data is not None:
+            event_data["_conversation_event_key"] = "movement.annulled"
+            event_data["_conversation_event_variables"] = {
+                "description": before.descripcion or "movimiento",
+                "amount": _format_amount(before.cantidad), "currency": before.moneda,
+            }
+    return f"{reply}\n\n{budget}" if budget else reply
+
+
+async def _handle_movement_action(
+    sender_phone: str, text_body: str, extracted_data: dict
+) -> str:
+    intent = extracted_data["intent"]
+    changes = extracted_data.get("changes") or {}
+    reference = extracted_data.get("reference")
+    recent = await ConversationService.get_recent_items(sender_phone)
+    items = recent.items if recent is not None and recent.entity == "movement" else []
+    description = reference.get("description") if isinstance(reference, dict) else None
+    if not description:
+        match = re.search(r"\b(?:movimiento|gasto|compra|el) de (.+)$", text_body, re.IGNORECASE)
+        if match:
+            description = match.group(1).strip(" .!?")
+    if description:
+        try:
+            candidates = await asyncio.to_thread(
+                FinanceService.find_movement_candidates, sender_phone, description=description
+            )
+        except Exception as exc:
+            print(f"[MOVEMENT_SELECTION] {type(exc).__name__}")
+            return "No pude consultar tus movimientos. Intentá nuevamente."
+        items = _movement_context_items(candidates)
+        reference_type = "description"
+    elif reference == "last_registered" and not items:
+        last = await ConversationService.get_last_movement(sender_phone)
+        if last is not None:
+            items = [{"id": last.movement_id, "label": last.description,
+                      "description": last.description, "amount": str(last.amount),
+                      "currency": last.currency}]
+        reference_type = "last_registered"
+    elif not selects_recent(text_body) and not items:
+        return "¿Qué movimiento querés modificar? Indicame la descripción o consultá /movimientos."
+    else:
+        reference_type = "recent_list"
+    logger.info("movement_resolution intent=%s reference=%s candidates=%s",
+                intent, reference_type, len(items))
+    if not items:
+        return "No encontré ese movimiento. Podés consultar /movimientos para identificarlo."
+    if len(items) > 1:
+        selected = select_items(text_body, items)
+        if len(selected) == 1:
+            items = selected
+        else:
+            await ConversationService.set_pending_selection(
+                sender_phone, PendingSelection(intent, "movement", items, changes)
+            )
+            options = "\n".join(
+                f"{index}. {item['label']} — ${item['amount']} {item['currency']}"
+                for index, item in enumerate(items, 1)
+            )
+            return f"Encontré varios movimientos. ¿Cuál querés elegir?\n{options}"
+    return await _apply_movement_action(
+        sender_phone, intent, items[0]["id"], changes, extracted_data, items[0]
+    )
 
 
 def _update_ultimo_mensaje(sender_phone: str) -> None:
@@ -450,73 +620,6 @@ def _format_categories_list(categories_result) -> str:
     return "\n".join(lines)
 
 
-async def _handle_change_category(sender_phone: str, extracted_data: dict) -> str:
-    """
-    Maneja el cambio de categoría de un movimiento ya registrado.
-    """
-    from app.models.database import SessionLocal, Usuario
-
-    new_category = extracted_data.get("category")
-    if not new_category:
-        return "¿A qué categoría querés cambiar el movimiento?"
-
-    # Obtener el último movimiento registrado
-    last_movement = await ConversationService.get_last_movement(sender_phone)
-    if last_movement is None:
-        return "No encontré un movimiento reciente para cambiarle la categoría."
-
-    # Obtener user_id
-    session = SessionLocal()
-    try:
-        user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
-        if user is None:
-            return "No encontré tu cuenta."
-        user_id = user.id
-    finally:
-        session.close()
-
-    # Actualizar categoría
-    result = await asyncio.to_thread(
-        FinanceService.update_movement_category,
-        movement_id=last_movement.movement_id,
-        user_id=user_id,
-        new_category_name=new_category,
-        create_if_missing=True,
-    )
-
-    if result.status == "updated":
-        # Actualizar el last_movement con la nueva categoría
-        result_category = getattr(result, "category_name", None)
-        resolved_category = (
-            result_category.strip()
-            if isinstance(result_category, str) and result_category.strip()
-            else new_category
-        )
-        last_movement.category_name = resolved_category
-        await ConversationService.set_last_movement(sender_phone, last_movement)
-
-        amount = _format_amount(last_movement.amount)
-        currency = last_movement.currency.upper()
-        reply = _category_changed_reply(
-            description=last_movement.description,
-            amount=amount,
-            currency=currency,
-            category_name=resolved_category,
-        )
-        evaluation = await asyncio.to_thread(
-            BudgetService.evaluate_movement,
-            result.movement_id,
-        )
-        budget_feedback = _budget_feedback_reply(evaluation)
-        return f"{reply}\n\n{budget_feedback}" if budget_feedback else reply
-    elif result.status == "not_found":
-        return "No encontré el movimiento para cambiarle la categoría."
-    elif result.status == "category_not_found":
-        return f"No encontré una categoría activa llamada {new_category}."
-    else:
-        return "Hubo un problema actualizando la categoría. Intentá de nuevo."
-
-
 async def _handle_delete_category(sender_phone: str, extracted_data: dict) -> str:
     """Maneja la eliminación de una categoría."""
     from app.models.database import SessionLocal, Usuario
@@ -651,6 +754,14 @@ async def _register_single_with_hint(
         category_name=category_name,
     )
     await ConversationService.set_last_movement(sender_phone, last)
+    await ConversationService.set_recent_items(
+        sender_phone,
+        RecentItems("movement", [{
+            "id": result.movement_id, "label": last.description,
+            "description": last.description, "amount": str(last.amount),
+            "currency": last.currency,
+        }]),
+    )
 
     movement_type = llm_result.get("movement_type") or "movimiento"
     description = _movement_description(llm_result)
@@ -706,12 +817,16 @@ async def _register_multiop(
     movements: list,
 ) -> str:
     results = []
-    for mov in movements:
+    for index, mov in enumerate(movements):
         llm_result = {**extracted_data, **mov}
+        item_message_id = (
+            f"{whatsapp_message_id}:movement:{index}"
+            if whatsapp_message_id and len(movements) > 1 else whatsapp_message_id
+        )
         result = await asyncio.to_thread(
             FinanceService.register_movement_from_whatsapp_text,
             sender_phone=sender_phone,
-            whatsapp_message_id=whatsapp_message_id,
+            whatsapp_message_id=item_message_id,
             original_text=text_body,
             llm_result=llm_result,
             fecha_movimiento=resolve_relative_date(mov.get("fecha"), date.today()),  # noqa: DTZ011
@@ -730,6 +845,30 @@ async def _register_multiop(
         if result.status == "registered" and result.movement_id
     ]
     if registered_ids:
+        if len(movements) > 1:
+            await ConversationService.clear_last_movement(sender_phone)
+        elif len(movements) == 1:
+            mov = movements[0]
+            await ConversationService.set_last_movement(
+                sender_phone, LastRegisteredMovement(
+                    movement_id=registered_ids[0], sender_phone=sender_phone,
+                    movement_type=mov.get("movement_type") or extracted_data.get("movement_type") or "egreso",
+                    amount=Decimal(str(mov.get("amount"))),
+                    currency=mov.get("currency") or "ARS",
+                    description=_movement_description(mov),
+                    category_name=mov.get("category"),
+                ),
+            )
+        await ConversationService.set_recent_items(
+            sender_phone,
+            RecentItems("movement", [
+                {"id": result.movement_id, "label": _movement_description(mov),
+                 "description": _movement_description(mov),
+                 "amount": str(mov.get("amount")), "currency": mov.get("currency") or "ARS"}
+                for result, mov in zip(results, movements)
+                if result.status == "registered" and result.movement_id
+            ]),
+        )
         evaluations = await asyncio.to_thread(
             BudgetService.evaluate_movements,
             registered_ids,
@@ -919,7 +1058,7 @@ def _limit_delete_reply(result, category_name: str) -> str:
 
 _CANCEL_PATTERNS = re.compile(
     r'\b(?:cancel(?:ar|á|alo|ela)?|dej(?:a|á|alo|elo)?|olvid(?:a|á|alo|elo)?'
-    r'|anul(?:a|á|alo|ela)?|no quiero|no me interesa|para nada)\b',
+    r'|anul(?:a|á|alo|ela)?|ningun[oa]|no quiero|no me interesa|para nada)\b',
     re.IGNORECASE,
 )
 
@@ -1198,15 +1337,85 @@ async def _handle_create_limit(
     return "No pude procesar tu solicitud de límite."
 
 
-async def _handle_change_limit(sender_phone: str, extracted_data: dict) -> str:
-    """Edita el último límite creado con los campos nuevos del usuario."""
-    last_limit = await ConversationService.get_last_limit(sender_phone)
-    if last_limit is None:
-        return (
-            "No tengo un límite reciente para cambiar. "
-            "Podés crear uno así: 'poné un límite de 300000 para ropa'."
+async def _change_limit_candidate(sender_phone: str, candidate: dict, data: dict) -> str:
+    last_limit = LastCreatedLimit(
+        limit_id=candidate["limit_id"], sender_phone=sender_phone,
+        category_name=candidate["category"], amount=Decimal(candidate["amount"]),
+        month=candidate["month"], year=candidate["year"],
+        currency=candidate["currency"],
+    )
+    changes = data.get("changes") or {}
+    patch = {
+        "limit_category": changes.get("category"),
+        "limit_amount": changes.get("amount"),
+        "limit_month": changes.get("target_month", data.get("limit_month")),
+        "limit_year": changes.get("target_year", data.get("limit_year")),
+        "limit_currency": changes.get("currency"),
+    }
+    if all(value is None for value in patch.values()):
+        await ConversationService.set_recent_items(
+            sender_phone, RecentItems("limit", [candidate])
         )
-    return await _handle_create_limit(sender_phone, extracted_data, last_limit=last_limit)
+        return "¿Qué querés modificar de ese límite?"
+    return await _handle_create_limit(sender_phone, patch, last_limit=last_limit)
+
+
+async def _handle_change_limit(
+    sender_phone: str, extracted_data: dict, text_body: str = ""
+) -> str:
+    """Edit an explicitly selected existing limit or a recent unambiguous one."""
+    reference = extracted_data.get("reference")
+    reference = reference if isinstance(reference, dict) else {}
+    category = reference.get("category") or extracted_data.get("limit_category")
+    source_month = reference.get("source_month")
+    source_year = reference.get("source_year")
+    source_currency = reference.get("source_currency")
+    last_limit = await ConversationService.get_last_limit(sender_phone)
+    refers_to_last = bool(re.search(r"\b(?:el mes|que sea|en vez de)\b", text_body.lower()))
+    if (
+        last_limit is not None
+        and (not category or refers_to_last)
+        and source_month is None and source_year is None
+    ):
+        if extracted_data.get("changes"):
+            return await _change_limit_candidate(sender_phone, {
+                "limit_id": last_limit.limit_id, "category": last_limit.category_name,
+                "amount": str(last_limit.amount), "month": last_limit.month,
+                "year": last_limit.year, "currency": last_limit.currency,
+            }, extracted_data)
+        patch = dict(extracted_data)
+        if refers_to_last:
+            patch["limit_category"] = None
+        return await _handle_create_limit(sender_phone, patch, last_limit=last_limit)
+    recent = await ConversationService.get_recent_items(sender_phone)
+    if (
+        recent is not None and recent.entity == "limit" and len(recent.items) == 1
+        and source_month is None and source_year is None
+        and (not category or category.casefold() == str(recent.items[0].get("category", "")).casefold())
+    ):
+        category = recent.items[0].get("category")
+        source_month = recent.items[0].get("month")
+        source_year = recent.items[0].get("year")
+    if not category:
+        return "¿Qué límite querés modificar? Indicame la categoría."
+    try:
+        candidates = await asyncio.to_thread(
+            LimitService.find_limit_candidates, sender_phone, category=category,
+            month=source_month, year=source_year, currency=source_currency,
+        )
+    except Exception as exc:
+        print(f"[LIMIT_SELECTION] {type(exc).__name__}")
+        return "No pude consultar tus límites. Intentá nuevamente."
+    if not candidates:
+        return f"No encontré un límite vigente de {category}."
+    logger.info("limit_resolution intent=change_limit reference=category candidates=%s",
+                len(candidates))
+    if len(candidates) > 1:
+        await ConversationService.set_pending_selection(
+            sender_phone, PendingSelection("change_limit", "limit", candidates, extracted_data)
+        )
+        return _limit_selection_reply(category, candidates)
+    return await _change_limit_candidate(sender_phone, candidates[0], extracted_data)
 
 
 async def _handle_list_limits(sender_phone: str) -> str:
@@ -1220,6 +1429,15 @@ async def _handle_list_limits(sender_phone: str) -> str:
         result = await asyncio.to_thread(LimitService.list_limits, user.id)
         if result.status == "error":
             return "Hubo un problema consultando tus límites."
+        await ConversationService.set_recent_items(
+            sender_phone,
+            RecentItems("limit", [
+                {"id": entry.id, "label": entry.category_name,
+                 "category": entry.category_name, "amount": str(entry.amount),
+                 "month": entry.month, "year": entry.year, "currency": entry.currency}
+                for entry in result.limits if entry.id
+            ]),
+        )
         return _limit_list_reply(result)
     except Exception as exc:
         print(f"[LIMIT_LIST] Error: {type(exc).__name__}: {exc}")
@@ -1423,6 +1641,11 @@ async def _handle_query_movements(sender_phone: str, extracted_data: dict) -> st
         print(f"[QUERY_MOVEMENTS_DISPATCHER] Error: {type(exc).__name__}: {exc}")
         return "Hubo un problema al consultar tus movimientos. Por favor, intentá nuevamente."
 
+    if result.status == "ok":
+        await ConversationService.set_recent_items(
+            sender_phone, RecentItems("movement", _movement_context_items(result.movements[:5]))
+        )
+
     dashboard_link_url = None
     link_ttl_minutes = 10
     cantidad_mostrada = len(result.movements[:5])
@@ -1495,6 +1718,45 @@ async def _clear_deleted_last_limit(sender_phone: str, deleted_limit_id: str | N
     last_limit = await ConversationService.get_last_limit(sender_phone)
     if last_limit is not None and last_limit.limit_id == deleted_limit_id:
         await ConversationService.clear_last_limit(sender_phone)
+
+
+async def _delete_selected_limits(
+    sender_phone: str, pending: PendingLimitDelete, selected: list[dict]
+) -> DispatchResult:
+    candidates = [{**item, "category": pending.category_name} for item in selected]
+    result = await asyncio.to_thread(
+        LimitService.delete_limits_by_ids, sender_phone, candidates
+    )
+    logger.info("limit_mutation intent=delete_limit reference=shown_ids candidates=%s status=%s",
+                len(candidates), result.status)
+    if result.status == "deleted":
+        await ConversationService.clear_state(sender_phone)
+        for item in result.deleted:
+            await _clear_deleted_last_limit(sender_phone, item["limit_id"])
+        periods = ", ".join(
+            _limit_month_label(item["month"], item["year"])
+            for item in result.deleted
+        )
+        reply = (
+            f"✅ Listo, eliminé el límite de {pending.category_name}: {periods}."
+            if len(result.deleted) == 1 else
+            f"✅ Eliminé los {len(result.deleted)} límites de "
+            f"{pending.category_name}: {periods}."
+        )
+        variables = {"category": pending.category_name, "periods": periods,
+                     "count": len(result.deleted)}
+    elif result.status == "stale_context":
+        await ConversationService.clear_state(sender_phone)
+        reply = "La lista de límites cambió. Volvé a consultar cuáles querés borrar."
+        variables = {}
+    else:
+        reply = "No pude eliminar esos límites. No borré ninguno."
+        variables = {}
+    return DispatchResult(
+        reply_text=reply, service_invoked="limit", intent="delete_limit",
+        event_key="limit.bulk_deleted" if result.status == "deleted" else None,
+        event_variables=variables,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1585,6 +1847,58 @@ async def _dispatch_incoming_message(
     # Track last message time for 24h window
     _update_ultimo_mensaje(sender_phone)
 
+    selection_reply = re.search(
+        r"\b(?:primero|primera|segundo|segunda|tercero|tercera|ambos|"
+        r"los dos|todos|ninguno|cancelar|el de)\b",
+        text_body.lower(),
+    )
+    explicit_new_request = re.search(
+        r"\b(?:compr\w*|gast\w*|pagu\w*|registr\w*|crea\w*|"
+        r"borr\w*|elimin\w*|modific\w*|cambi\w*|mostr\w*|list\w*)\b",
+        text_body.lower(),
+    )
+    pending_selection = (
+        await ConversationService.get_pending_selection(sender_phone)
+        if selection_reply or explicit_new_request
+        or _extract_month_from_text(text_body) is not None else None
+    )
+    if pending_selection is not None:
+        if text_body.strip().lower() in {"cancelar", "cancelalo", "ninguno", "ninguna"}:
+            await ConversationService.clear_pending_selection(sender_phone)
+            return DispatchResult("Listo, no hice ningún cambio.", service_invoked="conversation")
+        selected = select_items(text_body, pending_selection.items)
+        if len(selected) == 1 and pending_selection.entity == "movement":
+            await ConversationService.clear_pending_selection(sender_phone)
+            event_data = {}
+            reply = await _apply_movement_action(
+                sender_phone, pending_selection.intent, selected[0]["id"],
+                pending_selection.changes, event_data, selected[0],
+            )
+            return DispatchResult(
+                reply, service_invoked="finance", intent=pending_selection.intent,
+                event_key=event_data.get("_conversation_event_key"),
+                event_variables=event_data.get("_conversation_event_variables", {}),
+            )
+        if len(selected) == 1 and pending_selection.entity == "limit":
+            await ConversationService.clear_pending_selection(sender_phone)
+            reply = await _change_limit_candidate(
+                sender_phone, selected[0], pending_selection.changes
+            )
+            return DispatchResult(reply, service_invoked="limit", intent="change_limit")
+        if explicit_new_request and not selected:
+            await ConversationService.clear_pending_selection(sender_phone)
+            pending_selection = None
+    if pending_selection is not None:
+        if len(text_body.split()) <= 5:
+            options = "\n".join(
+                f"{index}. {item['label']} — ${item['amount']} {item['currency']}"
+                for index, item in enumerate(pending_selection.items, 1)
+            )
+            return DispatchResult(
+                f"¿Cuál querés elegir?\n{options}", service_invoked="conversation"
+            )
+        await ConversationService.clear_pending_selection(sender_phone)
+
     # Un mensaje puede abandonar un flujo multi-turno y continuar por el
     # dispatcher general. Memorizar la clasificación garantiza que ese
     # fall-through no vuelva a facturar ni reintentar el mismo mensaje.
@@ -1616,6 +1930,24 @@ async def _dispatch_incoming_message(
                     f"mes={recent_limit.month}; año={recent_limit.year}; "
                     f"moneda={recent_limit.currency}."
                 )
+            if re.search(r"\b(era|fue|en realidad|ese|esa|último|ultimo|borr|elimin|modific|cambi)", text_body.lower()):
+                last_movement = await ConversationService.get_last_movement(sender_phone)
+                if last_movement is not None:
+                    context += (
+                        "\nÚLTIMO MOVIMIENTO REGISTRADO: "
+                        f"descripción={last_movement.description}; "
+                        f"monto={last_movement.amount}; "
+                        f"categoría={last_movement.category_name}; "
+                        f"moneda={last_movement.currency}."
+                    )
+                recent_items = await ConversationService.get_recent_items(sender_phone)
+                if recent_items is not None and recent_items.items:
+                    summary = "; ".join(
+                        f"{item.get('label')} ({item.get('amount')} {item.get('currency')}, "
+                        f"mes {item.get('month', 'sin especificar')})"
+                        for item in recent_items.items[:5]
+                    )
+                    context += f"\nELEMENTOS MOSTRADOS ({recent_items.entity}): {summary}."
             llm_result_cache = await LLMService.process_message(
                 text_body,
                 context=context,
@@ -1668,7 +2000,6 @@ async def _dispatch_incoming_message(
             new_day = extracted_data.get("reminder_day")
             # Fallback: extraer número del texto
             if new_day is None:
-                import re
                 match = re.search(r'\b(\d{1,2})\b', text_body)
                 if match:
                     candidate = int(match.group(1))
@@ -1895,6 +2226,14 @@ async def _dispatch_incoming_message(
     # Multi-turn STK-46: elegir el mes del límite a eliminar
     # ----------------------------------------------------------
     is_awaiting_limit_month = await ConversationService.is_awaiting_limit_month_selection(sender_phone)
+    if (
+        is_awaiting_limit_month and explicit_new_request
+        and not selects_all(text_body)
+        and _extract_month_from_text(text_body) is None
+        and not re.search(r"\b(?:primero|segundo|tercero)\b", text_body.lower())
+    ):
+        await ConversationService.clear_state(sender_phone)
+        is_awaiting_limit_month = False
 
     if is_awaiting_limit_month:
         pending_delete = await ConversationService.get_pending_limit_delete(sender_phone)
@@ -1908,6 +2247,13 @@ async def _dispatch_incoming_message(
                     reply_text="Listo, cancelé la eliminación del límite.",
                     service_invoked="conversation",
                 )
+            if selects_all(text_body):
+                return await _delete_selected_limits(
+                    sender_phone, pending_delete, pending_delete.candidates
+                )
+            named_months = select_named_months(text_body, pending_delete.candidates)
+            if len(named_months) > 1:
+                return await _delete_selected_limits(sender_phone, pending_delete, named_months)
             extracted_data = await extract_message_once()
             month = extracted_data.get("limit_month")
             if month is None:
@@ -1944,18 +2290,9 @@ async def _dispatch_incoming_message(
                         reply_text=reply_text,
                         service_invoked="conversation",
                     )
-                result = await asyncio.to_thread(
-                    LimitService.delete_limit,
-                    sender_phone,
-                    pending_delete.category_name,
-                    month=month,
-                    year=selected_year,
-                    currency=matching_candidates[0].get("currency"),
+                return await _delete_selected_limits(
+                    sender_phone, pending_delete, matching_candidates
                 )
-                await ConversationService.clear_state(sender_phone)
-                if result.status == "deleted":
-                    await _clear_deleted_last_limit(sender_phone, result.limit_id)
-                reply_text = _limit_delete_reply(result, pending_delete.category_name)
         return DispatchResult(reply_text=reply_text, service_invoked="conversation")
 
     # Procesar mensaje con LLM (fecha + categorías del usuario como contexto)
@@ -1969,11 +2306,13 @@ async def _dispatch_incoming_message(
         last_limit=last_limit_for_routing,
         today=datetime.now(ARGENTINA_TZ).date(),
     )
+    extracted_data = normalize_movement_action(text_body, extracted_data)
     extracted_data = normalize_movement_query_intent(
         text_body,
         extracted_data,
     )
     intent = extracted_data.get("intent", "out_of_scope")
+    logger.info("conversation_route intent=%s", intent)
 
     # ----------------------------------------------------------
     # STK-39 v2: Manejar intents
@@ -1983,7 +2322,7 @@ async def _dispatch_incoming_message(
         service_invoked = "limit"
 
     elif intent == "change_limit":
-        reply_text = await _handle_change_limit(sender_phone, extracted_data)
+        reply_text = await _handle_change_limit(sender_phone, extracted_data, text_body)
         service_invoked = "limit"
 
     elif intent == "list_limits":
@@ -2002,8 +2341,8 @@ async def _dispatch_incoming_message(
         reply_text = await _handle_query_movements(sender_phone, extracted_data)
         service_invoked = "finance"
 
-    elif intent == "change_category":
-        reply_text = await _handle_change_category(sender_phone, extracted_data)
+    elif intent in {"update_movement", "delete_movement"}:
+        reply_text = await _handle_movement_action(sender_phone, text_body, extracted_data)
         service_invoked = "finance"
 
     elif intent == "delete_category":

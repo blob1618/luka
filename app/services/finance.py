@@ -1,6 +1,6 @@
 import io
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
@@ -72,8 +72,192 @@ class MovementQueryResult:
     total_found: int = 0
 
 
+@dataclass
+class MovementMutationResult:
+    status: str
+    movement_id: str | None = None
+    before: MovementItem | None = None
+    after: MovementItem | None = None
+
+
 class FinanceService:
     VALID_MOVEMENT_TYPES = {"ingreso", "egreso"}
+
+    @staticmethod
+    def _matches_shown(movement: MovimientoFinanciero, expected: dict | None) -> bool:
+        if expected is None:
+            return True
+        return (
+            ("amount" not in expected or movement.cantidad == Decimal(str(expected["amount"])))
+            and ("description" not in expected
+                 or movement.descripcion == expected["description"])
+            and ("currency" not in expected or movement.moneda == expected["currency"])
+            and ("date" not in expected
+                 or movement.fecha_movimiento.isoformat() == expected["date"])
+        )
+
+    @staticmethod
+    def _movement_item(movement: MovimientoFinanciero, category_name: str | None = None) -> MovementItem:
+        return MovementItem(
+            id=str(movement.id), tipo=movement.tipo, cantidad=movement.cantidad,
+            moneda=movement.moneda, descripcion=movement.descripcion,
+            fecha_movimiento=movement.fecha_movimiento, categoria_nombre=category_name,
+        )
+
+    @classmethod
+    def find_movement_candidates(
+        cls, sender_phone: str, *, description: str | None = None,
+        amount: Any = None, limit: int = 6,
+    ) -> list[MovementItem]:
+        """Find active user movements for an explicit conversational reference."""
+        session = SessionLocal()
+        try:
+            user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
+            if user is None:
+                return []
+            query = (
+                session.query(MovimientoFinanciero, Categoria.nombre)
+                .outerjoin(Categoria, MovimientoFinanciero.categoria_id == Categoria.id)
+                .filter(MovimientoFinanciero.usuario_id == user.id)
+                .filter(MovimientoFinanciero.anulado_en.is_(None))
+            )
+            if description:
+                literal = description.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                query = query.filter(
+                    MovimientoFinanciero.descripcion.ilike(f"%{literal}%", escape="\\")
+                )
+            if amount is not None:
+                normalized = cls._normalize_amount(amount)
+                if normalized is None:
+                    return []
+                query = query.filter(MovimientoFinanciero.cantidad == normalized)
+            rows = query.order_by(
+                MovimientoFinanciero.creado_en.desc(), MovimientoFinanciero.id.desc()
+            ).limit(limit).all()
+            return [cls._movement_item(movement, category) for movement, category in rows]
+        finally:
+            session.close()
+
+    @classmethod
+    def update_movement(
+        cls, sender_phone: str, movement_id: str, changes: dict[str, Any],
+        expected: dict | None = None,
+    ) -> MovementMutationResult:
+        """Apply only explicitly supplied fields to an owned, active movement."""
+        from uuid import UUID
+
+        allowed = {"amount", "description", "category", "currency", "movement_type", "fecha"}
+        if not isinstance(changes, dict) or not changes or set(changes) - allowed:
+            return MovementMutationResult("invalid_data")
+        try:
+            parsed_id = UUID(str(movement_id))
+        except (ValueError, TypeError):
+            return MovementMutationResult("invalid_data")
+        session = SessionLocal()
+        try:
+            user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
+            if user is None:
+                return MovementMutationResult("user_not_found")
+            movement = (
+                session.query(MovimientoFinanciero)
+                .filter(MovimientoFinanciero.id == parsed_id)
+                .filter(MovimientoFinanciero.usuario_id == user.id)
+                .filter(MovimientoFinanciero.anulado_en.is_(None))
+                .with_for_update()
+                .first()
+            )
+            if movement is None:
+                return MovementMutationResult("not_found")
+            if not cls._matches_shown(movement, expected):
+                return MovementMutationResult("stale_context")
+            category = session.get(Categoria, movement.categoria_id) if movement.categoria_id else None
+            before = cls._movement_item(movement, category.nombre if category else None)
+            if "amount" in changes:
+                amount = cls._normalize_amount(changes["amount"])
+                if amount is None:
+                    return MovementMutationResult("invalid_data")
+                movement.cantidad = amount
+            if "description" in changes:
+                description = cls._normalize_optional_text(changes["description"])
+                if description is None:
+                    return MovementMutationResult("invalid_data")
+                movement.descripcion = description[:500]
+            if "currency" in changes:
+                currency = cls._normalize_optional_text(changes["currency"])
+                if currency is None or len(currency) != 3 or not currency.isalpha():
+                    return MovementMutationResult("invalid_data")
+                movement.moneda = currency.upper()
+            if "movement_type" in changes:
+                movement_type = str(changes["movement_type"]).lower()
+                if movement_type not in cls.VALID_MOVEMENT_TYPES:
+                    return MovementMutationResult("invalid_data")
+                movement.tipo = movement_type
+            if "fecha" in changes:
+                try:
+                    movement.fecha_movimiento = date.fromisoformat(str(changes["fecha"]))
+                except ValueError:
+                    return MovementMutationResult("invalid_data")
+            if "category" in changes:
+                if changes["category"] is None:
+                    movement.categoria_id = None
+                    category = None
+                else:
+                    category = cls._find_category(session, user.id, changes["category"])
+                    if category is None:
+                        return MovementMutationResult("category_not_found")
+                    movement.categoria_id = category.id
+            session.commit()
+            return MovementMutationResult(
+                "updated", str(movement.id), before,
+                cls._movement_item(movement, category.nombre if category else None),
+            )
+        except Exception as exc:
+            session.rollback()
+            print(f"[FINANCE] update_movement error: {type(exc).__name__}: {exc}")
+            return MovementMutationResult("persistence_error")
+        finally:
+            session.close()
+
+    @classmethod
+    def annul_movement(
+        cls, sender_phone: str, movement_id: str, expected: dict | None = None,
+    ) -> MovementMutationResult:
+        """Hide a mistaken movement while retaining its original message ID for deduplication."""
+        from uuid import UUID
+
+        try:
+            parsed_id = UUID(str(movement_id))
+        except (ValueError, TypeError):
+            return MovementMutationResult("invalid_data")
+        session = SessionLocal()
+        try:
+            user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
+            if user is None:
+                return MovementMutationResult("user_not_found")
+            movement = (
+                session.query(MovimientoFinanciero)
+                .filter(MovimientoFinanciero.id == parsed_id)
+                .filter(MovimientoFinanciero.usuario_id == user.id)
+                .with_for_update()
+                .first()
+            )
+            if movement is None:
+                return MovementMutationResult("not_found")
+            if movement.anulado_en is not None:
+                return MovementMutationResult("already_annulled", str(movement.id))
+            if not cls._matches_shown(movement, expected):
+                return MovementMutationResult("stale_context")
+            category = session.get(Categoria, movement.categoria_id) if movement.categoria_id else None
+            before = cls._movement_item(movement, category.nombre if category else None)
+            movement.anulado_en = datetime.now(timezone.utc)
+            session.commit()
+            return MovementMutationResult("annulled", str(movement.id), before)
+        except Exception as exc:
+            session.rollback()
+            print(f"[FINANCE] annul_movement error: {type(exc).__name__}: {exc}")
+            return MovementMutationResult("persistence_error")
+        finally:
+            session.close()
 
     @staticmethod
     def _result(
@@ -464,6 +648,7 @@ class FinanceService:
                     session.query(func.coalesce(func.sum(MovimientoFinanciero.cantidad), 0))
                     .filter(MovimientoFinanciero.categoria_id == cat.id)
                     .filter(MovimientoFinanciero.tipo == "ingreso")
+                    .filter(MovimientoFinanciero.anulado_en.is_(None))
                     .scalar()
                 ) or Decimal("0")
 
@@ -472,6 +657,7 @@ class FinanceService:
                     session.query(func.coalesce(func.sum(MovimientoFinanciero.cantidad), 0))
                     .filter(MovimientoFinanciero.categoria_id == cat.id)
                     .filter(MovimientoFinanciero.tipo == "egreso")
+                    .filter(MovimientoFinanciero.anulado_en.is_(None))
                     .scalar()
                 ) or Decimal("0")
 
@@ -495,78 +681,6 @@ class FinanceService:
                 status="error",
                 message="could not retrieve categories",
             )
-
-        finally:
-            session.close()
-
-    @classmethod
-    def update_movement_category(
-        cls,
-        movement_id: str,
-        user_id: Any,
-        new_category_name: str,
-        create_if_missing: bool = True,
-    ) -> MovementRegistrationResult:
-        """
-        Actualiza la categoría de un movimiento ya registrado.
-        Si create_if_missing=True y la categoría no existe, la crea automáticamente.
-        """
-        from uuid import UUID as UuidType
-
-        session = SessionLocal()
-        try:
-            movement = (
-                session.query(MovimientoFinanciero)
-                .filter(MovimientoFinanciero.id == UuidType(movement_id))
-                .filter(MovimientoFinanciero.usuario_id == user_id)
-                .first()
-            )
-            if movement is None:
-                return cls._result("not_found", "movement not found")
-
-            normalized_name = cls._normalize_category_name(new_category_name)
-            if not normalized_name:
-                return cls._result("invalid_data", "category name is required")
-
-            category = cls._find_category(session, user_id, new_category_name)
-            if category is None and create_if_missing:
-                category = (
-                    session.query(Categoria)
-                    .filter(Categoria.usuario_id == user_id)
-                    .filter(Categoria.esta_eliminado.is_(True))
-                    .filter(func.lower(func.trim(Categoria.nombre)) == normalized_name)
-                    .first()
-                )
-                if category is not None:
-                    category.esta_eliminado = False
-                else:
-                    category = Categoria(
-                        usuario_id=user_id,
-                        nombre=new_category_name.strip(),
-                        es_default=False,
-                        esta_eliminado=False,
-                    )
-                    session.add(category)
-                    session.flush()
-            if category is None:
-                return cls._result("category_not_found", "category not found")
-
-            movement.categoria_id = category.id
-            resolved_category_name = category.nombre
-
-            session.commit()
-            return cls._result(
-                "updated",
-                "category updated",
-                movement_id=str(movement.id),
-                user_id=str(movement.usuario_id),
-                category_name=resolved_category_name,
-            )
-
-        except Exception as exc:
-            session.rollback()
-            print(f"[FINANCE] update_movement_category error: {type(exc).__name__}: {exc}")
-            return cls._result("persistence_error", "could not update movement category")
 
         finally:
             session.close()
@@ -829,6 +943,7 @@ class FinanceService:
                     ),
                 )
                 .filter(MovimientoFinanciero.usuario_id == parsed_user_id)
+                .filter(MovimientoFinanciero.anulado_en.is_(None))
             )
 
             if normalized_type is not None:

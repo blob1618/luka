@@ -360,6 +360,7 @@ class MovimientoFinanciero(Base):
     whatsapp_message_id = Column(String)
     creado_en = Column(DateTime(timezone=True), nullable=False, default=func.now())
     actualizado_en = Column(DateTime(timezone=True), nullable=False, default=func.now(), onupdate=func.now())
+    anulado_en = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         CheckConstraint("tipo IN ('ingreso', 'egreso')", name="movimientos_financieros_tipo_check"),

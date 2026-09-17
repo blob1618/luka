@@ -473,6 +473,41 @@ class TestDeleteLimit:
         assert months == {7, 11}
         assert session.query(LimiteCategoria).count() == 2
 
+
+def test_find_existing_limit_and_delete_shown_pair_atomically(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    food = create_category(session, user.id, "Comida")
+    transport = create_category(session, user.id, "Transporte")
+    create_limit(session, user.id, food.id, 40000, 9, 2026)
+    create_limit(session, user.id, food.id, 40000, 10, 2026)
+    create_limit(session, user.id, transport.id, 20000, 10, 2026)
+
+    candidates = LimitService.find_limit_candidates(
+        user.whatsapp_id, category="Comida", today=date(2026, 9, 17)
+    )
+    assert [item["month"] for item in candidates] == [9, 10]
+    deleted = LimitService.delete_limits_by_ids(user.whatsapp_id, candidates)
+    assert deleted.status == "deleted"
+    assert len(deleted.deleted) == 2
+    assert session.query(LimiteCategoria).count() == 1
+
+
+def test_batch_delete_rejects_foreign_or_stale_candidate_without_partial_write(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    other = create_user(session, "5492222222222")
+    cat = create_category(session, user.id, "Comida")
+    own = create_limit(session, user.id, cat.id, 40000, 9, 2026)
+    candidates = LimitService.find_limit_candidates(
+        user.whatsapp_id, category="Comida", today=date(2026, 9, 17)
+    )
+    assert LimitService.delete_limits_by_ids(other.whatsapp_id, candidates).status == "stale_context"
+    assert LimitService.delete_limits_by_ids(
+        user.whatsapp_id, [{**candidates[0], "amount": "1"}]
+    ).status == "stale_context"
+    assert session.query(LimiteCategoria).one().id == own.id
+
     def test_delete_with_month(self, db_context):
         session = db_context["session"]
         user = create_user(session)
@@ -612,3 +647,24 @@ class TestLimitValidationAndConcurrencyContract:
 
         assert result.status == "conflict"
         assert session.query(LimiteCategoria).count() == 2
+
+    def test_edit_rejects_limit_changed_since_it_was_shown(self, db_context):
+        session = db_context["session"]
+        user = create_user(session)
+        category = create_category(session, user.id)
+        existing = create_limit(session, user.id, category.id, 300000, 9, 2026)
+        snapshot = type("LastLimit", (), {
+            "limit_id": str(existing.id), "category_name": "Comida",
+            "amount": Decimal("300000"), "month": 9, "year": 2026,
+            "currency": "ARS",
+        })()
+        existing.cantidad_max = Decimal("350000")
+        session.commit()
+        result = LimitService.create_limit(
+            user.whatsapp_id, {"limit_month": 10, "limit_year": 2026},
+            last_limit=snapshot, today=TODAY,
+        )
+        assert result.status == "stale_context"
+        session.refresh(existing)
+        assert existing.inicio_periodo.month == 9
+        assert existing.cantidad_max == 350000

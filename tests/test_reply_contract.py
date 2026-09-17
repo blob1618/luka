@@ -1,8 +1,7 @@
 """Contrato: en intents persistidos, el reply_text del LLM nunca llega al usuario.
 
 La verificación la genera el backend (dispatcher) tras persistir la operación.
-El prompt.md no se modifica: sus frases de ejemplo nunca se muestran porque
-este contrato las bloquea en todos los caminos operativos.
+Las frases de ejemplo del prompt nunca se muestran como confirmación de escritura.
 """
 
 from contextlib import ExitStack
@@ -36,16 +35,6 @@ def no_pending_limit_flows(monkeypatch):
             f"app.services.dispatcher.ConversationService.{method}",
             AsyncMock(return_value=False),
         )
-
-
-class LastMovementFake:
-    movement_id = "m1"
-    sender_phone = "5491100000001"
-    movement_type = "egreso"
-    amount = 5000
-    currency = "ARS"
-    description = "supermercado"
-    category_name = "supermercado"
 
 
 class _FakeUser:
@@ -205,15 +194,6 @@ async def _dispatch(llm_result, patches):
                         categories=[CategoryWithTotals(category_id="c1", category_name="servicios", es_default=False)],
                     ),
                 ),
-            ],
-        ),
-        (
-            "change_category",
-            {"category": "comida"},
-            [
-                _fake_session(),
-                patch("app.services.dispatcher.ConversationService.get_last_movement", AsyncMock(return_value=LastMovementFake())),
-                patch("app.services.dispatcher.FinanceService.update_movement_category", return_value=MovementRegistrationResult(status="updated", message="ok", movement_id="m1")),
             ],
         ),
     ],

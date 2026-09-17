@@ -164,7 +164,7 @@ class LLMService:
                 "delete_reminder",
                 "confirm_category", "reject_category",
                 "delete_category", "list_categories",
-                "change_category",
+                "update_movement", "delete_movement",
                 "create_limit", "change_limit", "list_limits",
                 "delete_limit", "confirm_limit", "reject_limit",
             }
@@ -260,6 +260,9 @@ class LLMService:
 
             return {
                 "intent": intent,
+                "reference": parsed.get("reference"),
+                "selection": parsed.get("selection"),
+                "changes": parsed.get("changes") if isinstance(parsed.get("changes"), dict) else {},
                 "expense": parsed.get("expense"),
                 "amount": amount,
                 "currency": str(parsed.get("currency", "ARS")).upper() if parsed.get("currency") else "ARS",
@@ -289,6 +292,9 @@ class LLMService:
             print(f"[LLMService] process_message failed: {type(exc).__name__}: {exc}")
             return {
                 "intent": "out_of_scope",
+                "reference": None,
+                "selection": None,
+                "changes": {},
                 "expense": None,
                 "amount": None,
                 "currency": "ARS",

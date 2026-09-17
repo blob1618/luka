@@ -45,6 +45,13 @@ class LimitEntry:
     month: int
     year: int
     currency: str = "ARS"
+    id: str | None = None
+
+
+@dataclass
+class LimitBatchResult:
+    status: str
+    deleted: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -461,10 +468,20 @@ class LimitService:
                         LimiteCategoria.id == edit_id,
                         LimiteCategoria.usuario_id == user.id,
                     )
+                    .with_for_update()
                     .first()
                 )
                 if target is None:
                     return cls._result("stale_context", "limit no longer exists")
+                previous_category = cls._find_category(session, user.id, last_limit.category_name)
+                if (
+                    previous_category is None
+                    or target.categoria_id != previous_category.id
+                    or target.cantidad_max != cls._normalize_amount(last_limit.amount)
+                    or target.inicio_periodo != date(last_limit.year, last_limit.month, 1)
+                    or target.moneda != getattr(last_limit, "currency", "ARS")
+                ):
+                    return cls._result("stale_context", "limit changed since selection")
                 collision = (
                     session.query(LimiteCategoria.id)
                     .filter(
@@ -626,6 +643,7 @@ class LimitService:
                     month=limite.inicio_periodo.month,
                     year=limite.inicio_periodo.year,
                     currency=limite.moneda,
+                    id=str(limite.id),
                 )
                 for limite, categoria in rows
             ]
@@ -643,6 +661,94 @@ class LimitService:
     # ------------------------------------------------------------------
     # Eliminación
     # ------------------------------------------------------------------
+
+    @classmethod
+    def find_limit_candidates(
+        cls, sender_phone: str, *, category: str | None = None,
+        month: int | None = None, year: int | None = None,
+        currency: str | None = None, today: date | None = None,
+    ) -> list[dict[str, Any]]:
+        today = today or datetime.now(ARGENTINA_TZ).date()
+        session = SessionLocal()
+        try:
+            user = cls._get_user(session, sender_phone)
+            if user is None:
+                return []
+            query = (
+                session.query(LimiteCategoria, Categoria.nombre)
+                .join(Categoria, LimiteCategoria.categoria_id == Categoria.id)
+                .filter(LimiteCategoria.usuario_id == user.id)
+                .filter(LimiteCategoria.fin_periodo >= today)
+                .filter(Categoria.esta_eliminado.is_(False))
+            )
+            if category:
+                query = query.filter(func.lower(Categoria.nombre) == category.strip().lower())
+            if currency:
+                query = query.filter(LimiteCategoria.moneda == currency.upper())
+            if month:
+                query = query.filter(func.extract("month", LimiteCategoria.inicio_periodo) == month)
+            if year:
+                query = query.filter(func.extract("year", LimiteCategoria.inicio_periodo) == year)
+            rows = query.order_by(LimiteCategoria.inicio_periodo, LimiteCategoria.id).limit(20).all()
+            return [
+                {"limit_id": str(item.id), "category": name, "amount": str(item.cantidad_max),
+                 "month": item.inicio_periodo.month, "year": item.inicio_periodo.year,
+                 "currency": item.moneda, "label": name}
+                for item, name in rows
+            ]
+        finally:
+            session.close()
+
+    @classmethod
+    def delete_limits_by_ids(
+        cls, sender_phone: str, candidates: list[dict[str, Any]],
+    ) -> LimitBatchResult:
+        """Delete exactly the displayed limits, atomically and only for their owner."""
+        if not candidates or len(candidates) != len({item.get("limit_id") for item in candidates}):
+            return LimitBatchResult("invalid_data")
+        try:
+            ids = [UUID(str(item["limit_id"])) for item in candidates]
+        except (ValueError, TypeError, KeyError):
+            return LimitBatchResult("invalid_data")
+        session = SessionLocal()
+        try:
+            user = cls._get_user(session, sender_phone)
+            if user is None:
+                return LimitBatchResult("user_not_found")
+            rows = (
+                session.query(LimiteCategoria)
+                .filter(LimiteCategoria.usuario_id == user.id)
+                .filter(LimiteCategoria.id.in_(ids))
+                .with_for_update()
+                .all()
+            )
+            by_id = {str(row.id): row for row in rows}
+            category_names = {
+                str(row.id): session.get(Categoria, row.categoria_id).nombre
+                for row in rows
+            }
+            today = datetime.now(ARGENTINA_TZ).date()
+            for candidate in candidates:
+                row = by_id.get(candidate["limit_id"])
+                if (
+                    row is None or row.fin_periodo < today
+                    or row.inicio_periodo.month != candidate.get("month")
+                    or row.inicio_periodo.year != candidate.get("year")
+                    or row.moneda != candidate.get("currency", "ARS")
+                    or str(row.cantidad_max) != str(Decimal(str(candidate.get("amount"))))
+                    or category_names[str(row.id)].casefold() != str(candidate.get("category", "")).casefold()
+                ):
+                    return LimitBatchResult("stale_context")
+            for row in rows:
+                session.delete(row)
+            session.commit()
+            return LimitBatchResult("deleted", candidates)
+        except Exception as exc:
+            session.rollback()
+            print(f"[LIMIT_BATCH_DELETE] Error: {type(exc).__name__}: {exc}")
+            return LimitBatchResult("persistence_error")
+        finally:
+            session.close()
 
     @classmethod
     def delete_limit(

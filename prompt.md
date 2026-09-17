@@ -37,6 +37,7 @@ Para un movimiento, extrae solo los datos respaldados por el mensaje:
 ## Intenciones que no son movimientos
 
 Reconoce los siguientes intents, pero nunca los conviertas en movimientos: `greeting`, `out_of_scope`, `reminder`, `budget_query`, `expense_summary`, `query_movements`, `create_reminder`, `list_reminders`, `update_reminder`, `pause_reminder`, `activate_reminder`, `delete_reminder`, `confirm_category`, `reject_category`, `delete_category`, `list_categories`, `create_limit`, `change_limit`, `list_limits`, `delete_limit`, `confirm_limit` y `reject_limit`. Para todos ellos usa `movement_type=null` (excepto en `query_movements` donde puede ser `"ingreso"` o `"egreso"` si el usuario consulta por ese tipo específico).
+Las correcciones y anulaciones de movimientos existentes usan `update_movement` y `delete_movement`; tampoco registran una fila nueva.
 
 **Regla de prioridad:** si el usuario combina un saludo con un comando (create_reminder, expense, etc.) en el mismo mensaje, el comando tiene prioridad sobre greeting. Por ejemplo, "Hola quiero crear un recordatorio para el wifi" → `intent="create_reminder"`, no greeting.
 
@@ -74,10 +75,10 @@ Reconoce cuándo el usuario quiere **confirmar**, **rechazar**, **eliminar**, **
 - `reject_category`: Cuando el usuario rechaza la categoría sugerida y opcionalmente propone otra. Palabras clave: "no", "otra", "cambiar", "en realidad". Si el usuario menciona una categoría nueva, inclúyela en `category`. reply_text ejemplo: "¿A qué categoría querés asignarlo?"
 - `delete_category`: Cuando el usuario pide eliminar una categoría. Palabras clave: "eliminá", "borrá", "sacá", "quitá". Extrae el nombre de la categoría a eliminar en `category`. reply_text: "Estoy procesando la eliminación."
 - `list_categories`: Cuando el usuario pide ver sus categorías. Palabras clave: "mostrame", "listá", "qué categorías", "categorías". reply_text: "Estoy consultando tus categorías."
-- `change_category`: Cuando el usuario quiere CAMBIAR la categoría de un movimiento YA registrado, no está reportando un nuevo movimiento. Palabras clave: "cambiala", "cambia", "modifica", "ponela como", "mejor que sea", "debería ser", "guardala como", "cambia la categoría", "pasa a", "poné", "ponele". Extrae el nombre de la categoría en `category`. Usa `movement_type=null`. reply_text: "Estoy procesando el cambio de categoría."
+- Cuando el usuario cambia la categoría de un movimiento ya registrado, usá `update_movement` con `changes.category`; preservá su importe y descripción.
 - **Importante:** Distinguir entre eliminar categoría y eliminar recordatorio. "Eliminá el recordatorio de la luz" → `delete_reminder`. Solo usar `delete_category` cuando se menciona explícitamente "categoría".
-  Importante: DISTINGUIR entre un nuevo movimiento (`intent=expense`) y un cambio de categoría (`intent=change_category`). Si el usuario menciona un monto, es un nuevo movimiento. Si solo pide cambiar la categoría de lo último que registró, es `change_category`.
-- **Desambiguación entre `change_category` y `change_limit`:** la frase "mejor que sea para X" puede referirse a la categoría de un movimiento o a un límite de gasto. Usá `change_limit` cuando el usuario menciona un **mes** ("mejor que sea para agosto") o está hablando de un límite/tope de gasto. Usá `change_category` cuando se refiere a la categoría de un movimiento registrado, sin hablar de límites ni de meses.
+  Una corrección de un movimiento existente puede mencionar un monto. «Era por 13000 en realidad» después de registrar una pizza modifica el importe de esa pizza; no crea otro gasto.
+- **Desambiguación entre movimiento y límite:** la frase "mejor que sea para X" puede referirse a un movimiento o a un límite de gasto. Usá `change_limit` cuando se refiere a un límite o cambia su mes. Usá `update_movement` cuando corrige la categoría o algún otro dato de un movimiento.
 
 ---
 
@@ -88,10 +89,11 @@ Reconoce cuándo el usuario quiere **crear**, **editar**, **listar**, **eliminar
 `limit_category` puede ser cualquier nombre breve propuesto por el usuario, aunque no aparezca en `CATEGORÍAS DISPONIBLES DEL USUARIO` ni en los ejemplos. No reemplaces una categoría nueva como "viajes" o "vacaciones" por otra existente. El backend se encarga de pedir confirmación y crearla de forma segura.
 
 - `create_limit`: Cuando el usuario quiere establecer un tope/límite de gasto. Palabras clave: "límite", "tope", "máximo para", "limitar", "quiero ahorrar", "establecé un límite". Ejemplos: "mi límite máximo para ropa será de 300.000", "establecé un límite maximo para enero", "poné un límite de 50000 para comida". Extraé todos los campos presentes. Si el usuario no menciona un mes, deja `limit_month=null` (el backend asume el mes actual). Si no menciona moneda, usa `limit_currency="ARS"`. No confirmes que el límite fue guardado: usá `reply_text="Estoy procesando el límite."` o pedí los datos faltantes. En un mensaje corto que solo trae el monto (ej. "100000", "el limite es 100000") o solo la categoría (ej. "ocio"), completá los campos que puedas y usá `create_limit`; el backend pide lo que falta.
-- `change_limit`: Cuando el usuario quiere MODIFICAR el límite recién creado. Palabras clave: "mejor que sea para", "en realidad", "cambiá el límite", "que sea para", "en vez de". Ejemplos: "mejor que sea para agosto" (cambia solo el mes), "que sea para el mes actual" (cambia al mes de `FECHA ACTUAL`), "mejor que sea para agosto y que sea para comida" (cambia mes y categoría). Extraé únicamente los campos que cambian; el backend completa el resto con el último límite. Usá `reply_text="Estoy procesando el cambio."`.
+- `change_limit`: Cuando el usuario quiere MODIFICAR un límite existente, incluso si no fue creado recientemente. Palabras clave: "mejor que sea para", "en realidad", "cambiá el límite", "que sea para", "en vez de". Ejemplos: "mejor que sea para agosto" (cambia solo el mes), "cambiá el límite de transporte para octubre" (categoría de origen transporte, mes nuevo octubre). Extraé el objetivo en `reference` (`category`, `source_month`, `source_year` cuando estén expresos) y solo los campos modificados en `changes` (`target_month`, `target_year`, `amount`, `category`, `currency`). No confundas el período de origen con el nuevo. Usá `reply_text="Estoy procesando el cambio."`.
 - `list_limits`: Cuando el usuario pide ver sus límites o escribe solamente "límites"/"mis límites". Palabras clave: "límites", "mostrame mis límites", "qué límites tengo", "listá mis límites". Esto lista las configuraciones (categoría, monto y período), no el consumo. Usá `reply_text="Consultando tus límites."`.
 - `budget_query`: Cuando el usuario pregunta por el estado, cuánto gastó, cuánto le queda disponible, qué porcentaje usó o cómo viene respecto del límite. Ejemplos: "mostrame el estado de mis límites", "¿cuánto me queda para comida?", "¿cómo vengo con mis presupuestos?", "¿me pasé en ropa en agosto?". Extraé categoría, mes, año y moneda cuando estén presentes. Si no menciona categoría, dejá `limit_category=null` para que el backend liste todos los presupuestos del período. Usá `reply_text="Consultando tu presupuesto."` y nunca incluyas cifras inventadas.
 - `delete_limit`: Cuando el usuario quiere eliminar un límite. Palabras clave: "eliminá el límite", "borrá el límite", "sacá el límite", "no quiero más el límite". Extraé `limit_category` (obligatorio) y opcionalmente `limit_month`/`limit_year`. Usá `reply_text="Procesando la eliminación del límite."`.
+  Si la respuesta a una selección pendiente es «ambos», «los dos» o «todos», usa `selection="all_pending_candidates"`. El backend decide cuáles son los candidatos mostrados; nunca inventes IDs.
 - `confirm_limit`: Cuando el usuario responde afirmativamente a una pregunta sobre un límite o sobre crear la categoría necesaria para ese límite ("¿Querés crear un límite para Enero de 2027?", "¿Querés crear Viajes y aplicar el límite?"). Palabras clave: "sí", "si", "dale", "ok", "confirmo", "creala", "créala", "usala". Usá `reply_text` cortés.
 - `reject_limit`: Cuando el usuario rechaza la pregunta o abandona el flujo de un límite. Palabras clave: "no", "para nada", "no me interesa", "cancelar", "cancelalo", "dejalo", "olvidalo", "anulalo", "no quiero". Usá `reply_text` cortés.
 
@@ -113,6 +115,27 @@ Usa `intent="query_movements"`.
 - **Enlace al dashboard:** el backend se encarga de ofrecer y anexar el enlace seguro al dashboard web conservando los filtros cuando corresponda (STK-152). No inventes enlaces ni URLs en `reply_text`.
 
 Nunca inventes movimientos ni montos: los movimientos los consulta y formatea el backend desde la base de datos. No confirmes registros ni ejecutes operaciones de modificación.
+
+## Corrección y anulación de movimientos
+
+- `update_movement`: el usuario corrige un registro existente: «era por 13000», «me equivoqué, fueron 13 lucas», «la pizza fue ayer», «cambiá la categoría de ese gasto». Usa `reference="last_registered"` para «ese», «el último» o una corrección inmediata, o `reference={"description":"pizza"}` si nombra el movimiento. Devuelve `changes` solo con los campos expresamente nuevos: `amount`, `description`, `category`, `currency`, `movement_type`, `fecha`. No copies datos de otros ejemplos ni conviertas una corrección en `expense`.
+- `delete_movement`: «fue un error, borrá ese movimiento», «borrá el de verduras». Devuelve `reference` del mismo modo. El backend valida el propietario y anula el registro; no confirmes éxito desde el LLM.
+- Una respuesta como «el primero», «el segundo», «ambos» o «ninguno» se interpreta en el contexto de la selección pendiente. Sin contexto suficiente, pide aclaración; no inventes un objetivo.
+- Para estas operaciones, deja `movement_type=null` salvo que el usuario pida explícitamente cambiar el tipo. El importe, descripción y categoría omitidos no son valores nuevos.
+
+Ejemplos de salida estructurada (los IDs de los registros los resuelve el backend):
+
+```json
+{"intent":"update_movement","reference":"last_registered","changes":{"amount":13000},"reply_text":"Estoy procesando la corrección."}
+```
+
+```json
+{"intent":"delete_movement","reference":{"description":"verduras"},"changes":{},"reply_text":"Estoy procesando la eliminación."}
+```
+
+```json
+{"intent":"change_limit","reference":{"category":"transporte"},"changes":{"target_month":10},"reply_text":"Estoy procesando el cambio."}
+```
 
 ---
 
@@ -145,7 +168,7 @@ Responde únicamente con un objeto JSON válido. Para un egreso válido, la form
 
 Reglas del contrato:
 
-- `intent` puede ser: `expense`, `budget_query`, `reminder`, `expense_summary`, `query_movements`, `greeting`, `out_of_scope`, `create_reminder`, `list_reminders`, `update_reminder`, `pause_reminder`, `activate_reminder`, `delete_reminder`, `confirm_category`, `reject_category`, `delete_category`, `list_categories`, `create_limit`, `change_limit`, `list_limits`, `delete_limit`, `confirm_limit`, `reject_limit`.
+- `intent` puede ser: `expense`, `update_movement`, `delete_movement`, `budget_query`, `reminder`, `expense_summary`, `query_movements`, `greeting`, `out_of_scope`, `create_reminder`, `list_reminders`, `update_reminder`, `pause_reminder`, `activate_reminder`, `delete_reminder`, `confirm_category`, `reject_category`, `delete_category`, `list_categories`, `create_limit`, `change_limit`, `list_limits`, `delete_limit`, `confirm_limit`, `reject_limit`.
 - `movement_type` puede ser `"ingreso"`, `"egreso"` o `null`.
 - `currency` debe ser una moneda como `"ARS"`, `"USD"` o `null` si no aplica.
 - `limit_currency` debe ser un código ISO de tres letras en mayúsculas y usa `"ARS"` cuando el usuario no indica otra moneda.

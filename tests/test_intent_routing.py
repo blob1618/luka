@@ -4,9 +4,20 @@ from decimal import Decimal
 from app.services.conversation import LastCreatedLimit
 from app.services.intent_routing import (
     normalize_limit_intent,
+    normalize_movement_action,
     normalize_movement_query_intent,
     references_recent_limit,
 )
+
+
+def test_colloquial_amount_corrections_override_new_expense_classification():
+    for text, amount in (("Era por 13.000 en realidad", 13000),
+                         ("Me equivoqué, fueron 13 lucas", 13000),
+                         ("Fue por 13,5", 13.5)):
+        result = normalize_movement_action(text, {"intent": "expense", "amount": 10000})
+        assert result["intent"] == "update_movement"
+        assert result["reference"] == "last_registered"
+        assert result["changes"]["amount"] == amount
 
 
 def recent_limit() -> LastCreatedLimit:

@@ -49,6 +49,7 @@ La FK PostgreSQL `public.usuario.auth_user_id -> auth.users(id)` existe únicame
 Cuando el usuario propone una categoría inexistente al crear un límite, el backend solicita confirmación y luego crea o reactiva la categoría y persiste el límite en la misma transacción. La taxonomía base normaliza categorías conocidas, pero no funciona como una lista cerrada para los límites personalizados.
 
 El gasto consumido, disponible, exceso y porcentaje no se persisten como columnas derivadas. `BudgetService` los calcula desde los egresos de `public.movimientos_financieros` que coinciden en usuario, categoría, moneda y fecha dentro del período. Los ingresos, movimientos sin categoría, otras monedas y otros períodos no consumen el presupuesto.
+Los movimientos con `anulado_en` informado se excluyen de consultas y presupuestos; la fila y su `whatsapp_message_id` se conservan para impedir la recreación por reintentos de WhatsApp. La columna se incorpora mediante `20260917143651_annul_financial_movements.sql` y debe aplicarse antes del código que la consulta.
 
 Después de registrar un egreso con un límite aplicable, la respuesta informa el valor del límite, el gasto acumulado, el disponible y el porcentaje consumido. `should_alert` queda reservado para distinguir un exceso; no controla si el estado calculado se muestra o no.
 
@@ -111,6 +112,7 @@ erDiagram
         date fecha_movimiento
         text origen
         text whatsapp_message_id UK
+        timestamptz anulado_en
     }
 
     limite_categoria {

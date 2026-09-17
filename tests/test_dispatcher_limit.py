@@ -10,7 +10,7 @@ import pytest
 
 from app.services.conversation import LastCreatedLimit, PendingLimit, PendingLimitDelete
 from app.services.dispatcher import process_incoming_message
-from app.services.limit import LimitResult
+from app.services.limit import LimitBatchResult, LimitResult
 from app.services.onboarding import OnboardingDecision, OnboardingResult
 
 
@@ -256,7 +256,7 @@ class TestChangeLimitFlow:
         assert call_data["limit_month"] == 8
 
     @pytest.mark.asyncio
-    async def test_change_limit_without_last_limit_guides_user(self):
+    async def test_change_limit_without_matching_limit_guides_user(self):
         with (
             limit_flow_patches(llm=create_limit_llm(intent="change_limit")),
             patch(
@@ -264,10 +264,14 @@ class TestChangeLimitFlow:
                 new_callable=AsyncMock,
                 return_value=None,
             ),
+            patch(
+                "app.services.dispatcher.LimitService.find_limit_candidates",
+                return_value=[],
+            ),
         ):
             result = await process_incoming_message("12345", "mejor que sea para agosto")
 
-        assert "No tengo un límite reciente" in result.reply_text
+        assert "No encontré un límite vigente de Ropa" in result.reply_text
 
 
 class TestListLimitsFlow:
@@ -694,13 +698,9 @@ class TestLimitMultiTurn:
                 return_value=pending_delete,
             ),
             patch(
-                "app.services.dispatcher.LimitService.delete_limit",
-                return_value=LimitResult(
-                    status="deleted",
-                    message="ok",
-                    category_name="Comida",
-                    month=11,
-                    year=2026,
+                "app.services.dispatcher.LimitService.delete_limits_by_ids",
+                return_value=LimitBatchResult(
+                    "deleted", [{"limit_id": "b", "month": 11, "year": 2026}]
                 ),
             ) as mock_delete,
             patch(
@@ -711,7 +711,7 @@ class TestLimitMultiTurn:
             result = await process_incoming_message("12345", "noviembre")
 
         assert "eliminé el límite de Comida" in result.reply_text
-        assert mock_delete.call_args.kwargs["month"] == 11
+        assert mock_delete.call_args.args[1][0]["month"] == 11
 
     @pytest.mark.asyncio
     async def test_month_selection_reasks_when_currency_is_ambiguous(self):
@@ -751,7 +751,7 @@ class TestLimitMultiTurn:
                 return_value=pending_delete,
             ),
             patch(
-                "app.services.dispatcher.LimitService.delete_limit",
+                "app.services.dispatcher.LimitService.delete_limits_by_ids",
             ) as delete_limit,
         ):
             result = await process_incoming_message("12345", "noviembre de 2026")
@@ -913,11 +913,8 @@ class TestLimitMultiTurnFixes:
             patch(
                 "app.services.dispatcher.LimitService.delete_limit",
                 return_value=LimitResult(
-                    status="deleted",
-                    message="ok",
-                    category_name="Ocio",
-                    month=9,
-                    year=2026,
+                    status="deleted", message="ok", category_name="Ocio",
+                    month=9, year=2026,
                 ),
             ) as mock_delete,
             patch(
@@ -950,13 +947,9 @@ class TestLimitMultiTurnFixes:
                 return_value=pending_delete,
             ),
             patch(
-                "app.services.dispatcher.LimitService.delete_limit",
-                return_value=LimitResult(
-                    status="deleted",
-                    message="ok",
-                    category_name="Ocio",
-                    month=9,
-                    year=2026,
+                "app.services.dispatcher.LimitService.delete_limits_by_ids",
+                return_value=LimitBatchResult(
+                    "deleted", [{"limit_id": "b", "month": 9, "year": 2026}]
                 ),
             ) as mock_delete,
             patch(
@@ -967,7 +960,7 @@ class TestLimitMultiTurnFixes:
             result = await process_incoming_message("12345", "el de septiembre")
 
         assert "eliminé el límite de Ocio" in result.reply_text
-        assert mock_delete.call_args.kwargs["month"] == 9
+        assert mock_delete.call_args.args[1][0]["month"] == 9
 
     @pytest.mark.asyncio
     async def test_change_limit_month_edits_existing_limit(self):

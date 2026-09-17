@@ -188,6 +188,7 @@ class BudgetService:
                     MovimientoFinanciero.usuario_id == LimiteCategoria.usuario_id,
                     MovimientoFinanciero.categoria_id == LimiteCategoria.categoria_id,
                     MovimientoFinanciero.tipo == "egreso",
+                    MovimientoFinanciero.anulado_en.is_(None),
                     MovimientoFinanciero.moneda == LimiteCategoria.moneda,
                     MovimientoFinanciero.fecha_movimiento
                     >= LimiteCategoria.inicio_periodo,
@@ -328,6 +329,7 @@ class BudgetService:
             movements = (
                 session.query(MovimientoFinanciero)
                 .filter(MovimientoFinanciero.id.in_(parsed_ids))
+                .filter(MovimientoFinanciero.anulado_en.is_(None))
                 .all()
             )
             by_id = {str(movement.id): movement for movement in movements}

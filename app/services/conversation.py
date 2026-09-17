@@ -245,6 +245,24 @@ class LastRegisteredMovement:
         return cls(**raw)
 
 
+@dataclass
+class RecentItems:
+    """Bounded references to objects displayed or created in the last exchange."""
+
+    entity: str
+    items: list[dict[str, Any]]
+
+
+@dataclass
+class PendingSelection:
+    """An operation waiting for the user to choose one or more shown IDs."""
+
+    intent: str
+    entity: str
+    items: list[dict[str, Any]]
+    changes: dict[str, Any] = field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # Keys y TTL
 # ---------------------------------------------------------------------------
@@ -265,6 +283,14 @@ def _key(whatsapp_id: str) -> str:
 
 def _last_movement_key(whatsapp_id: str) -> str:
     return f"last_movement:{whatsapp_id}"
+
+
+def _recent_items_key(whatsapp_id: str) -> str:
+    return f"recent_items:{whatsapp_id}"
+
+
+def _pending_selection_key(whatsapp_id: str) -> str:
+    return f"pending_selection:{whatsapp_id}"
 
 
 def _last_limit_key(whatsapp_id: str) -> str:
@@ -440,6 +466,56 @@ class ConversationService:
             await client.delete(_last_movement_key(whatsapp_id))
         except Exception as exc:
             print(f"[ConversationService] clear_last_movement error: {type(exc).__name__}: {exc}")
+
+    @classmethod
+    async def set_recent_items(cls, whatsapp_id: str, recent: RecentItems) -> None:
+        try:
+            client = await cls._get_client()
+            await client.setex(
+                _recent_items_key(whatsapp_id), CONVERSATION_TTL,
+                json.dumps(asdict(recent)),
+            )
+        except Exception as exc:
+            print(f"[ConversationService] set_recent_items error: {type(exc).__name__}: {exc}")
+
+    @classmethod
+    async def get_recent_items(cls, whatsapp_id: str) -> RecentItems | None:
+        try:
+            client = await cls._get_client()
+            raw = await client.get(_recent_items_key(whatsapp_id))
+            return RecentItems(**json.loads(raw)) if raw else None
+        except Exception as exc:
+            print(f"[ConversationService] get_recent_items error: {type(exc).__name__}: {exc}")
+            return None
+
+    @classmethod
+    async def set_pending_selection(cls, whatsapp_id: str, pending: PendingSelection) -> None:
+        try:
+            client = await cls._get_client()
+            await client.setex(
+                _pending_selection_key(whatsapp_id), CONVERSATION_TTL,
+                json.dumps(asdict(pending)),
+            )
+        except Exception as exc:
+            print(f"[ConversationService] set_pending_selection error: {type(exc).__name__}: {exc}")
+
+    @classmethod
+    async def get_pending_selection(cls, whatsapp_id: str) -> PendingSelection | None:
+        try:
+            client = await cls._get_client()
+            raw = await client.get(_pending_selection_key(whatsapp_id))
+            return PendingSelection(**json.loads(raw)) if raw else None
+        except Exception as exc:
+            print(f"[ConversationService] get_pending_selection error: {type(exc).__name__}: {exc}")
+            return None
+
+    @classmethod
+    async def clear_pending_selection(cls, whatsapp_id: str) -> None:
+        try:
+            client = await cls._get_client()
+            await client.delete(_pending_selection_key(whatsapp_id))
+        except Exception as exc:
+            print(f"[ConversationService] clear_pending_selection error: {type(exc).__name__}: {exc}")
 
     # ------------------------------------------------------------------
     # Recordatorio pendiente (multi-turno cuando falta el día)

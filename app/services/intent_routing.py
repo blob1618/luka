@@ -146,3 +146,33 @@ def normalize_movement_query_intent(
         return data
 
     return data
+
+
+_AMOUNT_CORRECTION = re.compile(
+    r"^(?:era|fue|eran|fueron|en realidad|me equivoque|mejor)\b"
+    r".*?\b(?:por|de|a|eran|fueron)\s*\$?\s*(\d[\d.,]*)\b"
+    r"(?:\s*(lucas?|mil))?"
+)
+
+
+def normalize_movement_action(text: str, extracted_data: dict) -> dict:
+    """Protect explicit corrections and deletions from new-registration routing."""
+    data = dict(extracted_data)
+    normalized = _normalize(text)
+    numeric_text = unicodedata.normalize("NFKD", text.lower())
+    numeric_text = "".join(char for char in numeric_text if not unicodedata.combining(char))
+    correction = _AMOUNT_CORRECTION.search(numeric_text.strip())
+    if correction:
+        raw = correction.group(1).replace(".", "").replace(",", ".")
+        try:
+            amount = float(raw) * (1000 if correction.group(2) else 1)
+        except ValueError:
+            return data
+        data.update(intent="update_movement", reference="last_registered", changes={"amount": amount})
+    elif re.search(r"\b(?:borra|elimina|anula)\b", normalized) and re.search(
+        r"\b(?:movimiento|gasto|compra|el de|ese|esa)\b", normalized
+    ):
+        data["intent"] = "delete_movement"
+        if not data.get("reference"):
+            data["reference"] = "last_registered" if re.search(r"\b(?:ese|esa|ultimo)\b", normalized) else None
+    return data

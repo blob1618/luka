@@ -22,6 +22,18 @@ async def _process_message_with_mock_response(mock_response):
 
 
 @pytest.mark.asyncio
+async def test_process_message_preserves_structured_correction_reference_and_patch():
+    result = await _process_message_with_mock_response({
+        "intent": "update_movement", "reference": {"description": "pizza"},
+        "changes": {"amount": 13000}, "reply_text": "Procesando.",
+    })
+    assert result["intent"] == "update_movement"
+    assert result["reference"] == {"description": "pizza"}
+    assert result["changes"] == {"amount": 13000}
+    assert result["movements"] == []
+
+
+@pytest.mark.asyncio
 async def test_process_message_valid_expense():
     """Prueba de éxito: El bot extrae correctamente los datos de un gasto válido."""
     mock_response = {

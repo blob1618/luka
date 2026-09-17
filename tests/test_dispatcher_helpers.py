@@ -4,7 +4,6 @@ from decimal import Decimal
 
 
 from app.services.dispatcher import (
-    _category_changed_reply,
     _category_confirmation_reply,
     _category_deleted_reply,
     _category_hint_reply,
@@ -119,12 +118,6 @@ class TestCategoryReplies:
         assert "Comida" in reply
         assert "confirmar" in reply.lower()
 
-    def test_changed(self):
-        reply = _category_changed_reply("supermercado", "5000", "ARS", "Comida")
-        assert "supermercado" in reply
-        assert "$5000 ARS" in reply
-        assert "Comida" in reply
-
     def test_deleted(self):
         reply = _category_deleted_reply("Comida")
         assert "Comida" in reply
@@ -178,7 +171,7 @@ class TestSafeNonStk35Reply:
         assert _safe_non_stk35_reply({"intent": "greeting", "reply_text": "hola"}) == "hola"
 
     def test_handles_stk39_intents(self):
-        for intent in ("confirm_category", "reject_category", "delete_category", "list_categories", "change_category"):
+        for intent in ("confirm_category", "reject_category", "delete_category", "list_categories"):
             assert _safe_non_stk35_reply({"intent": intent, "reply_text": "x"}) == "x"
 
     def test_empty_reply_uses_fallback(self):

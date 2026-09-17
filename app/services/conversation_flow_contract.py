@@ -166,6 +166,14 @@ EVENT_POLICIES: dict[str, EventPolicy] = {
         terminal_only=True,
     ),
     "movement.persistence_error": EventPolicy(terminal_only=True),
+    "movement.updated": EventPolicy(
+        frozenset({"description", "amount", "currency", "category"}),
+        terminal_only=True,
+    ),
+    "movement.annulled": EventPolicy(
+        frozenset({"description", "amount", "currency"}),
+        terminal_only=True,
+    ),
     "movement.category_hint": EventPolicy(
         actions=frozenset({"request_category_change"})
     ),
@@ -175,7 +183,6 @@ EVENT_POLICIES: dict[str, EventPolicy] = {
             {"confirm_category", "reject_category", "cancel_pending_operation"}
         ),
     ),
-    "category.changed": EventPolicy(frozenset({"category"})),
     "category.deleted": EventPolicy(frozenset({"category"})),
     "category.not_found": EventPolicy(frozenset({"category"})),
     "reminder.missing_concept": EventPolicy(
@@ -217,6 +224,10 @@ EVENT_POLICIES: dict[str, EventPolicy] = {
     ),
     "limit.listed": EventPolicy(frozenset({"summary"})),
     "limit.deleted": EventPolicy(frozenset({"category", "period"})),
+    "limit.bulk_deleted": EventPolicy(
+        frozenset({"category", "periods", "count"}),
+        terminal_only=True,
+    ),
     "limit.month_selection": EventPolicy(
         frozenset({"year"}),
         frozenset({"cancel_pending_operation"}),

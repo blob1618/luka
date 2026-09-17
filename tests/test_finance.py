@@ -783,117 +783,7 @@ def test_register_movement_with_category_unknown_needs_confirmation(db_context):
     assert count_movements(session) == 0
 
 
-# ---------------------------------------------------------------------------
-# STK-39 v2: Tests de update_movement_category
-# ---------------------------------------------------------------------------
-
-
-def test_update_movement_category_existing(db_context):
-    session = db_context["session"]
-    user = create_user(session)
-    cat1 = create_category(session, user.id, nombre="Comida")
-    cat2 = create_category(session, user.id, nombre="Transporte")
-
-    # Crear movimiento con categoría "Comida"
-    mov = MovimientoFinanciero(
-        usuario_id=user.id,
-        categoria_id=cat1.id,
-        tipo="egreso",
-        cantidad=1500,
-        moneda="ARS",
-        descripcion="almuerzo",
-    )
-    session.add(mov)
-    session.commit()
-    mov_id = str(mov.id)
-
-    result = FinanceService.update_movement_category(
-        movement_id=mov_id,
-        user_id=user.id,
-        new_category_name="Transporte",
-        create_if_missing=False,
-    )
-
-    assert result.status == "updated"
-    session.refresh(mov)
-    assert mov.categoria_id == cat2.id
-
-
-def test_update_movement_category_create_if_missing(db_context):
-    session = db_context["session"]
-    user = create_user(session)
-    cat1 = create_category(session, user.id, nombre="Comida")
-
-    mov = MovimientoFinanciero(
-        usuario_id=user.id,
-        categoria_id=cat1.id,
-        tipo="egreso",
-        cantidad=1500,
-        moneda="ARS",
-        descripcion="almuerzo",
-    )
-    session.add(mov)
-    session.commit()
-    mov_id = str(mov.id)
-
-    result = FinanceService.update_movement_category(
-        movement_id=mov_id,
-        user_id=user.id,
-        new_category_name="NuevaCat",
-        create_if_missing=True,
-    )
-
-    assert result.status == "updated"
-    session.refresh(mov)
-    assert mov.categoria_id is not None
-    cat = session.query(Categoria).filter(Categoria.id == mov.categoria_id).first()
-    assert cat.nombre == "NuevaCat"
-
-
-def test_update_movement_category_not_found(db_context):
-    session = db_context["session"]
-    user = create_user(session)
-
-    result = FinanceService.update_movement_category(
-        movement_id=str(uuid.uuid4()),
-        user_id=user.id,
-        new_category_name="Comida",
-    )
-
-    assert result.status == "not_found"
-
-
-def test_update_movement_category_case_insensitive(db_context):
-    session = db_context["session"]
-    user = create_user(session)
-    cat1 = create_category(session, user.id, nombre="Comida")
-    cat2 = create_category(session, user.id, nombre="Transporte")
-
-    mov = MovimientoFinanciero(
-        usuario_id=user.id,
-        categoria_id=cat1.id,
-        tipo="egreso",
-        cantidad=1500,
-        moneda="ARS",
-        descripcion="almuerzo",
-    )
-    session.add(mov)
-    session.commit()
-    mov_id = str(mov.id)
-
-    result = FinanceService.update_movement_category(
-        movement_id=mov_id,
-        user_id=user.id,
-        new_category_name="  transporte  ",
-        create_if_missing=False,
-    )
-
-    assert result.status == "updated"
-    session.refresh(mov)
-    assert mov.categoria_id == cat2.id
-
-
-def test_update_movement_category_missing_without_create(db_context):
+def test_update_movement_category_uses_active_owned_category(db_context):
     session = db_context["session"]
     user = create_user(session)
     category = create_category(session, user.id, nombre="Comida")
@@ -908,13 +798,126 @@ def test_update_movement_category_missing_without_create(db_context):
     session.add(movement)
     session.commit()
 
-    result = FinanceService.update_movement_category(
-        movement_id=str(movement.id),
-        user_id=user.id,
-        new_category_name="Inexistente",
-        create_if_missing=False,
+    other = create_category(session, user.id, nombre="Transporte")
+    updated = FinanceService.update_movement(
+        user.whatsapp_id, str(movement.id), {"category": " transporte "}
     )
-
+    assert updated.status == "updated"
+    session.refresh(movement)
+    assert movement.categoria_id == other.id
+    result = FinanceService.update_movement(
+        user.whatsapp_id, str(movement.id), {"category": "Inexistente"}
+    )
     assert result.status == "category_not_found"
     session.refresh(movement)
-    assert movement.categoria_id == category.id
+    assert movement.categoria_id == other.id
+    assert session.query(Categoria).count() == 2
+
+
+def test_correct_and_annul_movement_preserves_original_message_id(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    create_category(session, user.id, "Comida")
+    registered = FinanceService.register_movement_from_whatsapp_text(
+        sender_phone=user.whatsapp_id,
+        whatsapp_message_id="wamid.pizza",
+        original_text="Compré pizza por 10000",
+        llm_result=movement_payload(amount=10000, description="pizza", category="Comida"),
+    )
+
+    corrected = FinanceService.update_movement(
+        user.whatsapp_id, registered.movement_id, {"amount": 13000}
+    )
+    assert corrected.status == "updated"
+    assert corrected.before.cantidad == 10000
+    assert corrected.after.cantidad == 13000
+    assert corrected.after.descripcion == "pizza"
+    assert corrected.after.categoria_nombre == "Comida"
+    assert count_movements(session) == 1
+
+    annulled = FinanceService.annul_movement(user.whatsapp_id, registered.movement_id)
+    assert annulled.status == "annulled"
+    assert FinanceService.query_movements(user.id).movements == []
+    assert FinanceService.get_categories_with_totals(user.id).categories[0].total_egresos == 0
+    assert FinanceService.annul_movement(user.whatsapp_id, registered.movement_id).status == "already_annulled"
+    assert FinanceService.register_movement_from_whatsapp_text(
+        sender_phone=user.whatsapp_id,
+        whatsapp_message_id="wamid.pizza",
+        original_text="Compré pizza por 10000",
+        llm_result=movement_payload(amount=10000, description="pizza", category="Comida"),
+    ).status == "duplicate"
+    assert count_movements(session) == 1
+
+
+def test_movement_mutation_rejects_another_user_and_invalid_patch(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    other = create_user(session, "5492222222222")
+    registered = FinanceService.register_movement_from_whatsapp_text(
+        sender_phone=user.whatsapp_id,
+        whatsapp_message_id="wamid.owner",
+        original_text="Gasté 5000 en verduras",
+        llm_result=movement_payload(amount=5000, description="verduras", category=None),
+    )
+    assert FinanceService.update_movement(other.whatsapp_id, registered.movement_id, {"amount": 6000}).status == "not_found"
+    assert FinanceService.annul_movement(other.whatsapp_id, registered.movement_id).status == "not_found"
+    assert FinanceService.update_movement(user.whatsapp_id, registered.movement_id, {"amount": -1}).status == "invalid_data"
+    session.expire_all()
+    assert session.query(MovimientoFinanciero).one().cantidad == 5000
+
+
+def test_movement_mutation_rejects_changed_shown_snapshot(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    registered = FinanceService.register_movement_from_whatsapp_text(
+        sender_phone=user.whatsapp_id, whatsapp_message_id="wamid.snapshot",
+        original_text="Gasté 5000 en verduras",
+        llm_result=movement_payload(amount=5000, description="verduras", category=None),
+    )
+    assert FinanceService.update_movement(
+        user.whatsapp_id, registered.movement_id, {"amount": 7000}
+    ).status == "updated"
+    shown = {"amount": "5000", "description": "verduras", "currency": "ARS"}
+    assert FinanceService.annul_movement(
+        user.whatsapp_id, registered.movement_id, shown
+    ).status == "stale_context"
+    assert FinanceService.update_movement(
+        user.whatsapp_id, registered.movement_id, {"amount": 8000}, shown
+    ).status == "stale_context"
+    session.expire_all()
+    row = session.query(MovimientoFinanciero).one()
+    assert row.cantidad == 7000 and row.anulado_en is None
+
+
+def test_movement_patch_changes_only_requested_fields(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    food = create_category(session, user.id, "Comida")
+    registered = FinanceService.register_movement_from_whatsapp_text(
+        sender_phone=user.whatsapp_id, whatsapp_message_id="wamid.partial",
+        original_text="Gasté 5000 en almuerzo",
+        llm_result=movement_payload(amount=5000, description="almuerzo", category="Comida"),
+    )
+    result = FinanceService.update_movement(
+        user.whatsapp_id, registered.movement_id,
+        {"description": "cena", "fecha": "2026-09-16"},
+    )
+    assert result.status == "updated"
+    session.expire_all()
+    row = session.query(MovimientoFinanciero).one()
+    assert row.descripcion == "cena" and row.fecha_movimiento == date(2026, 9, 16)
+    assert row.cantidad == 5000 and row.categoria_id == food.id
+    assert row.moneda == "ARS" and row.tipo == "egreso"
+
+
+def test_movement_reference_treats_wildcards_as_literal(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    for description in ("50% descuento", "pizza"):
+        session.add(MovimientoFinanciero(
+            usuario_id=user.id, tipo="egreso", cantidad=1000,
+            moneda="ARS", descripcion=description,
+        ))
+    session.commit()
+    matches = FinanceService.find_movement_candidates(user.whatsapp_id, description="%")
+    assert [item.descripcion for item in matches] == ["50% descuento"]
