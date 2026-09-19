@@ -365,6 +365,48 @@ class TestFinancialMovement:
         assert pending.inferred_category == "Jardinería de prueba"
 
     @pytest.mark.asyncio
+    async def test_confirm_category_registers_user_approved_category(self):
+        from decimal import Decimal
+
+        from app.services.conversation import PendingMovement
+        from app.services.dispatcher import _confirm_pending_category_action
+
+        pending = PendingMovement(
+            sender_phone="12345",
+            whatsapp_message_id="wamid.category-confirmation",
+            original_text="Gasté 2500 en semillas",
+            movement_type="egreso",
+            amount=Decimal("2500"),
+            currency="ARS",
+            description="semillas",
+            inferred_category="Jardinería de prueba",
+        )
+        register = MagicMock(return_value=registered_result())
+
+        with (
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_movement",
+                new_callable=AsyncMock,
+                return_value=pending,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ) as clear_state,
+            patch(
+                "app.services.dispatcher.FinanceService.register_movement_with_category",
+                register,
+            ),
+        ):
+            result = await _confirm_pending_category_action("12345")
+
+        assert result.service_invoked == "finance"
+        assert result.event_key == "movement.registered"
+        assert "Registré tu egreso" in result.reply_text
+        assert register.call_args.kwargs["category_creation_confirmed"] is True
+        clear_state.assert_awaited_once_with("12345")
+
+    @pytest.mark.asyncio
     async def test_multiop_registers_two_movements(self):
         from unittest.mock import MagicMock, patch
 
