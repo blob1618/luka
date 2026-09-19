@@ -111,6 +111,10 @@ Solo los egresos categorizados de la misma moneda y dentro del período consumen
 
 No se ejecuta un job periódico de alertas: la alerta se evalúa inmediatamente después de una persistencia exitosa. Esto evita duplicados de notificación y mantiene al scheduler reservado para recordatorios.
 
+## Recordatorio proactivo diario (STK-60)
+
+`check_proactive_prompts` corre cada 5 minutos y, sólo durante la hora local `PROACTIVE_PROMPT_HOUR`, envía un mensaje libre preguntando por gastos no registrados a los usuarios con `proactivo_habilitado`, ventana de WhatsApp de 24h abierta y sin movimientos vigentes con fecha de hoy. `proactivo_ultimo_envio` se reclama antes de enviar (máximo un aviso por día) y se libera si el envío falla. Los intents `disable_proactive_reminders` / `enable_proactive_reminders` actualizan la preferencia desde el chat.
+
 ## Dashboard, Magic Link y consultas
 
 El repositorio no contiene un frontend implementado. Para Release 1, el acceso financiero debe continuar mediado por backend:

@@ -416,6 +416,44 @@ class ReminderService:
         finally:
             session.close()
 
+    @classmethod
+    def set_proactive_prompts(cls, sender_phone: str, enabled: bool) -> ReminderResult:
+        sender_phone = cls._normalize_text(sender_phone)
+        if not sender_phone:
+            return cls._result("invalid_data", "sender_phone is required")
+
+        session = SessionLocal()
+        try:
+            user = cls._get_user(session, sender_phone)
+            if user is None:
+                return cls._result("user_not_found", "user not found")
+
+            user.proactivo_habilitado = bool(enabled)
+            session.commit()
+
+            if enabled:
+                message = (
+                    "Listo, activé los recordatorios proactivos. "
+                    "Te voy a escribir si no registrás tus gastos del día."
+                )
+            else:
+                message = (
+                    "Listo, no te voy a escribir más para recordarte gastos no registrados. "
+                    "Si querés que retome, avisame."
+                )
+            return cls._result("updated", message)
+
+        except Exception as exc:
+            session.rollback()
+            print(
+                "[REMINDER_PROACTIVE] Persistence error: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return cls._result("persistence_error", "could not update proactive prompts")
+
+        finally:
+            session.close()
+
     # ------------------------------------------------------------------
     # Búsqueda por título (match parcial, case-insensitive)
     # ------------------------------------------------------------------

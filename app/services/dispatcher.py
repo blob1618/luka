@@ -609,6 +609,17 @@ def _reminder_state_reply(result: ReminderResult, action: str) -> str:
     return "No pude procesar el cambio de estado del recordatorio."
 
 
+def _proactive_prompts_reply(sender_phone: str, enabled: bool) -> str:
+    result = ReminderService.set_proactive_prompts(sender_phone, enabled=enabled)
+    if result.status == "updated":
+        return result.message
+    if result.status == "user_not_found":
+        return "No encontré una cuenta vinculada a este WhatsApp."
+    if result.status == "persistence_error":
+        return "Hubo un problema. Intentá nuevamente en unos minutos."
+    return "No pude procesar tu solicitud."
+
+
 def _reminder_delete_reply(result: ReminderResult) -> str:
     if result.status == "deleted":
         return "✅ Listo, eliminé el recordatorio."
@@ -2515,6 +2526,12 @@ async def _dispatch_incoming_message(
                 reminder_id=extracted_data.get("reminder_id") or "",
             )
         reply_text = _reminder_delete_reply(reminder_result)
+        service_invoked = "reminder"
+
+    elif intent in {"enable_proactive_reminders", "disable_proactive_reminders"}:
+        reply_text = _proactive_prompts_reply(
+            sender_phone, enabled=intent == "enable_proactive_reminders"
+        )
         service_invoked = "reminder"
 
     elif _is_financial_movement(extracted_data):

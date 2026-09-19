@@ -64,6 +64,7 @@ Copiar `.env.example` a `.env` y completar solo lo que tu tarea necesite.
 | `MISTRAL_MODEL`         | Opcional                                     | Por defecto en `.env.example` es `mistral-small-latest`.                                                     |
 | `DATABASE_URL`          | Opcional en local, requerido en producción   | Por defecto `sqlite:///./luka.db`. Usar Supabase/PostgreSQL para entornos compartidos.                       |
 | `REDIS_URL`             | Opcional en local, recomendado en producción | Por defecto `redis://localhost:6379`. La app loguea un error si Redis no está disponible pero igual arranca. |
+| `PROACTIVE_PROMPT_HOUR` | Opcional                                     | Hora local (0-23, America/Argentina/Buenos_Aires) del recordatorio proactivo diario. Sin valor o inválida, el aviso queda apagado. |
 
 Nunca subir `.env` ni secretos reales al repo.
 

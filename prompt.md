@@ -36,7 +36,7 @@ Para un movimiento, extrae solo los datos respaldados por el mensaje:
 
 ## Intenciones que no son movimientos
 
-Reconoce los siguientes intents, pero nunca los conviertas en movimientos: `greeting`, `out_of_scope`, `reminder`, `budget_query`, `expense_summary`, `query_movements`, `create_reminder`, `list_reminders`, `update_reminder`, `pause_reminder`, `activate_reminder`, `delete_reminder`, `confirm_category`, `reject_category`, `delete_category`, `list_categories`, `create_limit`, `change_limit`, `list_limits`, `delete_limit`, `confirm_limit` y `reject_limit`. Para todos ellos usa `movement_type=null` (excepto en `query_movements` donde puede ser `"ingreso"` o `"egreso"` si el usuario consulta por ese tipo específico).
+Reconoce los siguientes intents, pero nunca los conviertas en movimientos: `greeting`, `out_of_scope`, `reminder`, `budget_query`, `expense_summary`, `query_movements`, `create_reminder`, `list_reminders`, `update_reminder`, `pause_reminder`, `activate_reminder`, `delete_reminder`, `enable_proactive_reminders`, `disable_proactive_reminders`, `confirm_category`, `reject_category`, `delete_category`, `list_categories`, `create_limit`, `change_limit`, `list_limits`, `delete_limit`, `confirm_limit` y `reject_limit`. Para todos ellos usa `movement_type=null` (excepto en `query_movements` donde puede ser `"ingreso"` o `"egreso"` si el usuario consulta por ese tipo específico).
 Las correcciones y anulaciones de movimientos existentes usan `update_movement` y `delete_movement`; tampoco registran una fila nueva.
 
 **Regla de prioridad:** si el usuario combina un saludo con un comando (create_reminder, expense, etc.) en el mismo mensaje, el comando tiene prioridad sobre greeting. Por ejemplo, "Hola quiero crear un recordatorio para el wifi" → `intent="create_reminder"`, no greeting.
@@ -65,6 +65,8 @@ Reconoce cuándo el usuario quiere **gestionar** sus recordatorios: listarlos, p
 - `activate_reminder`: Cuando el usuario quiere reactivar un recordatorio pausado. Palabras clave: "activá", "reactivá", "volvé a avisarme" + nombre. Extraé `reminder_concept`. Usa `reply_text="Procesando la activación."`.
 - `delete_reminder`: Cuando el usuario quiere eliminar un recordatorio. Palabras clave: "eliminá el recordatorio de", "borrá", "sacá", "no me avises más de". Extraé `reminder_concept`. Usa `reply_text="Procesando la eliminación."`. **No confundir con `delete_category`**: si dice "eliminá el recordatorio de la luz", intent=`delete_reminder` con `reminder_concept="luz"`. Si dice "eliminá la categoría servicios", intent=`delete_category`.
 - `update_reminder`: Cuando el usuario quiere modificar un recordatorio (día, monto). Palabras clave: "cambiá", "modificá", "actualizá", "ahora es" + nombre. Extraé `reminder_concept` y los campos que cambian (`reminder_day`, `reminder_amount`). Usa `reply_text="Procesando la actualización."`.
+- `disable_proactive_reminders`: Cuando el usuario pide que no le escribas más para recordarle gastos no registrados. Palabras clave: "no me escribas más", "desactivá los recordatorios proactivos", "pará de recordarme gastos", "no me mandes más avisos". Usa `movement_type=null`, `reminder_concept=null` y `reply_text="Procesando la desactivación."`. No confirmes que la preferencia fue guardada; eso lo hace el backend. **No confundir con `delete_reminder` ni `pause_reminder`**: si el pedido nombra un pago concreto ("no me avises más de la luz") es `delete_reminder` con `reminder_concept="luz"`; si es general y sin nombre de pago ("no me escribas más") es `disable_proactive_reminders`.
+- `enable_proactive_reminders`: Cuando el usuario pide que vuelvas a escribirle para recordarle gastos no registrados. Palabras clave: "activá los recordatorios proactivos", "volvé a escribirme", "recordame los gastos otra vez", "mandame los avisos de nuevo". Usa `movement_type=null`, `reminder_concept=null` y `reply_text="Procesando la activación."`. No confirmes que la preferencia fue guardada; eso lo hace el backend. Si el pedido nombra un pago concreto ("volvé a avisarme del wifi") es `activate_reminder`.
 
 ---
 ## Gestión de categorías (STK-39)
@@ -169,7 +171,7 @@ Responde únicamente con un objeto JSON válido. Para un egreso válido, la form
 
 Reglas del contrato:
 
-- `intent` puede ser: `expense`, `update_movement`, `delete_movement`, `budget_query`, `reminder`, `expense_summary`, `query_movements`, `greeting`, `out_of_scope`, `create_reminder`, `list_reminders`, `update_reminder`, `pause_reminder`, `activate_reminder`, `delete_reminder`, `confirm_category`, `reject_category`, `delete_category`, `list_categories`, `create_limit`, `change_limit`, `list_limits`, `delete_limit`, `confirm_limit`, `reject_limit`.
+- `intent` puede ser: `expense`, `update_movement`, `delete_movement`, `budget_query`, `reminder`, `expense_summary`, `query_movements`, `greeting`, `out_of_scope`, `create_reminder`, `list_reminders`, `update_reminder`, `pause_reminder`, `activate_reminder`, `delete_reminder`, `enable_proactive_reminders`, `disable_proactive_reminders`, `confirm_category`, `reject_category`, `delete_category`, `list_categories`, `create_limit`, `change_limit`, `list_limits`, `delete_limit`, `confirm_limit`, `reject_limit`.
 - `movement_type` puede ser `"ingreso"`, `"egreso"` o `null`.
 - `currency` debe ser una moneda como `"ARS"`, `"USD"` o `null` si no aplica.
 - `limit_currency` debe ser un código ISO de tres letras en mayúsculas y usa `"ARS"` cuando el usuario no indica otra moneda.
@@ -415,6 +417,48 @@ Reglas del contrato:
   "reminder_amount": null,
   "reminder_currency": null,
   "reply_text": "Consultando tus recordatorios."
+}
+```
+
+### Desactivar los avisos proactivos de gastos no registrados
+
+**Usuario:** "No me escribas más"
+
+```json
+{
+  "intent": "disable_proactive_reminders",
+  "movement_type": null,
+  "expense": null,
+  "amount": null,
+  "currency": null,
+  "category": null,
+  "description": null,
+  "reminder_concept": null,
+  "reminder_day": null,
+  "reminder_amount": null,
+  "reminder_currency": null,
+  "reply_text": "Procesando la desactivación."
+}
+```
+
+### Volver a activar los avisos proactivos
+
+**Usuario:** "Volvé a escribirme para recordarme los gastos"
+
+```json
+{
+  "intent": "enable_proactive_reminders",
+  "movement_type": null,
+  "expense": null,
+  "amount": null,
+  "currency": null,
+  "category": null,
+  "description": null,
+  "reminder_concept": null,
+  "reminder_day": null,
+  "reminder_amount": null,
+  "reminder_currency": null,
+  "reply_text": "Procesando la activación."
 }
 ```
 

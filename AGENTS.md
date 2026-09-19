@@ -22,7 +22,7 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 - `app/services/reminder.py`: recordatorios (CRUD, título único, multi-turno).
 - `app/services/conversation.py`: estado multi-turno en Redis (confirmación de categoría, recordatorio pendiente, rename).
 - `app/models/database.py`: engine, sesión y todos los modelos SQLAlchemy (un solo archivo).
-- `app/scheduler.py`: jobs en background (recordatorios cada 5 min).
+- `app/scheduler.py`: jobs en background cada 5 min: recordatorios de pago y recordatorio proactivo diario (STK-60: a la hora `PROACTIVE_PROMPT_HOUR`, solo dentro de la ventana de 24h, a usuarios con `proactivo_habilitado` que no registraron movimientos hoy; máximo uno por día).
 - `testing/`: entorno de testing aislado. App Streamlit (`testing/streamlit_app.py`) que simula el flujo de WhatsApp de Luka contra el mismo backend, con sidebar de configuración (provider/modelo LLM, simular usuario registrado, phone, nombre), paneles de debug (JSON del LLM, latencia, estado Redis, logs del dispatcher), simulador de usuario y reset de DB. Usa una DB SQLite aislada (`sqlite:///./testing_luka.db`). Solo se levanta con Docker/Podman (`testing/docker-compose.yml` + `testing/Dockerfile`, servicios `streamlit` en `:8501` y `redis` en `:6380`); tiene sus propios tests en `testing/tests/` y sus dependencias en `testing/requirements.txt`. Logos en `testing/public/`.
 
 ## Guías de ingeniería

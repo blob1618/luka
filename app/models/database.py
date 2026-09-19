@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, date
 from sqlalchemy import (
     Column, String, DateTime, ForeignKey, create_engine,
-    Boolean, Date, Integer, Numeric, CheckConstraint, Index, UniqueConstraint
+    Boolean, Date, Integer, Numeric, CheckConstraint, Index, UniqueConstraint, true
 )
 from sqlalchemy.types import Uuid, JSON
 from sqlalchemy.dialects.postgresql import JSONB
@@ -40,6 +40,8 @@ class Usuario(Base):
     whatsapp_id = Column(String, nullable=True)
     auth_user_id = Column(Uuid(as_uuid=True), nullable=True)
     ultimo_mensaje_en = Column(DateTime(timezone=True))
+    proactivo_habilitado = Column(Boolean, nullable=False, default=True, server_default=true())
+    proactivo_ultimo_envio = Column(Date, nullable=True)
 
     __table_args__ = (
         CheckConstraint(

@@ -162,6 +162,7 @@ class LLMService:
                 "list_reminders", "update_reminder",
                 "pause_reminder", "activate_reminder",
                 "delete_reminder",
+                "enable_proactive_reminders", "disable_proactive_reminders",
                 "confirm_category", "reject_category",
                 "delete_category", "list_categories",
                 "update_movement", "delete_movement",
