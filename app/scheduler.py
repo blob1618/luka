@@ -1,18 +1,22 @@
 import calendar
+import logging
 import os
 from datetime import datetime, date, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from sqlalchemy import exists, or_
 
 from app.api.whatsapp import send_whatsapp_message
-from app.models.database import Recordatorio, SessionLocal, Usuario
+from app.models.database import MovimientoFinanciero, Recordatorio, SessionLocal, Usuario
 
 scheduler = AsyncIOScheduler()
+logger = logging.getLogger(__name__)
 
 WHATSAPP_WINDOW_HOURS = 24
 ARGENTINA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
+PROACTIVE_PROMPT_TEXT = "👋 ¡Ey! ¿Tuviste algún gasto hoy que no registraste? Contame y lo anoto. (Si no querés estos avisos, pedime que no te escriba más.)"
 
 
 def _to_aware_utc(value: datetime | None) -> datetime | None:
@@ -21,6 +25,59 @@ def _to_aware_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _window_open(usuario, now_utc: datetime) -> bool:
+    last_message_at = _to_aware_utc(usuario.ultimo_mensaje_en)
+    return (
+        last_message_at is not None
+        and last_message_at + timedelta(hours=WHATSAPP_WINDOW_HOURS) > now_utc
+    )
+
+
+def _proactive_hour() -> int | None:
+    raw = (os.getenv("PROACTIVE_PROMPT_HOUR") or "").strip()
+    if not raw:
+        return None
+    if raw.isdecimal() and int(raw) <= 23:
+        return int(raw)
+    logger.warning(
+        "[PROACTIVE_CONFIG_ERROR] PROACTIVE_PROMPT_HOUR=%r no es una hora 0-23; aviso apagado",
+        raw,
+    )
+    return None
+
+
+# ponytail: claim antes de enviar, release si falla; sin outbox, un crash entre claim y envío pierde el aviso del día
+def _claim_proactive_send(session, usuario_id, today: date) -> bool:
+    updated = (
+        session.query(Usuario)
+        .filter(
+            Usuario.id == usuario_id,
+            or_(
+                Usuario.proactivo_ultimo_envio.is_(None),
+                Usuario.proactivo_ultimo_envio != today,
+            ),
+        )
+        .update({Usuario.proactivo_ultimo_envio: today}, synchronize_session=False)
+    )
+    session.commit()
+    return updated == 1
+
+
+def _release_proactive_claim(session, usuario_id, today: date):
+    try:
+        session.query(Usuario).filter(
+            Usuario.id == usuario_id,
+            Usuario.proactivo_ultimo_envio == today,
+        ).update({Usuario.proactivo_ultimo_envio: None}, synchronize_session=False)
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.warning(
+            "[PROACTIVE_ERROR] release user=%s %s: %s",
+            usuario_id, type(exc).__name__, exc,
+        )
 
 
 def _build_due_datetime(due_date: date) -> datetime:
@@ -72,6 +129,21 @@ def _alert_day(dia_del_mes: int, reference_date: date) -> date:
 
     # 3. Alert day is the day before next due
     return next_due - timedelta(days=1)
+
+
+def _due_date_for_reminder(dia_del_mes: int, today: date) -> date:
+    max_day = calendar.monthrange(today.year, today.month)[1]
+    due_date = date(today.year, today.month, min(dia_del_mes, max_day))
+    if due_date > today:
+        return due_date
+
+    next_month = today.month + 1
+    next_year = today.year
+    if next_month > 12:
+        next_month = 1
+        next_year += 1
+    max_day_next = calendar.monthrange(next_year, next_month)[1]
+    return date(next_year, next_month, min(dia_del_mes, max_day_next))
 
 
 def _build_message(titulo: str, monto, moneda: str, vence_manana: bool, fecha_vencimiento: date) -> str:
@@ -130,32 +202,13 @@ async def check_reminders(_now: datetime | None = None):
                 if not usuario.whatsapp_id:
                     continue
 
-                # Calculate due date for message
-                max_day = calendar.monthrange(today.year, today.month)[1]
-                effective_due_day = min(recordatorio.dia_del_mes, max_day)
-                due_date = date(today.year, today.month, effective_due_day)
-
-                # If due_date is before today (alert_day was end of prev month),
-                # due date is actually in next month
-                if due_date <= today:
-                    next_month = today.month + 1
-                    next_year = today.year
-                    if next_month > 12:
-                        next_month = 1
-                        next_year += 1
-                    max_day_next = calendar.monthrange(next_year, next_month)[1]
-                    effective_due_day = min(recordatorio.dia_del_mes, max_day_next)
-                    due_date = date(next_year, next_month, effective_due_day)
+                due_date = _due_date_for_reminder(recordatorio.dia_del_mes, today)
 
                 due_datetime = _build_due_datetime(due_date)
                 hours_until_due = (due_datetime - local_now).total_seconds() / 3600
                 vence_manana = hours_until_due <= 24
 
-                last_message_at = _to_aware_utc(usuario.ultimo_mensaje_en)
-                window_open = (
-                    last_message_at is not None
-                    and last_message_at + timedelta(hours=WHATSAPP_WINDOW_HOURS) > now_utc
-                )
+                window_open = _window_open(usuario, now_utc)
 
                 message = _build_message(
                     titulo=recordatorio.titulo,
@@ -214,7 +267,85 @@ async def check_reminders(_now: datetime | None = None):
         session.close()
 
 
+async def _send_proactive_prompt(session, usuario, now_utc: datetime, today: date):
+    if not _window_open(usuario, now_utc):
+        return
+    if not _claim_proactive_send(session, usuario.id, today):
+        return
+
+    try:
+        sent = await send_whatsapp_message(usuario.whatsapp_id, PROACTIVE_PROMPT_TEXT)
+    except Exception as exc:
+        sent = False
+        logger.warning(
+            "[PROACTIVE_ERROR] user=%s %s: %s",
+            usuario.whatsapp_id, type(exc).__name__, exc,
+        )
+    else:
+        if sent:
+            logger.info("[PROACTIVE_SENT] user=%s", usuario.whatsapp_id)
+            return
+        logger.warning("[PROACTIVE_ERROR] user=%s send returned False", usuario.whatsapp_id)
+
+    _release_proactive_claim(session, usuario.id, today)
+
+
+async def check_proactive_prompts(_now: datetime | None = None):
+    hour = _proactive_hour()
+    if hour is None:
+        return
+
+    now_utc = _to_aware_utc(_now or datetime.now(timezone.utc))
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    local_now = now_utc.astimezone(ARGENTINA_TZ)
+    if local_now.hour != hour:
+        return
+
+    today = local_now.date()
+    session = SessionLocal()
+    try:
+        registered_today = exists().where(
+            MovimientoFinanciero.usuario_id == Usuario.id,
+            MovimientoFinanciero.fecha_movimiento == today,
+            MovimientoFinanciero.anulado_en.is_(None),
+        )
+        candidates = (
+            session.query(Usuario)
+            .filter(
+                Usuario.whatsapp_id.isnot(None),
+                Usuario.proactivo_habilitado.is_(True),
+                or_(
+                    Usuario.proactivo_ultimo_envio.is_(None),
+                    Usuario.proactivo_ultimo_envio != today,
+                ),
+                ~registered_today,
+            )
+            .all()
+        )
+
+        for usuario in candidates:
+            try:
+                await _send_proactive_prompt(session, usuario, now_utc, today)
+            except Exception as exc:
+                session.rollback()
+                logger.warning(
+                    "[PROACTIVE_ERROR] user=%s %s: %s",
+                    usuario.whatsapp_id, type(exc).__name__, exc,
+                )
+    except Exception:
+        logger.exception("[PROACTIVE_QUERY_ERROR]")
+    finally:
+        session.close()
+
+
 def start_scheduler():
     scheduler.add_job(check_reminders, "interval", minutes=5)
+    scheduler.add_job(
+        check_proactive_prompts,
+        "interval",
+        minutes=5,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
+    )
     scheduler.start()
-    print("Scheduler iniciado (recordatorios cada 5 min).")
+    print("Scheduler iniciado (recordatorios y recordatorio proactivo cada 5 min).")
