@@ -10,6 +10,7 @@ from decimal import Decimal
 import pytest
 
 from app.services.conversation import (
+    ConversationHistoryService,
     ConversationService,
     ConversationState,
     ConversationStateUnavailable,
@@ -94,6 +95,44 @@ def _install_mock_client(monkeypatch, storage=None, fail_methods=()):
 
     monkeypatch.setattr(ConversationService, "_get_client", mock_get_client)
     return storage
+
+
+@pytest.mark.asyncio
+async def test_recent_history_keeps_five_messages_and_redacts_links():
+    storage = {}
+    client = MockRedisClient(storage)
+
+    await ConversationHistoryService.append_exchange(
+        client,
+        "5491100000001",
+        "primer mensaje",
+        "Abrí https://example.test/login?token=secret",
+    )
+    await ConversationHistoryService.append_exchange(
+        client,
+        "5491100000001",
+        "segundo mensaje",
+        "segunda respuesta",
+    )
+    await ConversationHistoryService.append_exchange(
+        client,
+        "5491100000001",
+        "tercer mensaje",
+        "tercera respuesta",
+    )
+
+    history = await ConversationHistoryService.get_recent(
+        client,
+        "5491100000001",
+    )
+
+    assert len(history) == 5
+    assert history[0].role == "assistant"
+    assert history[0].content == "Abrí [enlace]"
+    assert history[-1].to_dict() == {
+        "role": "assistant",
+        "content": "tercera respuesta",
+    }
 
 
 # ---------------------------------------------------------------------------

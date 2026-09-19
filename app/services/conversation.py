@@ -8,6 +8,7 @@ enabling the category confirmation flow (STK-39).
 import asyncio
 import json
 import os
+import re
 from dataclasses import dataclass, field, asdict
 from datetime import timedelta
 from decimal import Decimal
@@ -263,6 +264,17 @@ class PendingSelection:
     changes: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ConversationMessage:
+    """A bounded, provider-safe message from the recent conversation."""
+
+    role: str
+    content: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"role": self.role, "content": self.content}
+
+
 # ---------------------------------------------------------------------------
 # Keys y TTL
 # ---------------------------------------------------------------------------
@@ -271,6 +283,8 @@ CONVERSATION_TTL = timedelta(minutes=30)
 LAST_MOVEMENT_TTL = timedelta(minutes=60)
 LAST_LIMIT_TTL = timedelta(minutes=60)
 CONVERSATION_FLOW_TTL = timedelta(minutes=30)
+CONVERSATION_HISTORY_LIMIT = 5
+CONVERSATION_HISTORY_MAX_CHARS = 1200
 
 
 class ConversationStateUnavailable(RuntimeError):
@@ -299,6 +313,81 @@ def _last_limit_key(whatsapp_id: str) -> str:
 
 def _conversation_flow_key(whatsapp_id: str) -> str:
     return f"conversation_flow:{whatsapp_id}"
+
+
+def _conversation_history_key(whatsapp_id: str) -> str:
+    return f"conversation_history:{whatsapp_id}"
+
+
+def _sanitize_history_content(content: str) -> str:
+    sanitized = re.sub(r"https?://\S+", "[enlace]", str(content))
+    sanitized = re.sub(
+        r"(?i)\btoken\s*[=:]\s*\S+",
+        "token=[redactado]",
+        sanitized,
+    )
+    return sanitized.strip()[:CONVERSATION_HISTORY_MAX_CHARS]
+
+
+class ConversationHistoryService:
+    """Stores the last visible messages using the webhook's Redis client."""
+
+    @classmethod
+    async def get_recent(
+        cls,
+        client: Any,
+        whatsapp_id: str,
+    ) -> list[ConversationMessage]:
+        if client is None:
+            return []
+        try:
+            raw = await client.get(_conversation_history_key(whatsapp_id))
+            if not raw:
+                return []
+            payload = json.loads(raw)
+            messages = []
+            for item in payload[-CONVERSATION_HISTORY_LIMIT:]:
+                role = str(item.get("role") or "")
+                content = _sanitize_history_content(item.get("content") or "")
+                if role in {"user", "assistant"} and content:
+                    messages.append(ConversationMessage(role, content))
+            return messages
+        except Exception as exc:
+            print(
+                "[ConversationHistoryService] get_recent error: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return []
+
+    @classmethod
+    async def append_exchange(
+        cls,
+        client: Any,
+        whatsapp_id: str,
+        user_content: str,
+        assistant_content: str | None,
+    ) -> None:
+        if client is None:
+            return
+        try:
+            messages = await cls.get_recent(client, whatsapp_id)
+            user_text = _sanitize_history_content(user_content)
+            assistant_text = _sanitize_history_content(assistant_content or "")
+            if user_text:
+                messages.append(ConversationMessage("user", user_text))
+            if assistant_text:
+                messages.append(ConversationMessage("assistant", assistant_text))
+            bounded = messages[-CONVERSATION_HISTORY_LIMIT:]
+            await client.set(
+                _conversation_history_key(whatsapp_id),
+                json.dumps([message.to_dict() for message in bounded]),
+                ex=int(CONVERSATION_TTL.total_seconds()),
+            )
+        except Exception as exc:
+            print(
+                "[ConversationHistoryService] append_exchange error: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
 
 # ---------------------------------------------------------------------------

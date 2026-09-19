@@ -36,6 +36,7 @@ class MistralProvider(LLMProvider):
         system_prompt: str,
         user_message: str,
         temperature: float,
+        history: list[dict[str, str]] | None,
     ) -> Dict[str, Any]:
         api_key, _ = self._get_config()
 
@@ -43,12 +44,12 @@ class MistralProvider(LLMProvider):
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(history or [])
+        messages.append({"role": "user", "content": user_message})
         request_body = {
             "model": model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
+            "messages": messages,
             "temperature": temperature,
             "response_format": {"type": "json_object"},
         }

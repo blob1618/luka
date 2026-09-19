@@ -471,6 +471,28 @@ class TestNonFinancialIntents:
         assert result.intent == "greeting"
         assert result.raw_llm_response is not None
 
+    @pytest.mark.asyncio
+    async def test_recent_history_reaches_llm_service(self):
+        history = [
+            {"role": "user", "content": "mostrame mis movimientos"},
+            {"role": "assistant", "content": "¿Gastos, ingresos o todos?"},
+        ]
+        llm_mock = AsyncMock(return_value=greeting_llm_result())
+        with (
+            common_patches(llm=greeting_llm_result()),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                llm_mock,
+            ),
+        ):
+            await process_incoming_message(
+                "12345",
+                "todos",
+                conversation_history=history,
+            )
+
+        assert llm_mock.await_args.kwargs["history"] == history
+
 
 # ---------------------------------------------------------------------------
 # Edge cases

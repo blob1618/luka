@@ -132,6 +132,7 @@ def normalize_movement_query_intent(
 
     if _QUERY_MOVEMENTS.fullmatch(normalized):
         data["intent"] = "query_movements"
+        data["reply_text"] = "Consultando tus movimientos."
         if re.search(r"\bgasto(?:s)?\b", normalized):
             data["movement_type"] = "egreso"
         elif re.search(r"\bingreso(?:s)?\b", normalized):

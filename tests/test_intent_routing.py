@@ -68,9 +68,13 @@ def test_unrelated_correction_is_not_forced_to_change_limit():
 
 
 def test_normalize_movement_query_intent_general():
-    result = normalize_movement_query_intent("mis últimos movimientos", {"intent": "out_of_scope"})
+    result = normalize_movement_query_intent(
+        "mis últimos movimientos",
+        {"intent": "out_of_scope", "reply_text": "¿Qué querés consultar?"},
+    )
     assert result["intent"] == "query_movements"
     assert result.get("movement_type") is None
+    assert result["reply_text"] == "Consultando tus movimientos."
 
 
 def test_normalize_movement_query_intent_expenses_with_count():

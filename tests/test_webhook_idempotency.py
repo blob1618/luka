@@ -10,6 +10,7 @@ from app.services.webhook_idempotency import (
     process_text_message_once,
 )
 from app.api.whatsapp import InboundInteractiveReply, WhatsAppText
+from app.services.conversation import ConversationHistoryService
 
 
 class FakeRedis:
@@ -22,6 +23,9 @@ class FakeRedis:
             return None
         self.values[key] = value
         return True
+
+    async def get(self, key):
+        return self.values.get(key)
 
     async def eval(self, script, _number_of_keys, key, expected, *args):
         if self.values.get(key) != expected:
@@ -138,3 +142,46 @@ async def test_interactive_reply_is_processed_and_sent_once():
         whatsapp_message_id="wamid.interactive",
     )
     send_message.assert_awaited_once_with("5491111111111", WhatsAppText("Listo"))
+
+
+@pytest.mark.asyncio
+async def test_text_message_receives_and_updates_recent_history():
+    redis = FakeRedis()
+    await ConversationHistoryService.append_exchange(
+        redis,
+        "5491111111111",
+        "mostrame mis transacciones",
+        "¿Querés ver gastos, ingresos o todos?",
+    )
+    received_history = None
+
+    async def process_message(**kwargs):
+        nonlocal received_history
+        received_history = kwargs["conversation_history"]
+        return SimpleNamespace(reply_text="Estos son todos tus movimientos")
+
+    status = await process_text_message_once(
+        redis_client=redis,
+        sender_phone="5491111111111",
+        text_body="todos",
+        whatsapp_message_id="wamid.history",
+        process_message=process_message,
+        send_message=AsyncMock(return_value=True),
+    )
+    stored = await ConversationHistoryService.get_recent(
+        redis,
+        "5491111111111",
+    )
+
+    assert status == "completed"
+    assert received_history == [
+        {"role": "user", "content": "mostrame mis transacciones"},
+        {
+            "role": "assistant",
+            "content": "¿Querés ver gastos, ingresos o todos?",
+        },
+    ]
+    assert [message.to_dict() for message in stored][-2:] == [
+        {"role": "user", "content": "todos"},
+        {"role": "assistant", "content": "Estos son todos tus movimientos"},
+    ]
