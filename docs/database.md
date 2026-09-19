@@ -44,6 +44,13 @@ La FK PostgreSQL `public.usuario.auth_user_id -> auth.users(id)` existe únicame
 
 `public.movimientos_financieros` es la entidad central para ingresos y egresos.
 
+Las tablas heredadas `public.movimientos` y `public.metas` no forman parte del
+contrato vigente, no tienen consumidores en el backend ni en el dashboard y se
+verificaron vacías en el entorno remoto. La migración
+`20260919120000_drop_legacy_metas_movimientos.sql` las retira sin `CASCADE`, de
+modo que una dependencia no detectada haga fallar la migración en lugar de ser
+eliminada implícitamente.
+
 ## Presupuestos por categoría (HU-PRE-01 / STK-47)
 
 `public.limite_categoria` define un presupuesto mensual por usuario, categoría, período y moneda. `cantidad_max` usa `numeric(18,2)`, debe ser positiva y el período debe ser válido. La combinación `(usuario_id, categoria_id, inicio_periodo, moneda)` es única, por lo que un alta repetida actualiza el mismo presupuesto en vez de crear duplicados.

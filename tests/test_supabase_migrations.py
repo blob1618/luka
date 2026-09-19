@@ -27,3 +27,12 @@ def test_baseline_contains_production_schema_guards():
     assert "ALTER TABLE PUBLIC.MOVIMIENTOS_FINANCIEROS ENABLE ROW LEVEL SECURITY" in protections_sql
     assert "CREATE UNIQUE INDEX MOVIMIENTOS_FINANCIEROS_WHATSAPP_MESSAGE_ID_UIDX" in protections_sql
     assert "CREATE INDEX MOVIMIENTOS_FINANCIEROS_USUARIO_FECHA_IDX" in protections_sql
+
+
+def test_legacy_financial_tables_are_removed_without_cascade():
+    cleanup = MIGRATIONS_DIR / "20260919120000_drop_legacy_metas_movimientos.sql"
+    sql = cleanup.read_text(encoding="utf-8").upper()
+
+    assert "DROP TABLE IF EXISTS PUBLIC.METAS;" in sql
+    assert "DROP TABLE IF EXISTS PUBLIC.MOVIMIENTOS;" in sql
+    assert "CASCADE" not in sql
