@@ -474,6 +474,19 @@ async def test_process_message_invalid_intent_normalized():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "intent",
+    ["enable_proactive_reminders", "disable_proactive_reminders"],
+)
+async def test_process_message_accepts_proactive_reminder_intents(intent):
+    result = await _process_message_with_mock_response(
+        {"intent": intent, "reply_text": "ok"}
+    )
+
+    assert result["intent"] == intent
+
+
+@pytest.mark.asyncio
 async def test_process_message_invalid_amount_becomes_none():
     mock_response = {
         "intent": "expense",
