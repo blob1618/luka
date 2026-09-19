@@ -40,6 +40,7 @@ Con el tiempo, LUKA te ayuda a ver patrones, entender en qué gastás y tomar me
 - **Sin duplicados** — Si Meta reenvía un mensaje, LUKA lo detecta y evita registros repetidos.
 - **Respuesta inmediata** — Confirmación al instante después de cada registro.
 - **Multi-movimiento** — Registrá uno o varios movimientos por mensaje.
+- **Recordatorios proactivos** — Si un día no registrás gastos, LUKA te pregunta antes de que te olvides. Se apaga con un mensaje.
 - **Dashboard web** — Visualizá tus finanzas en un panel interactivo ([Frontend](https://github.com/sandralilianaacosta-ui/luka_frontend)).
 
 ## Configuración inicial

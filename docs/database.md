@@ -38,6 +38,8 @@ Tablas oficiales de Release 1:
 
 `public.acuerdo_version` identifica versiones únicas y permite una sola versión vigente. `vigente_desde` es nullable y solo resulta obligatorio cuando `esta_vigente=true`, evitando fabricar fechas para versiones históricas inactivas. `public.acuerdo_aceptado` registra una aceptación por usuario y versión: las filas históricas se rotulan `legacy_desconocido` cuando su procedencia no puede demostrarse y las nuevas aceptaciones usan `web_onboarding` por defecto. No se insertaron versiones ni aceptaciones; todavía falta incorporar el contenido legal aprobado.
 
+`public.usuario.proactivo_habilitado` (default `true`) y `public.usuario.proactivo_ultimo_envio` (fecha local del último aviso) sostienen el recordatorio proactivo diario de STK-60: el usuario puede desactivarlo por chat y el scheduler garantiza como máximo un aviso por día. Se incorporan mediante `20260918120000_add_usuario_proactive_reminders.sql` y deben aplicarse antes del código que las consulta.
+
 La FK PostgreSQL `public.usuario.auth_user_id -> auth.users(id)` existe únicamente en la migración. El metadata SQLAlchemy omite esa FK deliberadamente porque `auth.users` no existe en SQLite; la columna y su unicidad parcial sí se representan en ambos contratos.
 
 `public.movimientos_financieros` es la entidad central para ingresos y egresos.
