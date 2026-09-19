@@ -811,7 +811,7 @@ async def _register_single_with_hint(
         extracted_data["_conversation_event_variables"] = {
             "category": category_name or "",
         }
-        return _route_needs_category_confirmation(
+        return await _route_needs_category_confirmation(
             sender_phone, whatsapp_message_id, text_body, llm_result, category_name
         )
 

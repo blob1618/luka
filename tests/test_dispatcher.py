@@ -322,6 +322,49 @@ class TestFinancialMovement:
         assert result.reply_text == ""
 
     @pytest.mark.asyncio
+    async def test_category_confirmation_persists_pending_movement(self):
+        needs_confirmation = MovementRegistrationResult(
+            status="needs_category_confirmation",
+            message="category confirmation required",
+            category_name="Jardinería de prueba",
+        )
+        set_pending = AsyncMock()
+
+        with (
+            common_patches(
+                llm=movement_llm_result(category="Jardinería de prueba"),
+                register=needs_confirmation,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.set_pending_movement",
+                set_pending,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationFlowRuntime.abandon",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationFlowRuntime.render_event",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            result = await process_incoming_message(
+                "12345",
+                "Gasté 5000 en semillas, ponelo en Jardinería de prueba",
+                "wamid.category-confirmation",
+            )
+
+        assert isinstance(result.reply_text, str)
+        assert result.event_key == "category.confirmation_required"
+        assert result.event_variables == {"category": "Jardinería de prueba"}
+        set_pending.assert_awaited_once()
+        pending = set_pending.await_args.args[1]
+        assert pending.sender_phone == "12345"
+        assert pending.whatsapp_message_id == "wamid.category-confirmation"
+        assert pending.inferred_category == "Jardinería de prueba"
+
+    @pytest.mark.asyncio
     async def test_multiop_registers_two_movements(self):
         from unittest.mock import MagicMock, patch
 
