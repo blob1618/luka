@@ -104,3 +104,19 @@ async def test_mistral_sin_choices_levanta_value_error():
         provider = MistralProvider()
         with pytest.raises(ValueError, match="no choices"):
             await provider.generate_json("sys", "user")
+
+
+@pytest.mark.asyncio
+async def test_history_is_sent_with_roles_in_one_request():
+    history = [
+        {"role": "user", "content": "mostrame mis transacciones"},
+        {"role": "assistant", "content": "¿Gastos, ingresos o todos?"},
+    ]
+    async with _run_generate([FakeResponse(200, text=VALID_JSON)]) as (provider, client):
+        await provider.generate_json("sys", "todos", history=history)
+
+    assert client.requested_bodies[0]["messages"] == [
+        {"role": "system", "content": "sys"},
+        *history,
+        {"role": "user", "content": "todos"},
+    ]

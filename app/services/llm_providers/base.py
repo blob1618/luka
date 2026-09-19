@@ -41,6 +41,7 @@ class LLMProvider(ABC):
         system_prompt: str,
         user_message: str,
         temperature: float,
+        history: list[dict[str, str]] | None,
     ) -> Dict[str, Any]:
         """Envía la request al modelo indicado y devuelve el dict parseado.
 
@@ -89,10 +90,12 @@ class LLMProvider(ABC):
         system_prompt: str,
         user_message: str,
         temperature: float = 0.1,
+        history: list[dict[str, str]] | None = None,
     ) -> Dict[str, Any]:
         """
-        Envía el system_prompt y user_message al proveedor y retorna el JSON
-        parseado como dict, con reintentos y fallback entre modelos.
+        Envía el system_prompt, el historial reciente y user_message al proveedor
+        en una sola request. Retorna el JSON parseado como dict, con reintentos y
+        fallback entre modelos.
 
         Raises:
             La excepción real del proveedor (httpx.HTTPStatusError, etc.)
@@ -105,7 +108,11 @@ class LLMProvider(ABC):
             for attempt in range(self.MAX_RETRIES_PER_MODEL):
                 try:
                     return await self._post_to_model(
-                        model_name, system_prompt, user_message, temperature
+                        model_name,
+                        system_prompt,
+                        user_message,
+                        temperature,
+                        history,
                     )
                 except httpx.HTTPStatusError as exc:
                     last_error = exc

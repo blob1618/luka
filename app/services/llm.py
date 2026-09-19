@@ -120,7 +120,13 @@ class LLMService:
 
 
     @classmethod
-    async def process_message(cls, text: str, *, context: str | None = None) -> Dict[str, Any]:
+    async def process_message(
+        cls,
+        text: str,
+        *,
+        context: str | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> Dict[str, Any]:
         """
         Procesa un mensaje de usuario usando el system prompt de prompt.md.
         El LLM debe devolver un JSON estructurado con intent y datos asociados.
@@ -128,6 +134,7 @@ class LLMService:
         Args:
             text: El mensaje de texto del usuario.
             context: Texto adicional concatenado al system prompt (p.ej. fecha actual).
+            history: Hasta cinco mensajes previos con roles user/assistant.
 
         Returns:
             Dict con los campos del JSON parseado (intent, amount, etc.)
@@ -142,6 +149,7 @@ class LLMService:
                 system_prompt=system_prompt,
                 user_message=text,
                 temperature=0.1,
+                history=history,
             )
             try:
                 parsed = normalize_llm_response(parsed)
@@ -150,6 +158,7 @@ class LLMService:
                     system_prompt=system_prompt + RETRY_FORMAT_INSTRUCTION,
                     user_message=text,
                     temperature=0.1,
+                    history=history,
                 )
                 parsed = normalize_llm_response(parsed)
 

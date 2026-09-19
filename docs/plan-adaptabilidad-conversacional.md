@@ -59,7 +59,7 @@ Crear un servicio acotado de resolución de objetivos en `app/services/` y usarl
 
 Extender `ConversationState` para la selección pendiente y guardar en Redis un contexto breve de objetos mostrados, con IDs, tipo de entidad, datos necesarios para distinguirlos y vencimiento. Usar los IDs de `MovementItem` y agregar el ID a `LimitEntry`. El contexto es una ayuda de conversación; la base sigue siendo la fuente de verdad. Si Redis no está disponible y la frase depende de «ese» o «ambos», pedir una referencia explícita y no escribir.
 
-Una petición nueva y explícita puede interrumpir una pregunta pendiente; `cancelar` cierra solo esa operación. No enviar todo el historial al LLM: pasar el resumen mínimo de la operación o selección activa. Los recorridos visuales configurables no crean intents ni reglas financieras.
+Una petición nueva y explícita puede interrumpir una pregunta pendiente; `cancelar` cierra solo esa operación. Enviar al LLM una ventana móvil de los últimos cinco mensajes visibles, redactando enlaces de acceso y tokens, junto con el resumen estructurado de la operación o selección activa. Los recorridos visuales configurables no crean intents ni reglas financieras.
 
 ## 4. Entregas incrementales
 

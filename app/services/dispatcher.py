@@ -1852,6 +1852,7 @@ async def _dispatch_incoming_message(
     sender_phone: str,
     text_body: str,
     whatsapp_message_id: str | None = None,
+    conversation_history: list[dict[str, str]] | None = None,
 ) -> DispatchResult:
     """
     Process an incoming text message through the full dispatch pipeline.
@@ -1867,6 +1868,7 @@ async def _dispatch_incoming_message(
         sender_phone: The sender's WhatsApp phone number.
         text_body: The raw text body of the message.
         whatsapp_message_id: Optional WhatsApp message ID for dedup.
+        conversation_history: Up to five previous visible chat messages.
 
     Returns:
         DispatchResult with reply_text and debug metadata.
@@ -2053,6 +2055,7 @@ async def _dispatch_incoming_message(
             llm_result_cache = await LLMService.process_message(
                 text_body,
                 context=context,
+                history=conversation_history,
             )
         return llm_result_cache
 
@@ -2621,6 +2624,7 @@ async def process_incoming_message(
     sender_phone: str,
     text_body: str,
     whatsapp_message_id: str | None = None,
+    conversation_history: list[dict[str, str]] | None = None,
 ) -> DispatchResult:
     """Route free text, then apply a published presentation when one exists."""
     await ConversationFlowRuntime.abandon(sender_phone)
@@ -2628,6 +2632,7 @@ async def process_incoming_message(
         sender_phone=sender_phone,
         text_body=text_body,
         whatsapp_message_id=whatsapp_message_id,
+        conversation_history=conversation_history,
     )
     if result.event_key:
         configured = await ConversationFlowRuntime.render_event(

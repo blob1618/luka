@@ -384,6 +384,26 @@ async def test_process_message_fallback_on_exception():
 
 
 @pytest.mark.asyncio
+async def test_process_message_forwards_recent_history_to_provider():
+    history = [
+        {"role": "user", "content": "mostrame mis movimientos"},
+        {"role": "assistant", "content": "¿Gastos, ingresos o todos?"},
+    ]
+    with patch.object(LLMService, "_get_provider") as mock_get_provider:
+        mock_provider = AsyncMock()
+        mock_provider.generate_json.return_value = {
+            "intent": "query_movements",
+            "movement_type": None,
+            "reply_text": "Consultando tus movimientos.",
+        }
+        mock_get_provider.return_value = mock_provider
+
+        await LLMService.process_message("todos", history=history)
+
+    assert mock_provider.generate_json.await_args.kwargs["history"] == history
+
+
+@pytest.mark.asyncio
 async def test_list_response_no_crash_and_asks_reformulate():
     """STK-158: respuesta lista no crashea; pide reformular sin perder el mensaje."""
     mock_response = [{"intent": "expense", "amount": 50000}]

@@ -177,3 +177,19 @@ async def test_gemini_candidates_con_parts_vacias_levanta_value_error():
         provider = GeminiProvider()
         with pytest.raises(ValueError, match="empty content payload"):
             await provider.generate_json("sys", "user")
+
+
+@pytest.mark.asyncio
+async def test_history_is_sent_with_gemini_roles_in_one_request():
+    history = [
+        {"role": "user", "content": "mostrame mis transacciones"},
+        {"role": "assistant", "content": "¿Gastos, ingresos o todos?"},
+    ]
+    async with _run_generate([FakeResponse(200, text=VALID_JSON)]) as (provider, client):
+        await provider.generate_json("sys", "todos", history=history)
+
+    assert client.requested_bodies[0]["contents"] == [
+        {"role": "user", "parts": [{"text": "mostrame mis transacciones"}]},
+        {"role": "model", "parts": [{"text": "¿Gastos, ingresos o todos?"}]},
+        {"role": "user", "parts": [{"text": "todos"}]},
+    ]

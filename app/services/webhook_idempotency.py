@@ -5,6 +5,9 @@ import secrets
 from dataclasses import dataclass
 from typing import Any
 
+from app.api.whatsapp import WhatsAppList, WhatsAppReplyButtons, WhatsAppText
+from app.services.conversation import ConversationHistoryService
+
 
 PROCESSING_TTL_SECONDS = 15 * 60
 COMPLETED_TTL_SECONDS = 48 * 60 * 60
@@ -96,6 +99,27 @@ class WebhookIdempotencyService:
         return bool(result)
 
 
+def _visible_reply_text(result: Any) -> str | None:
+    reply = getattr(result, "reply_message", None)
+    if reply is None:
+        reply = getattr(result, "reply_text", None)
+    if isinstance(reply, str):
+        return reply
+    if isinstance(reply, WhatsAppText):
+        return reply.body
+    if isinstance(reply, WhatsAppReplyButtons):
+        options = " | ".join(button.title for button in reply.buttons)
+        return f"{reply.body}\nOpciones: {options}"
+    if isinstance(reply, WhatsAppList):
+        options = " | ".join(
+            row.title
+            for section in reply.sections
+            for row in section.rows
+        )
+        return f"{reply.body}\nOpciones: {options}"
+    return None
+
+
 async def process_inbound_message_once(
     *,
     redis_client: Any,
@@ -161,20 +185,37 @@ async def process_text_message_once(
     process_message,
     send_message,
 ) -> str:
+    processed_result = None
+
     async def process_text():
-        return await process_message(
+        nonlocal processed_result
+        history = await ConversationHistoryService.get_recent(
+            redis_client,
+            sender_phone,
+        )
+        processed_result = await process_message(
             sender_phone=sender_phone,
             text_body=text_body,
             whatsapp_message_id=whatsapp_message_id,
+            conversation_history=[message.to_dict() for message in history],
         )
+        return processed_result
 
-    return await process_inbound_message_once(
+    status = await process_inbound_message_once(
         redis_client=redis_client,
         sender_phone=sender_phone,
         whatsapp_message_id=whatsapp_message_id,
         process_message=process_text,
         send_message=send_message,
     )
+    if status == "completed" and processed_result is not None:
+        await ConversationHistoryService.append_exchange(
+            redis_client,
+            sender_phone,
+            text_body,
+            _visible_reply_text(processed_result),
+        )
+    return status
 
 
 async def process_interactive_message_once(
@@ -184,18 +225,30 @@ async def process_interactive_message_once(
     process_reply,
     send_message,
 ) -> str:
+    processed_result = None
+
     async def process_interactive():
-        return await process_reply(
+        nonlocal processed_result
+        processed_result = await process_reply(
             sender_phone=interactive_reply.sender_phone,
             option_id=interactive_reply.option_id,
             reply_type=interactive_reply.reply_type,
             whatsapp_message_id=interactive_reply.message_id,
         )
+        return processed_result
 
-    return await process_inbound_message_once(
+    status = await process_inbound_message_once(
         redis_client=redis_client,
         sender_phone=interactive_reply.sender_phone,
         whatsapp_message_id=interactive_reply.message_id,
         process_message=process_interactive,
         send_message=send_message,
     )
+    if status == "completed" and processed_result is not None:
+        await ConversationHistoryService.append_exchange(
+            redis_client,
+            interactive_reply.sender_phone,
+            interactive_reply.title or "",
+            _visible_reply_text(processed_result),
+        )
+    return status

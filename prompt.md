@@ -107,6 +107,10 @@ No registres los intents de límites como movimientos. No confirmes que el lími
 
 Reconoce cuándo el usuario quiere **consultar, listar o ver sus movimientos financieros** (gastos, ingresos o ambos).
 Usa `intent="query_movements"`.
+Usa también el historial reciente: si Luka acaba de preguntar si quiere ver gastos,
+ingresos o todos y el usuario responde "todos", "gastos" o "ingresos", conserva
+`intent="query_movements"` y aplica esa selección. Para "todos", deja
+`movement_type=null`.
 
 - `movement_type`: `"egreso"` si pregunta solo por gastos/compras/pagos, `"ingreso"` si pregunta solo por cobros/sueldos/entradas, o `null` si pregunta por movimientos en general.
 - `category`: nombre de la categoría si se especifica en el mensaje (ej: "comida", "transporte"), o `null` si no aplica. Usá solo categorías de la lista provista del usuario si coincide alguna.

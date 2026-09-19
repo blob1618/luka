@@ -43,19 +43,28 @@ class GeminiProvider(LLMProvider):
         system_prompt: str,
         user_message: str,
         temperature: float,
+        history: list[dict[str, str]] | None,
     ) -> Dict[str, Any]:
         api_key, _ = self._get_config()
 
+        contents = [
+            {
+                "role": "model" if message["role"] == "assistant" else "user",
+                "parts": [{"text": message["content"]}],
+            }
+            for message in (history or [])
+        ]
+        contents.append(
+            {
+                "role": "user",
+                "parts": [{"text": user_message}],
+            }
+        )
         request_body = {
             "systemInstruction": {
                 "parts": [{"text": system_prompt}],
             },
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": user_message}],
-                }
-            ],
+            "contents": contents,
             "generationConfig": {
                 "temperature": temperature,
                 "responseMimeType": "application/json",
