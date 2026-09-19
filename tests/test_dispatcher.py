@@ -2,7 +2,7 @@
 
 import contextlib
 from contextlib import contextmanager
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -644,6 +644,52 @@ class TestMoreReminderIntents:
 
         assert result.service_invoked == "reminder"
         assert "Luz" in result.reply_text
+
+    @pytest.mark.asyncio
+    async def test_disable_proactive_reminders(self):
+        from app.services.reminder import ReminderResult
+
+        mock_service = MagicMock(
+            return_value=ReminderResult(
+                status="updated",
+                message="Listo, no te voy a escribir más para recordarte gastos no registrados.",
+            )
+        )
+        with reminder_patches(
+            "disable_proactive_reminders",
+            service_patch=patch(
+                "app.services.dispatcher.ReminderService.set_proactive_prompts",
+                mock_service,
+            ),
+        ):
+            result = await process_incoming_message("12345", "no me escribas más")
+
+        mock_service.assert_called_once_with("12345", enabled=False)
+        assert result.service_invoked == "reminder"
+        assert "no te voy a escribir" in result.reply_text
+
+    @pytest.mark.asyncio
+    async def test_enable_proactive_reminders(self):
+        from app.services.reminder import ReminderResult
+
+        mock_service = MagicMock(
+            return_value=ReminderResult(
+                status="updated",
+                message="Listo, activé los recordatorios proactivos.",
+            )
+        )
+        with reminder_patches(
+            "enable_proactive_reminders",
+            service_patch=patch(
+                "app.services.dispatcher.ReminderService.set_proactive_prompts",
+                mock_service,
+            ),
+        ):
+            result = await process_incoming_message("12345", "volvé a escribirme")
+
+        mock_service.assert_called_once_with("12345", enabled=True)
+        assert result.service_invoked == "reminder"
+        assert "activé" in result.reply_text
 
 
 # ---------------------------------------------------------------------------

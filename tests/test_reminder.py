@@ -611,6 +611,52 @@ class TestReminderDuplicateTitle:
         assert result.status == "created"
 
 
+class TestProactivePrompts:
+    def _setup(self, monkeypatch, whatsapp_id="5491155590000"):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+        monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
+        session = TestSession()
+        _seed_user(session, whatsapp_id)
+        session.close()
+        return TestSession
+
+    def test_disable_proactive_prompts_sets_false(self, monkeypatch):
+        TestSession = self._setup(monkeypatch)
+
+        result = ReminderService.set_proactive_prompts("5491155590000", False)
+
+        assert result.status == "updated"
+        session = TestSession()
+        user = session.query(Usuario).filter(Usuario.whatsapp_id == "5491155590000").first()
+        assert user.proactivo_habilitado is False
+        session.close()
+
+    def test_enable_proactive_prompts_sets_true(self, monkeypatch):
+        TestSession = self._setup(monkeypatch)
+        session = TestSession()
+        user = session.query(Usuario).first()
+        user.proactivo_habilitado = False
+        session.commit()
+        session.close()
+
+        result = ReminderService.set_proactive_prompts("5491155590000", True)
+
+        assert result.status == "updated"
+        session = TestSession()
+        user = session.query(Usuario).first()
+        assert user.proactivo_habilitado is True
+        session.close()
+
+    def test_set_proactive_prompts_user_not_found(self, monkeypatch):
+        self._setup(monkeypatch)
+
+        result = ReminderService.set_proactive_prompts("0000000000", False)
+
+        assert result.status == "user_not_found"
+
+
 class TestConceptValidation:
     """Tests for _validate_reminder_concept and _extract_concept_from_text."""
 
