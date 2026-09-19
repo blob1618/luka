@@ -783,6 +783,31 @@ def test_register_movement_with_category_unknown_needs_confirmation(db_context):
     assert count_movements(session) == 0
 
 
+def test_register_movement_with_confirmed_unknown_category(db_context):
+    session = db_context["session"]
+    create_user(session)
+
+    result = FinanceService.register_movement_with_category(
+        sender_phone="5491111111111",
+        whatsapp_message_id="wamid.cat-confirmed",
+        original_text="Gasté 2500 en semillas",
+        movement_type="egreso",
+        amount=2500,
+        currency="ARS",
+        description="semillas",
+        category_name="Jardinería de prueba",
+        create_category_if_missing=True,
+        category_creation_confirmed=True,
+    )
+
+    assert result.status == "registered"
+    movement = session.query(MovimientoFinanciero).one()
+    category = session.query(Categoria).filter(
+        Categoria.id == movement.categoria_id
+    ).one()
+    assert category.nombre == "Jardinería de prueba"
+
+
 def test_update_movement_category_uses_active_owned_category(db_context):
     session = db_context["session"]
     user = create_user(session)

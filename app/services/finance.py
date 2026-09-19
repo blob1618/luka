@@ -758,6 +758,7 @@ class FinanceService:
         description: str,
         category_name: str | None = None,
         create_category_if_missing: bool = False,
+        category_creation_confirmed: bool = False,
         fecha_movimiento: date | None = None,
     ) -> MovementRegistrationResult:
         """
@@ -765,6 +766,7 @@ class FinanceService:
         A diferencia de register_movement_from_whatsapp_text, esta función:
         - Recibe los datos ya parseados (no un llm_result)
         - Si create_category_if_missing=True y la categoría no existe, la crea automáticamente
+          después de que category_creation_confirmed=True indique que el usuario la aprobó
         """
         sender_phone = cls._normalize_optional_text(sender_phone)
         if not sender_phone:
@@ -804,7 +806,11 @@ class FinanceService:
                 resolved = resolve_category_for_user(
                     category_name, cls._active_user_category_names(session, user.id)
                 )
-                if resolved is None and create_category_if_missing:
+                if (
+                    resolved is None
+                    and create_category_if_missing
+                    and not category_creation_confirmed
+                ):
                     return cls._result(
                         "needs_category_confirmation",
                         "La categoría no coincide con tu taxonomía ni tus categorías.",

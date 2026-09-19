@@ -2718,6 +2718,7 @@ async def _confirm_pending_category_action(sender_phone: str) -> DispatchResult:
         description=pending.description,
         category_name=pending.inferred_category,
         create_category_if_missing=True,
+        category_creation_confirmed=True,
         fecha_movimiento=resolve_relative_date(
             pending.llm_result_extra.get("fecha"),
             date.today(),  # noqa: DTZ011
