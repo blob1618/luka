@@ -692,6 +692,15 @@ class ConversationService:
             return None
 
     @classmethod
+    async def clear_recent_items(cls, whatsapp_id: str) -> None:
+        try:
+            client = await cls._get_client()
+            with track_phase("redis"):
+                await client.delete(_recent_items_key(whatsapp_id))
+        except Exception as exc:
+            print(f"[ConversationService] clear_recent_items error: {type(exc).__name__}: {exc}")
+
+    @classmethod
     async def set_pending_selection(cls, whatsapp_id: str, pending: PendingSelection) -> None:
         try:
             client = await cls._get_client()

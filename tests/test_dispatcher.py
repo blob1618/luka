@@ -515,6 +515,9 @@ class TestResetContext:
         clear_state = AsyncMock()
         clear_pending_selection = AsyncMock()
         clear_pending_flow = AsyncMock()
+        clear_last_limit = AsyncMock()
+        clear_last_movement = AsyncMock()
+        clear_recent_items = AsyncMock()
 
         with (
             patch(
@@ -545,6 +548,18 @@ class TestResetContext:
                 clear_pending_selection,
             ),
             patch(
+                "app.services.dispatcher.ConversationService.clear_last_limit",
+                clear_last_limit,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_last_movement",
+                clear_last_movement,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_recent_items",
+                clear_recent_items,
+            ),
+            patch(
                 "app.services.dispatcher.ConversationService.clear_pending_conversation_flow",
                 clear_pending_flow,
             ),
@@ -566,6 +581,9 @@ class TestResetContext:
         assert result.reply_text == "Listo, arrancamos de cero. Olvidé lo anterior."
         clear_state.assert_awaited_once_with("12345")
         clear_pending_selection.assert_awaited_once_with("12345")
+        clear_last_limit.assert_awaited_once_with("12345")
+        clear_last_movement.assert_awaited_once_with("12345")
+        clear_recent_items.assert_awaited_once_with("12345")
         clear_pending_flow.assert_awaited_once_with("12345")
 
     @pytest.mark.asyncio
