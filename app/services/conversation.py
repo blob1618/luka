@@ -286,8 +286,27 @@ CONVERSATION_TTL = timedelta(minutes=30)
 LAST_MOVEMENT_TTL = timedelta(minutes=60)
 LAST_LIMIT_TTL = timedelta(minutes=60)
 CONVERSATION_FLOW_TTL = timedelta(minutes=30)
-CONVERSATION_HISTORY_LIMIT = 5
-CONVERSATION_HISTORY_MAX_CHARS = 1200
+
+_MEMORY_APPEND_SCRIPT = """
+local key = KEYS[1]
+local message_id = ARGV[1]
+local payload = ARGV[2]
+local max_turns = tonumber(ARGV[3])
+local ttl_seconds = tonumber(ARGV[4])
+local existing = redis.call('LRANGE', key, -max_turns, -1)
+if message_id ~= '' then
+  for _, entry in ipairs(existing) do
+    local ok, decoded = pcall(cjson.decode, entry)
+    if ok and decoded['user'] and decoded['user']['id'] == message_id then
+      return 0
+    end
+  end
+end
+redis.call('RPUSH', key, payload)
+redis.call('LTRIM', key, -max_turns, -1)
+redis.call('EXPIRE', key, ttl_seconds)
+return 1
+"""
 
 
 class ConversationStateUnavailable(RuntimeError):
@@ -318,8 +337,15 @@ def _conversation_flow_key(whatsapp_id: str) -> str:
     return f"conversation_flow:{whatsapp_id}"
 
 
-def _conversation_history_key(whatsapp_id: str) -> str:
-    return f"conversation_history:{whatsapp_id}"
+def _memory_key(whatsapp_id: str) -> str:
+    return f"conversation_memory:whatsapp:{whatsapp_id}"
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
 
 
 def _sanitize_history_content(content: str) -> str:
@@ -329,11 +355,24 @@ def _sanitize_history_content(content: str) -> str:
         "token=[redactado]",
         sanitized,
     )
-    return sanitized.strip()[:CONVERSATION_HISTORY_MAX_CHARS]
+    return sanitized.strip()[:_env_int("CONVERSATION_MEMORY_MAX_CHARS", 1200)]
+
+
+def _turn_to_messages(turn: dict) -> list[ConversationMessage]:
+    user = turn.get("user") or {}
+    user_text = _sanitize_history_content(user.get("content") or "")
+    if not user_text:
+        return []
+    assistant = turn.get("assistant") or {}
+    assistant_text = _sanitize_history_content(assistant.get("content") or "")
+    messages = [ConversationMessage("user", user_text)]
+    if assistant_text:
+        messages.append(ConversationMessage("assistant", assistant_text))
+    return messages
 
 
 class ConversationHistoryService:
-    """Stores the last visible messages using the webhook's Redis client."""
+    """Stores the last visible exchanges as turns in a Redis list."""
 
     @classmethod
     async def get_recent(
@@ -345,16 +384,14 @@ class ConversationHistoryService:
             return []
         try:
             with track_phase("redis"):
-                raw = await client.get(_conversation_history_key(whatsapp_id))
-            if not raw:
-                return []
-            payload = json.loads(raw)
+                entries = await client.lrange(_memory_key(whatsapp_id), 0, -1)
             messages = []
-            for item in payload[-CONVERSATION_HISTORY_LIMIT:]:
-                role = str(item.get("role") or "")
-                content = _sanitize_history_content(item.get("content") or "")
-                if role in {"user", "assistant"} and content:
-                    messages.append(ConversationMessage(role, content))
+            for entry in entries or []:
+                try:
+                    turn = json.loads(entry)
+                except (TypeError, ValueError):
+                    continue
+                messages.extend(_turn_to_messages(turn))
             return messages
         except Exception as exc:
             print(
@@ -370,27 +407,50 @@ class ConversationHistoryService:
         whatsapp_id: str,
         user_content: str,
         assistant_content: str | None,
+        message_id: str | None = None,
     ) -> None:
         if client is None:
             return
+        user_text = _sanitize_history_content(user_content)
+        if not user_text:
+            return
+        payload = json.dumps(
+            {
+                "user": {"id": message_id or None, "content": user_text},
+                "assistant": {
+                    "content": _sanitize_history_content(assistant_content or ""),
+                },
+            }
+        )
+        max_turns = _env_int("CONVERSATION_MEMORY_TURNS", 4)
+        ttl_seconds = _env_int("CONVERSATION_MEMORY_TTL_HOURS", 24) * 3600
         try:
-            messages = await cls.get_recent(client, whatsapp_id)
-            user_text = _sanitize_history_content(user_content)
-            assistant_text = _sanitize_history_content(assistant_content or "")
-            if user_text:
-                messages.append(ConversationMessage("user", user_text))
-            if assistant_text:
-                messages.append(ConversationMessage("assistant", assistant_text))
-            bounded = messages[-CONVERSATION_HISTORY_LIMIT:]
             with track_phase("redis"):
-                await client.set(
-                    _conversation_history_key(whatsapp_id),
-                    json.dumps([message.to_dict() for message in bounded]),
-                    ex=int(CONVERSATION_TTL.total_seconds()),
+                await client.eval(
+                    _MEMORY_APPEND_SCRIPT,
+                    1,
+                    _memory_key(whatsapp_id),
+                    message_id or "",
+                    payload,
+                    max_turns,
+                    ttl_seconds,
                 )
         except Exception as exc:
             print(
                 "[ConversationHistoryService] append_exchange error: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    @classmethod
+    async def clear(cls, client: Any, whatsapp_id: str) -> None:
+        if client is None:
+            return
+        try:
+            with track_phase("redis"):
+                await client.delete(_memory_key(whatsapp_id))
+        except Exception as exc:
+            print(
+                "[ConversationHistoryService] clear error: "
                 f"{type(exc).__name__}: {exc}"
             )
 
