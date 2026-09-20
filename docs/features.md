@@ -151,6 +151,10 @@ procesa en silencio para no repetir una confirmación ya enviada.
   referencia que cambió desde que se mostró se rechaza en lugar de sustituirse.
 - Un pedido nuevo y explícito abandona la selección pendiente; «cancelar» la cierra sin
   cambios. Si Redis no está disponible, Luka pide una referencia explícita y no escribe.
+- Luka conserva una memoria conversacional con los últimos 4 turnos completos de cada
+  usuario, vigente por 24 horas desde la última actividad y aislada por usuario. El
+  contenido se sanea antes de guardarse. Un pedido explícito de reinicio («olvidá lo
+  anterior») borra la memoria y el estado pendiente.
 - Los flujos de presentación administrables solo cambian cómo se muestra un resultado
   seguro: no crean intents ni reglas financieras. Un texto libre abandona el recorrido
   interactivo y vuelve al dispatcher general. Ver
