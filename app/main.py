@@ -1,12 +1,16 @@
+import logging
 import os
 import secrets
+import time
 from contextlib import asynccontextmanager
 from uuid import UUID
 
 import redis.asyncio as redis
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
+
+logger = logging.getLogger(__name__)
 
 # Cargar variables de entorno desde .env ANTES de importar submodulos
 load_dotenv()
@@ -259,13 +263,96 @@ async def verify_webhook(request: Request):
     raise HTTPException(status_code=403, detail="Verification failed")
 
 
-@app.post("/webhook")
-async def handle_webhook(request: Request):
+async def _process_inbound_message_background(message: dict, redis_instance) -> None:
+    """Procesa un mensaje entrante en segundo plano conservando la idempotencia.
+
+    Nota de arquitectura (STK-179):
+    Este procesamiento corre in-process mediante BackgroundTasks y no es durable.
+    Si el worker se reinicia durante la ejecución, el mensaje se perderá.
     """
-    Maneja los mensajes entrantes de la API de Meta WhatsApp.
+    start_time = time.perf_counter()
+    whatsapp_message_id = message.get("id")
+    message_type = message.get("type")
+
+    logger.info(
+        "[BACKGROUND_MESSAGE] message_id=%s type=%s status=started",
+        whatsapp_message_id,
+        message_type,
+    )
+
+    try:
+        if message_type == "text":
+            sender_phone = message.get("from")
+            text_body = message.get("text", {}).get("body", "")
+            await process_text_message_once(
+                redis_client=redis_instance,
+                sender_phone=sender_phone,
+                text_body=text_body,
+                whatsapp_message_id=whatsapp_message_id,
+                process_message=process_incoming_message,
+                send_message=send_whatsapp_message,
+            )
+        elif message_type == "interactive":
+            interactive_reply = parse_interactive_reply(message)
+            if interactive_reply is None:
+                logger.warning(
+                    "[BACKGROUND_MESSAGE] message_id=%s status=ignored_invalid_interactive",
+                    whatsapp_message_id,
+                )
+                return
+            await process_interactive_message_once(
+                redis_client=redis_instance,
+                interactive_reply=interactive_reply,
+                process_reply=process_incoming_interactive_reply,
+                send_message=send_whatsapp_message,
+            )
+        else:
+            logger.warning(
+                "[BACKGROUND_MESSAGE] message_id=%s type=%s status=unsupported_type",
+                whatsapp_message_id,
+                message_type,
+            )
+            return
+
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(
+            "[BACKGROUND_MESSAGE] message_id=%s status=completed duration_ms=%.2f",
+            whatsapp_message_id,
+            duration_ms,
+        )
+    except IdempotencyUnavailable as exc:
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        logger.warning(
+            "[BACKGROUND_MESSAGE] message_id=%s status=idempotency_unavailable error=%s duration_ms=%.2f",
+            whatsapp_message_id,
+            type(exc).__name__,
+            duration_ms,
+        )
+    except Exception as exc:
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        logger.exception(
+            "[BACKGROUND_MESSAGE] message_id=%s status=error error=%s duration_ms=%.2f",
+            whatsapp_message_id,
+            type(exc).__name__,
+            duration_ms,
+        )
+
+
+@app.post("/webhook")
+async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
+    """
+    Maneja los mensajes entrantes de la API de Meta WhatsApp desacoplándolos
+    en segundo plano con BackgroundTasks para responder de inmediato.
+
+    Nota de arquitectura (STK-179):
+    BackgroundTasks es in-process y no durable. Si el proceso se reinicia
+    o cae tras emitir HTTP 200, los mensajes encolados pendientes en memoria
+    no se recuperarán (Meta no reintentará tras recibir 200). Para persistencia
+    garantizada se requerirá una cola durable (ej. Celery/SQS/Outbox) en un
+    ticket futuro.
     """
     data = await request.json()
-    print("Evento de webhook recibido")
+    logger.info("Evento de webhook recibido")
 
     if data.get("object") == "whatsapp_business_account":
         for entry in data.get("entry", []):
@@ -275,51 +362,19 @@ async def handle_webhook(request: Request):
                 statuses = value.get("statuses", [])
 
                 for status_event in statuses:
-                    print(
-                        "WhatsApp status update",
-                        f"message_id={status_event.get('id')}",
-                        f"status={status_event.get('status')}",
+                    logger.info(
+                        "WhatsApp status update message_id=%s status=%s",
+                        status_event.get("id"),
+                        status_event.get("status"),
                     )
 
                 for message in messages:
-                    sender_phone = message.get("from")
                     message_type = message.get("type")
-
-                    whatsapp_message_id = message.get("id")
-
-                    try:
-                        if message_type == "text":
-                            text_body = message.get("text", {}).get("body", "")
-                            await process_text_message_once(
-                                redis_client=redis_client,
-                                sender_phone=sender_phone,
-                                text_body=text_body,
-                                whatsapp_message_id=whatsapp_message_id,
-                                process_message=process_incoming_message,
-                                send_message=send_whatsapp_message,
-                            )
-                        elif message_type == "interactive":
-                            interactive_reply = parse_interactive_reply(message)
-                            if interactive_reply is None:
-                                continue
-                            await process_interactive_message_once(
-                                redis_client=redis_client,
-                                interactive_reply=interactive_reply,
-                                process_reply=process_incoming_interactive_reply,
-                                send_message=send_whatsapp_message,
-                            )
-                        else:
-                            continue
-                    except IdempotencyUnavailable as exc:
-                        print(
-                            "[INBOUND_MESSAGE]",
-                            f"message_id={whatsapp_message_id}",
-                            "status=idempotency_unavailable",
-                            f"error={type(exc).__name__}",
+                    if message_type in ("text", "interactive"):
+                        background_tasks.add_task(
+                            _process_inbound_message_background,
+                            message,
+                            redis_client,
                         )
-                        raise HTTPException(
-                            status_code=503,
-                            detail="Inbound message processing temporarily unavailable",
-                        ) from exc
 
     return {"status": "ok"}
