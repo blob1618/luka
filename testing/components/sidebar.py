@@ -4,8 +4,17 @@ from pathlib import Path
 
 import streamlit as st
 
+from app.models.database import SessionLocal
 from app.services.llm_providers.factory import _PROVIDERS
-from testing.config.settings import TestingConfig, get_available_models
+from testing.config.settings import (
+    ChatSession,
+    TestingConfig,
+    get_available_models,
+    new_session,
+    next_session_label,
+    phone_in_use,
+)
+from testing.services.user_simulator import sync_test_user
 
 
 def _public_asset(filename: str) -> Path:
@@ -38,6 +47,98 @@ def get_available_prompts(testing_dir: str = "testing") -> list[str]:
             if rel not in prompts:
                 prompts.append(rel)
     return prompts
+
+
+def _render_sessions(config: TestingConfig) -> ChatSession | None:
+    """Renderiza el manejo de sesiones y devuelve la sesión activa."""
+    st.subheader("Sesiones")
+
+    labels = [f"{session.label} — {session.phone}" for session in config.sessions]
+    active_index = 0
+    for index, session in enumerate(config.sessions):
+        if session.id == config.active_session_id:
+            active_index = index
+            break
+
+    selected_label = st.selectbox(
+        "Sesión activa",
+        options=labels,
+        index=active_index,
+        key="active_session_select",
+    )
+    selected = config.sessions[labels.index(selected_label)]
+    if selected.id != config.active_session_id:
+        config.active_session_id = selected.id
+        st.session_state.pop("session_registered_check", None)
+
+    active = config.active_session()
+    registered = st.checkbox(
+        "Vinculado",
+        value=active.user_registered,
+        key="session_registered_check",
+    )
+    if registered != active.user_registered:
+        active.user_registered = registered
+        sync_test_user(
+            SessionLocal,
+            phone=active.phone,
+            name=active.user_name,
+            registered=registered,
+        )
+
+    with st.expander("Nueva sesión"):
+        label = st.text_input(
+            "Etiqueta",
+            value=next_session_label(config.sessions),
+            key="new_session_label",
+        )
+        phone = st.text_input("Teléfono", key="new_session_phone")
+        user_name = st.text_input("Nombre", key="new_session_name")
+        new_registered = st.checkbox(
+            "Ya registrado",
+            value=True,
+            key="new_session_registered",
+        )
+        if st.button("➕ Crear sesión", key="create_session"):
+            phone = phone.strip()
+            if not phone:
+                st.error("Ingresá un teléfono")
+            elif phone_in_use(config.sessions, phone):
+                st.error("Ese teléfono ya está en uso")
+            else:
+                created = new_session(
+                    label.strip() or next_session_label(config.sessions),
+                    phone,
+                    user_name.strip() or "Test User",
+                    new_registered,
+                )
+                config.sessions.append(created)
+                config.active_session_id = created.id
+                sync_test_user(
+                    SessionLocal,
+                    phone=created.phone,
+                    name=created.user_name,
+                    registered=new_registered,
+                )
+                for widget_key in (
+                    "active_session_select",
+                    "session_registered_check",
+                    "new_session_label",
+                    "new_session_phone",
+                    "new_session_name",
+                    "new_session_registered",
+                ):
+                    st.session_state.pop(widget_key, None)
+                st.rerun()
+
+    if len(config.sessions) > 1 and st.button("🗑 Eliminar sesión", key="delete_session"):
+        config.sessions.remove(active)
+        config.active_session_id = config.sessions[0].id
+        st.session_state.pop("active_session_select", None)
+        st.session_state.pop("session_registered_check", None)
+        st.rerun()
+
+    return active
 
 
 def render_sidebar() -> TestingConfig:
@@ -87,28 +188,15 @@ def render_sidebar() -> TestingConfig:
             key="model_select",
         )
 
-        st.subheader("Usuario simulado")
-        config.user_registered = st.checkbox(
-            "Registrado",
-            value=config.user_registered,
-            key="user_registered_check",
-        )
-        config.phone = st.text_input(
-            "Teléfono",
-            value=config.phone,
-            key="phone_input",
-        )
-        config.user_name = st.text_input(
-            "Nombre",
-            value=config.user_name,
-            key="name_input",
-        )
+        _render_sessions(config)
 
         st.subheader("Acciones")
         col1, col2 = st.columns(2)
         with col1:
             if st.button("🗑 Limpiar chat", key="clear_chat"):
-                st.session_state.messages = []
+                active = config.active_session()
+                if active is not None:
+                    active.messages = []
                 st.rerun()
         with col2:
             if st.button("🔄 Reset DB", key="reset_db"):
