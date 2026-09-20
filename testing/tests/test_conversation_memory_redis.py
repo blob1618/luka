@@ -1,5 +1,6 @@
 """Integration tests for ConversationHistoryService against a real Redis."""
 
+import asyncio
 import os
 import uuid
 
@@ -82,6 +83,22 @@ async def test_ttl_is_about_24_hours(redis_client, new_whatsapp_id, monkeypatch)
     ttl = await redis_client.ttl(f"conversation_memory:whatsapp:{whatsapp_id}")
 
     assert 86300 <= ttl <= 86400
+
+
+@pytest.mark.asyncio
+async def test_expired_window_is_not_incorporated(redis_client, new_whatsapp_id):
+    whatsapp_id = new_whatsapp_id()
+    key = f"conversation_memory:whatsapp:{whatsapp_id}"
+
+    await ConversationHistoryService.append_exchange(
+        redis_client, whatsapp_id, "hola", "buenas"
+    )
+    await redis_client.pexpire(key, 50)
+    await asyncio.sleep(0.1)
+
+    history = await ConversationHistoryService.get_recent(redis_client, whatsapp_id)
+
+    assert history == []
 
 
 @pytest.mark.asyncio
