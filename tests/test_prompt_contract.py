@@ -39,7 +39,7 @@ SUPPORTED_INTENTS = {
     "disable_proactive_reminders", "confirm_category", "reject_category",
     "delete_category", "list_categories", "update_movement",
     "delete_movement", "create_limit", "change_limit", "list_limits",
-    "delete_limit", "confirm_limit", "reject_limit",
+    "delete_limit", "confirm_limit", "reject_limit", "reset_context",
 }
 
 
@@ -47,6 +47,12 @@ def test_prompt_covers_all_supported_intents():
     text = _prompt_text()
     for intent in SUPPORTED_INTENTS:
         assert f"`{intent}`" in text or f'"{intent}"' in text, f"Intent missing from prompt: {intent}"
+
+
+def test_prompt_has_conversation_memory_section():
+    text = _prompt_text()
+    assert "## Memoria Conversacional" in text
+    assert "contexto de referencia" in text
 
 
 def test_prompt_examples_do_not_invent_categories_without_context():

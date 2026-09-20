@@ -1,11 +1,18 @@
 """Tests for the extracted message dispatcher."""
 
 import contextlib
+import uuid
 from contextlib import contextmanager
+from datetime import date
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from app.models.database import Base, LimiteCategoria, MovimientoFinanciero
 from app.services.dispatcher import process_incoming_message
 from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkResult
 from app.services.finance import MovementRegistrationResult
@@ -492,6 +499,594 @@ class TestNonFinancialIntents:
             )
 
         assert llm_mock.await_args.kwargs["history"] == history
+
+
+# ---------------------------------------------------------------------------
+# Reset de contexto (memoria conversacional)
+# ---------------------------------------------------------------------------
+
+class TestResetContext:
+    @pytest.mark.asyncio
+    async def test_reset_context_clears_state_and_memory(self):
+        llm_result = {
+            "intent": "reset_context",
+            "reply_text": "Listo, arrancamos de cero.",
+        }
+        clear_state = AsyncMock()
+        clear_pending_selection = AsyncMock()
+        clear_pending_flow = AsyncMock()
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value=llm_result,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                clear_state,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_pending_selection",
+                clear_pending_selection,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_pending_conversation_flow",
+                clear_pending_flow,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationFlowRuntime.abandon",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+        ):
+            result = await process_incoming_message(
+                "12345", "olvidá todo y arranquemos de cero"
+            )
+
+        assert result.intent == "reset_context"
+        assert result.service_invoked == "conversation"
+        assert result.clear_memory is True
+        assert result.reply_text == "Listo, arrancamos de cero. Olvidé lo anterior."
+        clear_state.assert_awaited_once_with("12345")
+        clear_pending_selection.assert_awaited_once_with("12345")
+        clear_pending_flow.assert_awaited_once_with("12345")
+
+    @pytest.mark.asyncio
+    async def test_reset_context_interrupts_multiturn_flow(self):
+        from decimal import Decimal
+
+        from app.services.conversation import PendingReminder
+
+        clear_state = AsyncMock()
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_reminder",
+                new_callable=AsyncMock,
+                return_value=PendingReminder(
+                    sender_phone="12345",
+                    reminder_concept="cable",
+                    reminder_day=None,
+                    reminder_amount=Decimal("2500"),
+                    reminder_currency="ARS",
+                ),
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value={"intent": "reset_context"},
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                clear_state,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_pending_selection",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_pending_conversation_flow",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationFlowRuntime.abandon",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+        ):
+            result = await process_incoming_message("12345", "olvidá todo")
+
+        assert result.intent == "reset_context"
+        assert result.clear_memory is True
+        assert result.reply_text == "Listo, arrancamos de cero. Olvidé lo anterior."
+        clear_state.assert_awaited_once_with("12345")
+
+    @pytest.mark.asyncio
+    async def test_reset_context_wins_over_cancel_in_delete_category_flow(self):
+        from app.services.conversation import PendingLimitDelete
+
+        clear_state = AsyncMock()
+        delete_limit = AsyncMock()
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_limit_delete_category",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_limit_delete",
+                new_callable=AsyncMock,
+                return_value=PendingLimitDelete(
+                    sender_phone="12345",
+                    category_name=None,
+                ),
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value={"intent": "reset_context"},
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                clear_state,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_pending_selection",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_pending_conversation_flow",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationFlowRuntime.abandon",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+            patch(
+                "app.services.dispatcher.LimitService.delete_limit",
+                delete_limit,
+            ),
+        ):
+            result = await process_incoming_message("12345", "olvidá todo")
+
+        assert result.intent == "reset_context"
+        assert result.clear_memory is True
+        assert result.reply_text == "Listo, arrancamos de cero. Olvidé lo anterior."
+        assert "cancel" not in result.reply_text.lower()
+        clear_state.assert_awaited_once_with("12345")
+        delete_limit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reset_context_wins_over_cancel_in_limit_month_flow(self):
+        from app.services.conversation import PendingLimitDelete
+
+        clear_state = AsyncMock()
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_limit_month_selection",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_limit_delete",
+                new_callable=AsyncMock,
+                return_value=PendingLimitDelete(
+                    sender_phone="12345",
+                    category_name="Comida",
+                    candidates=[
+                        {
+                            "limit_id": "lim-1",
+                            "category": "Comida",
+                            "amount": "500",
+                            "month": 9,
+                            "year": 2026,
+                            "currency": "ARS",
+                        }
+                    ],
+                ),
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value={"intent": "reset_context"},
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                clear_state,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_pending_selection",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_pending_conversation_flow",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationFlowRuntime.abandon",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+        ):
+            result = await process_incoming_message("12345", "olvidá todo")
+
+        assert result.intent == "reset_context"
+        assert result.clear_memory is True
+        assert result.reply_text == "Listo, arrancamos de cero. Olvidé lo anterior."
+        assert "cancel" not in result.reply_text.lower()
+        clear_state.assert_awaited_once_with("12345")
+
+    @pytest.mark.asyncio
+    async def test_reset_context_in_rename_flow(self):
+        from app.services.conversation import PendingReminder
+
+        create_reminder = MagicMock()
+        clear_state = AsyncMock()
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_rename",
+                new_callable=AsyncMock,
+                return_value=PendingReminder(
+                    sender_phone="12345",
+                    reminder_concept=None,
+                    reminder_day=15,
+                    reminder_amount=Decimal("1000"),
+                    reminder_currency="ARS",
+                ),
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value={"intent": "reset_context"},
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                clear_state,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_pending_selection",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_pending_conversation_flow",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationFlowRuntime.abandon",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+            patch(
+                "app.services.dispatcher.ReminderService.create_reminder",
+                create_reminder,
+            ),
+        ):
+            result = await process_incoming_message("12345", "olvidá todo")
+
+        assert result.intent == "reset_context"
+        assert result.clear_memory is True
+        assert result.reply_text == "Listo, arrancamos de cero. Olvidé lo anterior."
+        create_reminder.assert_not_called()
+        clear_state.assert_awaited_once_with("12345")
+
+    @pytest.mark.asyncio
+    async def test_reset_context_tolerates_redis_unavailable(self):
+        from app.services.conversation import ConversationStateUnavailable
+
+        clear_state = AsyncMock()
+        clear_pending_flow = AsyncMock(
+            side_effect=ConversationStateUnavailable("redis down")
+        )
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value={"intent": "reset_context"},
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                clear_state,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_pending_selection",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_pending_conversation_flow",
+                clear_pending_flow,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationFlowRuntime.abandon",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+        ):
+            result = await process_incoming_message("12345", "olvidá todo")
+
+        assert result.clear_memory is True
+        assert result.reply_text == "Listo, arrancamos de cero. Olvidé lo anterior."
+        clear_state.assert_awaited_once_with("12345")
+        clear_pending_flow.assert_awaited_once_with("12345")
+
+
+# ---------------------------------------------------------------------------
+# La memoria es contexto, no autorización
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def isolated_db(monkeypatch):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(engine)
+    for target in (
+        "app.services.dispatcher.SessionLocal",
+        "app.services.finance.SessionLocal",
+        "app.services.limit.SessionLocal",
+        "app.models.database.SessionLocal",
+    ):
+        monkeypatch.setattr(target, factory)
+    yield factory
+    engine.dispose()
+
+
+class TestMemoryIsContextNotAuthorization:
+    @pytest.mark.asyncio
+    async def test_history_proposal_does_not_authorize_writes(self, isolated_db):
+        history = [
+            {
+                "role": "assistant",
+                "content": (
+                    "Puedo compensar $100 moviendo saldo de Comida a Transporte, "
+                    "¿confirmás?"
+                ),
+            }
+        ]
+        llm_mock = AsyncMock(return_value={"intent": "confirm_limit"})
+        set_pending_limit = AsyncMock()
+
+        limit_id = uuid.uuid4()
+        with isolated_db() as session:
+            session.add(
+                LimiteCategoria(
+                    id=limit_id,
+                    usuario_id=uuid.uuid4(),
+                    categoria_id=uuid.uuid4(),
+                    cantidad_max=Decimal("500"),
+                    moneda="ARS",
+                    inicio_periodo=date(2026, 9, 1),
+                    fin_periodo=date(2026, 9, 30),
+                )
+            )
+            session.commit()
+            seeded = session.get(LimiteCategoria, limit_id)
+            seeded_amount = seeded.cantidad_max
+            seeded_updated = seeded.actualizado_en
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                llm_mock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.set_pending_limit",
+                set_pending_limit,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationFlowRuntime.abandon",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+        ):
+            result = await process_incoming_message(
+                "12345",
+                "Confirmo",
+                "wamid.confirm",
+                conversation_history=history,
+            )
+
+        assert llm_mock.await_args.kwargs["history"] == history
+        assert result.intent == "confirm_limit"
+        assert result.clear_memory is False
+        assert "compens" not in result.reply_text.lower()
+        assert "confirm" not in result.reply_text.lower()
+        set_pending_limit.assert_not_awaited()
+
+        with isolated_db() as session:
+            assert session.query(LimiteCategoria).count() == 1
+            stored = session.get(LimiteCategoria, limit_id)
+            assert stored.cantidad_max == seeded_amount
+            assert stored.actualizado_en == seeded_updated
+            assert session.query(MovimientoFinanciero).count() == 0
+
+    @pytest.mark.asyncio
+    async def test_reset_survives_movement_normalizers(self, isolated_db):
+        movement_id = uuid.uuid4()
+        with isolated_db() as session:
+            session.add(
+                MovimientoFinanciero(
+                    id=movement_id,
+                    usuario_id=uuid.uuid4(),
+                    tipo="egreso",
+                    cantidad=Decimal("500"),
+                    moneda="ARS",
+                    descripcion="super",
+                    fecha_movimiento=date(2026, 9, 1),
+                )
+            )
+            session.commit()
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+                return_value={"intent": "reset_context"},
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_rename",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_reminder_data",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_pending_selection",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_pending_conversation_flow",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationFlowRuntime.abandon",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher._update_ultimo_mensaje",
+            ),
+        ):
+            result = await process_incoming_message(
+                "12345",
+                "borrá el historial de gastos",
+                "wamid.delete-history",
+            )
+
+        assert result.intent == "reset_context"
+        assert result.clear_memory is True
+        assert result.reply_text == "Listo, arrancamos de cero. Olvidé lo anterior."
+
+        with isolated_db() as session:
+            stored = session.get(MovimientoFinanciero, movement_id)
+            assert stored is not None
+            assert stored.anulado_en is None
 
 
 # ---------------------------------------------------------------------------

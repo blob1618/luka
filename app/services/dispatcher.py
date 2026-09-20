@@ -6,6 +6,7 @@ environment can invoke the same logic.
 """
 
 import asyncio
+import contextlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ from app.api.whatsapp import OutboundWhatsAppMessage
 from app.models.database import Categoria, SessionLocal, Usuario
 from app.services.conversation import (
     ConversationService,
+    ConversationStateUnavailable,
     LastCreatedLimit,
     LastRegisteredMovement,
     PendingLimit,
@@ -70,6 +72,7 @@ class DispatchResult:
     event_key: str | None = None
     event_variables: dict[str, Any] = field(default_factory=dict)
     reply_message: OutboundWhatsAppMessage | None = None
+    clear_memory: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -750,6 +753,20 @@ async def _handle_list_categories(sender_phone: str) -> str:
         return _format_categories_list(result)
     else:
         return "Hubo un problema consultando las categorías."
+
+
+async def _handle_reset_context(sender_phone: str) -> DispatchResult:
+    """Borra el estado multi-turno y la memoria conversacional del usuario."""
+    await ConversationService.clear_state(sender_phone)
+    await ConversationService.clear_pending_selection(sender_phone)
+    with contextlib.suppress(ConversationStateUnavailable):
+        await ConversationService.clear_pending_conversation_flow(sender_phone)
+    return DispatchResult(
+        reply_text="Listo, arrancamos de cero. Olvidé lo anterior.",
+        service_invoked="conversation",
+        intent="reset_context",
+        clear_memory=True,
+    )
 
 
 async def _register_and_reply_with_hint(
@@ -1874,7 +1891,7 @@ async def _dispatch_incoming_message(
         sender_phone: The sender's WhatsApp phone number.
         text_body: The raw text body of the message.
         whatsapp_message_id: Optional WhatsApp message ID for dedup.
-        conversation_history: Up to five previous visible chat messages.
+        conversation_history: Up to four previous visible turns (eight messages).
 
     Returns:
         DispatchResult with reply_text and debug metadata.
@@ -2078,6 +2095,9 @@ async def _dispatch_incoming_message(
             await ConversationService.clear_state(sender_phone)
             reply_text = "Se perdió el contexto. Podés volver a crear el recordatorio."
         else:
+            extracted_data = await extract_message_once()
+            if extracted_data.get("intent") == "reset_context":
+                return await _handle_reset_context(sender_phone)
             new_concept = text_body.strip()
             if not new_concept:
                 reply_text = "¿Qué nombre querés usar para el recordatorio?"
@@ -2110,6 +2130,8 @@ async def _dispatch_incoming_message(
         else:
             # Extraer día del texto usando LLM
             extracted_data = await extract_message_once()
+            if extracted_data.get("intent") == "reset_context":
+                return await _handle_reset_context(sender_phone)
             new_day = extracted_data.get("reminder_day")
             # Fallback: extraer número del texto
             if new_day is None:
@@ -2150,6 +2172,8 @@ async def _dispatch_incoming_message(
                 service_invoked="conversation",
             )
         extracted_data = await extract_message_once()
+        if extracted_data.get("intent") == "reset_context":
+            return await _handle_reset_context(sender_phone)
         if extracted_data.get("error"):
             return DispatchResult(
                 reply_text=extracted_data.get("reply_text") or (
@@ -2197,6 +2221,8 @@ async def _dispatch_incoming_message(
                 service_invoked="conversation",
             )
         extracted_data = await extract_message_once()
+        if extracted_data.get("intent") == "reset_context":
+            return await _handle_reset_context(sender_phone)
         if extracted_data.get("error"):
             return DispatchResult(
                 reply_text=extracted_data.get("reply_text") or (
@@ -2260,6 +2286,8 @@ async def _dispatch_incoming_message(
             reply_text = "Se perdió el contexto. Podés volver a crear el límite."
         else:
             extracted_data = await extract_message_once()
+            if extracted_data.get("intent") == "reset_context":
+                return await _handle_reset_context(sender_phone)
             intent = extracted_data.get("intent", "out_of_scope")
 
             if intent == "reject_limit" or _is_cancel_request(text_body):
@@ -2300,13 +2328,15 @@ async def _dispatch_incoming_message(
             await ConversationService.clear_state(sender_phone)
             reply_text = "Se perdió el contexto de la eliminación. Volvé a indicarme qué límite querés eliminar."
         else:
+            extracted_data = await extract_message_once()
+            if extracted_data.get("intent") == "reset_context":
+                return await _handle_reset_context(sender_phone)
             if _is_cancel_request(text_body):
                 await ConversationService.clear_state(sender_phone)
                 return DispatchResult(
                     reply_text="Listo, cancelé la eliminación del límite.",
                     service_invoked="conversation",
                 )
-            extracted_data = await extract_message_once()
             category_name = extracted_data.get("limit_category") or _extract_category_from_text(text_body)
             if not category_name:
                 reply_text = "¿Qué límite querés eliminar? Indicame la categoría."
@@ -2354,6 +2384,9 @@ async def _dispatch_incoming_message(
             await ConversationService.clear_state(sender_phone)
             reply_text = "Se perdió el contexto de la eliminación. Volvé a indicarme qué límite querés eliminar."
         else:
+            extracted_data = await extract_message_once()
+            if extracted_data.get("intent") == "reset_context":
+                return await _handle_reset_context(sender_phone)
             if _is_cancel_request(text_body):
                 await ConversationService.clear_state(sender_phone)
                 return DispatchResult(
@@ -2367,7 +2400,6 @@ async def _dispatch_incoming_message(
             named_months = select_named_months(text_body, pending_delete.candidates)
             if len(named_months) > 1:
                 return await _delete_selected_limits(sender_phone, pending_delete, named_months)
-            extracted_data = await extract_message_once()
             month = extracted_data.get("limit_month")
             if month is None:
                 month = _extract_month_from_text(text_body)
@@ -2410,6 +2442,8 @@ async def _dispatch_incoming_message(
 
     # Procesar mensaje con LLM (fecha + categorías del usuario como contexto)
     extracted_data = await extract_message_once()
+    if extracted_data.get("intent") == "reset_context":
+        return await _handle_reset_context(sender_phone)
     if re.match(r"^(?:borra|elimina|anula)\b", normalize_text(text_body)) and (
         recent_count(text_body) is not None or named_movement_targets(text_body)
     ):

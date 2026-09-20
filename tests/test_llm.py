@@ -507,6 +507,15 @@ async def test_process_message_accepts_proactive_reminder_intents(intent):
 
 
 @pytest.mark.asyncio
+async def test_process_message_reset_context_survives_normalization():
+    result = await _process_message_with_mock_response(
+        {"intent": "reset_context", "reply_text": "Listo, arrancamos de cero."}
+    )
+
+    assert result["intent"] == "reset_context"
+
+
+@pytest.mark.asyncio
 async def test_process_message_invalid_amount_becomes_none():
     mock_response = {
         "intent": "expense",

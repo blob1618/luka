@@ -149,7 +149,7 @@ class LLMService:
         Args:
             text: El mensaje de texto del usuario.
             context: Texto adicional concatenado al system prompt (p.ej. fecha actual).
-            history: Hasta cinco mensajes previos con roles user/assistant.
+            history: Hasta cuatro turnos previos (8 mensajes) con roles user/assistant.
 
         Returns:
             Dict con los campos del JSON parseado (intent, amount, etc.)
@@ -192,6 +192,7 @@ class LLMService:
                 "update_movement", "delete_movement",
                 "create_limit", "change_limit", "list_limits",
                 "delete_limit", "confirm_limit", "reject_limit",
+                "reset_context",
             }
             if intent not in allowed_intents:
                 intent = "out_of_scope"
