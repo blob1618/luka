@@ -15,6 +15,14 @@ logger = logging.getLogger(__name__)
 # Cargar variables de entorno desde .env ANTES de importar submodulos
 load_dotenv()
 
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 from app.api.whatsapp import (  # noqa: E402
     parse_interactive_reply,
     send_whatsapp_message,
