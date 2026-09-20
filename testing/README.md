@@ -19,7 +19,7 @@ El entorno vive dentro de `testing/` y se levanta únicamente con Docker o Podma
   - Estado de Redis (estado multi-turno de la conversación).
   - Servicio invocado / logs del dispatcher.
 - Reset de base de datos: borra movimientos, categorías y recordatorios del usuario de test (el usuario se conserva).
-- Exportar la conversación como JSON o texto plano.
+- Exportar la conversación como JSON o texto plano, y copiarla al portapapeles con o sin datos de debug.
 - Base de datos SQLite aislada (`testing_luka.db`): no toca la base local (`luka.db`) ni Supabase.
 
 ## Requisitos iniciales

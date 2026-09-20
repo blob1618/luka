@@ -19,10 +19,16 @@ def mock_st():
 
     with patch("testing.components.sidebar.st") as sidebar_st, \
          patch("testing.components.chat.st") as chat_st, \
-         patch("testing.components.debug_panel.st") as debug_st:
+         patch("testing.components.debug_panel.st") as debug_st, \
+         patch("testing.components.chat.components_html") as components_html:
         sidebar_st.session_state = SessionState()
         chat_st.session_state = SessionState()
-        yield {"sidebar": sidebar_st, "chat": chat_st, "debug": debug_st}
+        yield {
+            "sidebar": sidebar_st,
+            "chat": chat_st,
+            "debug": debug_st,
+            "components_html": components_html,
+        }
 
 
 class TestRenderSidebar:
@@ -464,3 +470,48 @@ class TestRenderChat:
 
         chat_st.write.assert_called_once_with("hola")
         chat_st.markdown.assert_not_called()
+
+
+class TestRenderChatCopyButtons:
+    def _render_with_messages(self, mock_st):
+        from testing.components.chat import render_chat
+
+        chat_st = mock_st["chat"]
+        chat_st.session_state.messages = [
+            {"role": "user", "content": "hola", "debug": {}},
+            {
+                "role": "assistant",
+                "content": "ok",
+                "debug": {"latency_ms": 42.0, "raw_json": {"intent": "greeting"}},
+            },
+        ]
+        chat_st.chat_input.return_value = None
+        chat_st.chat_message.return_value.__enter__ = MagicMock(return_value=None)
+        chat_st.chat_message.return_value.__exit__ = MagicMock(return_value=False)
+        chat_st.sidebar.__enter__ = MagicMock(return_value=None)
+        chat_st.sidebar.__exit__ = MagicMock(return_value=False)
+
+        render_chat(TestingConfig())
+
+    def test_renders_two_copy_buttons_with_and_without_debug(self, mock_st):
+        self._render_with_messages(mock_st)
+
+        calls = mock_st["components_html"].call_args_list
+        assert len(calls) == 2
+        plain_markup = calls[0].args[0]
+        debug_markup = calls[1].args[0]
+        assert "📋 Copiar conversación" in plain_markup
+        assert "latency_ms" not in plain_markup
+        assert "🐞 Copiar con debug" in debug_markup
+        assert "latency_ms" in debug_markup
+
+    def test_skips_copy_buttons_without_messages(self, mock_st):
+        from testing.components.chat import render_chat
+
+        chat_st = mock_st["chat"]
+        chat_st.session_state.messages = []
+        chat_st.chat_input.return_value = None
+
+        render_chat(TestingConfig())
+
+        mock_st["components_html"].assert_not_called()
