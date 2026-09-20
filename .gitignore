@@ -229,3 +229,7 @@ skills-lock.json
 .vscode/*
 luka.db
 testing_luka.db
+
+.devin/
+.superpowers/
+superpowers/
