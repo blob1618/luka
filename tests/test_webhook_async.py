@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 from app.main import _process_inbound_message_background, app
 from app.services.webhook_idempotency import IdempotencyUnavailable, InboundMessageClaim
 
+pytestmark = pytest.mark.unit
+
 client = TestClient(app)
 
 

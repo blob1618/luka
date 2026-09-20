@@ -24,6 +24,8 @@ from app.models.database import (
 )
 from app.services.webhook_idempotency import InboundMessageClaim
 
+pytestmark = pytest.mark.integration
+
 client = TestClient(app)
 
 
