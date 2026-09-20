@@ -10,6 +10,7 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
+import app.models.database as database_module
 import testing.config.settings as settings_mod
 
 
@@ -44,7 +45,7 @@ def _import_app(session_state=None, config=None):
                 return_value=mock_user_sim,
             ),
             patch("dotenv.load_dotenv"),
-            patch("app.models.database.Base.metadata.create_all"),
+            patch("testing.services.schema.ensure_testing_schema"),
         ):
             module = importlib.import_module("testing.streamlit_app")
     finally:
@@ -58,13 +59,14 @@ def _import_app(session_state=None, config=None):
 
 class TestStreamlitAppEntrypoint:
     def test_initializes_session_and_simulates_user(self):
-        fake_st, config, mock_chat, mock_user_sim, _ = _import_app()
+        fake_st, config, mock_chat, mock_user_sim, module = _import_app()
 
         assert fake_st.set_page_config.called
         assert fake_st.markdown.called
         assert fake_st.session_state["messages"] == []
         assert isinstance(fake_st.session_state["config"], settings_mod.TestingConfig)
         assert fake_st.session_state["user_simulator_initialized"] is True
+        module.ensure_testing_schema.assert_called_once_with(database_module.engine)
         mock_user_sim.create_test_user.assert_called_once_with(
             config.phone, config.user_name
         )

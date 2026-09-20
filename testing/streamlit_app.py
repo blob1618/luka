@@ -17,9 +17,10 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 # Testing environment always uses its isolated SQLite database.
 os.environ["DATABASE_URL"] = "sqlite:///./testing_luka.db"
 
-from app.models.database import Base, engine  # noqa: E402
+from app.models.database import engine  # noqa: E402
+from testing.services.schema import ensure_testing_schema  # noqa: E402
 
-Base.metadata.create_all(bind=engine)
+ensure_testing_schema(engine)
 
 import streamlit as st  # noqa: E402
 
