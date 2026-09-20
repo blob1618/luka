@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import testing.config.settings as settings_module
 from testing.components.sidebar import get_available_models, get_available_prompts, get_available_providers
-from testing.config.settings import set_model_env
+from testing.config.settings import new_session, next_session_label, phone_in_use, set_model_env
 
 
 class TestGetAvailableProviders:
@@ -80,6 +80,65 @@ class TestGetAvailablePrompts:
 class TestTestingConfig:
     def test_prompt_path_default_es_core(self):
         assert settings_module.TestingConfig().prompt_path == "prompts/core_prompt.md"
+
+    def test_sin_estado_global_de_usuario(self):
+        config = settings_module.TestingConfig()
+        assert not hasattr(config, "phone")
+        assert not hasattr(config, "user_name")
+        assert not hasattr(config, "user_registered")
+
+
+class TestSessionHelpers:
+    def test_next_session_label_usa_el_mayor_mas_uno(self):
+        assert next_session_label([]) == "Sesión 1"
+        sessions = [
+            new_session("Sesión 1", "5491112345678", "A", True),
+            new_session("Sesión 4", "5491187654321", "B", False),
+        ]
+        assert next_session_label(sessions) == "Sesión 5"
+
+    def test_next_session_label_no_se_repite_al_borrar_una_del_medio(self):
+        sessions = [
+            new_session("Sesión 1", "5491111111111", "A", True),
+            new_session("Sesión 3", "5491133333333", "C", True),
+        ]
+        assert next_session_label(sessions) == "Sesión 4"
+
+    def test_phone_in_use_detecta_repetidos(self):
+        sessions = [new_session("Sesión 1", "5491112345678", "A", True)]
+
+        assert phone_in_use(sessions, "5491112345678") is True
+        assert phone_in_use(sessions, "5491199999999") is False
+        assert phone_in_use([], "5491112345678") is False
+
+    def test_new_session_genera_id_unico_y_campos(self):
+        first = new_session("Sesión 1", "5491112345678", "A", True)
+        second = new_session("Sesión 2", "5491187654321", "B", False)
+
+        assert first.id != second.id
+        assert first.messages == []
+        assert second.messages == []
+        assert (second.label, second.phone, second.user_name, second.user_registered) == (
+            "Sesión 2",
+            "5491187654321",
+            "B",
+            False,
+        )
+
+
+class TestActiveSession:
+    def test_devuelve_la_sesion_activa(self):
+        first = new_session("Sesión 1", "5491112345678", "A", True)
+        second = new_session("Sesión 2", "5491187654321", "B", False)
+        config = settings_module.TestingConfig(sessions=[first, second], active_session_id=second.id)
+
+        assert config.active_session() is second
+
+    def test_devuelve_none_sin_sesion_activa(self):
+        first = new_session("Sesión 1", "5491112345678", "A", True)
+
+        assert settings_module.TestingConfig(sessions=[first], active_session_id="otro").active_session() is None
+        assert settings_module.TestingConfig().active_session() is None
 
 
 class TestGetAvailableModels:

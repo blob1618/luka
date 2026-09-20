@@ -2,7 +2,7 @@
 
 import pytest
 
-from testing.services.user_simulator import UserSimulator
+from testing.services.user_simulator import UserSimulator, sync_test_user
 from app.models.database import Categoria, Usuario
 
 
@@ -32,9 +32,65 @@ class TestCreateUser:
 
         assert user1.id == user2.id
 
+    def test_create_duplicate_updates_name(self, in_memory_db):
+        sim = UserSimulator(in_memory_db["SessionLocal"])
+        sim.create_test_user("5491100001111", "María")
+        user = sim.create_test_user("5491100001111", "María Distinta")
+
+        assert user.nombre == "María Distinta"
+        assert sim.get_user("5491100001111").nombre == "María Distinta"
+
     def test_get_user_returns_none_when_not_exists(self, in_memory_db):
         sim = UserSimulator(in_memory_db["SessionLocal"])
         assert sim.get_user("9999999999") is None
+
+
+class TestSyncTestUser:
+    def test_registered_crea_el_usuario(self, in_memory_db):
+        sync_test_user(
+            in_memory_db["SessionLocal"],
+            phone="5491100001111",
+            name="María",
+            registered=True,
+        )
+
+        user = UserSimulator(in_memory_db["SessionLocal"]).get_user("5491100001111")
+        assert user is not None
+        assert user.nombre == "María"
+
+    def test_registered_recupera_usuario_existente(self, in_memory_db):
+        sim = UserSimulator(in_memory_db["SessionLocal"])
+        existing = sim.create_test_user("5491100001111", "Original")
+
+        sync_test_user(
+            in_memory_db["SessionLocal"],
+            phone="5491100001111",
+            name="Otro Nombre",
+            registered=True,
+        )
+
+        assert sim.get_user("5491100001111").id == existing.id
+
+    def test_unregistered_elimina_el_usuario(self, in_memory_db):
+        sim = UserSimulator(in_memory_db["SessionLocal"])
+        sim.create_test_user("5491100001111", "María")
+
+        sync_test_user(
+            in_memory_db["SessionLocal"],
+            phone="5491100001111",
+            name="María",
+            registered=False,
+        )
+
+        assert sim.get_user("5491100001111") is None
+
+    def test_unregistered_sin_usuario_no_falla(self, in_memory_db):
+        sync_test_user(
+            in_memory_db["SessionLocal"],
+            phone="9999999999",
+            name="Nadie",
+            registered=False,
+        )
 
 
 class TestDeleteUser:

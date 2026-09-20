@@ -10,7 +10,7 @@ import streamlit as st
 from streamlit.components.v1 import html as components_html
 
 from testing.components.debug_panel import render_debug
-from testing.config.settings import TestingConfig
+from testing.config.settings import ChatSession, TestingConfig
 from testing.services.webhook_mode import WebhookModeService
 
 
@@ -44,6 +44,29 @@ def export_as_text(messages: list[dict], include_debug: bool = False) -> str:
             debug_json = json.dumps(msg["debug"], ensure_ascii=False, indent=2)
             lines.append("\n".join(f"  {line}" for line in debug_json.splitlines()))
     return "\n".join(lines)
+
+
+def export_sessions_as_json(sessions: list[ChatSession]) -> str:
+    """Export every session (label, phone, registro y mensajes) as JSON."""
+    data = [
+        {
+            "label": session.label,
+            "phone": session.phone,
+            "user_registered": session.user_registered,
+            "messages": session.messages,
+        }
+        for session in sessions
+    ]
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def export_sessions_as_text(sessions: list[ChatSession], include_debug: bool = False) -> str:
+    """Export every session as text blocks separated by a blank line."""
+    blocks = []
+    for session in sessions:
+        body = export_as_text(session.messages, include_debug) or "(sin mensajes)"
+        blocks.append(f"=== {session.label} ({session.phone}) ===\n{body}")
+    return "\n\n".join(blocks)
 
 
 def copy_button_html(text: str, label: str) -> str:
@@ -114,7 +137,7 @@ def _get_prompt_path(config: TestingConfig) -> str:
     return f"testing/prompts/{config.prompt_path}"
 
 
-async def _process_message(text: str, config: TestingConfig) -> tuple[str, dict]:
+async def _process_message(text: str, config: TestingConfig, phone: str) -> tuple[str, dict]:
     """
     Procesa el mensaje a través del flujo completo del dispatcher (webhook).
 
@@ -123,7 +146,7 @@ async def _process_message(text: str, config: TestingConfig) -> tuple[str, dict]
     service = WebhookModeService()
     result = await service.send_message(
         text=text,
-        phone=config.phone,
+        phone=phone,
         provider=config.provider,
         prompt_path=_get_prompt_path(config),
         model=config.model,
@@ -145,8 +168,13 @@ async def _process_message(text: str, config: TestingConfig) -> tuple[str, dict]
 def render_chat(config: TestingConfig) -> None:
     """Render the chat interface and handle user input."""
 
+    session = config.active_session()
+    if session is None:
+        st.info("No hay sesión activa. Creá una en la sidebar.")
+        return
+
     # Display existing messages
-    for msg in st.session_state.messages:
+    for msg in session.messages:
         if msg["role"] == "assistant":
             with st.chat_message("assistant", avatar=bot_avatar()):
                 render_assistant_text(msg["content"])
@@ -165,7 +193,7 @@ def render_chat(config: TestingConfig) -> None:
     # Chat input
     if prompt := st.chat_input("Escribí un mensaje..."):
         # Add user message
-        st.session_state.messages.append({
+        session.messages.append({
             "role": "user",
             "content": prompt,
             "debug": {},
@@ -177,7 +205,7 @@ def render_chat(config: TestingConfig) -> None:
         with st.chat_message("assistant", avatar=bot_avatar()):
             with st.spinner("Procesando..."):
                 reply_text, debug_data = asyncio.run(
-                    _process_message(prompt, config)
+                    _process_message(prompt, config, session.phone)
                 )
 
             raw = debug_data.get("raw_json") or {}
@@ -194,7 +222,7 @@ def render_chat(config: TestingConfig) -> None:
             }
             render_debug(debug_data, flags)
 
-        st.session_state.messages.append({
+        session.messages.append({
             "role": "assistant",
             "content": reply_text or "Sin respuesta",
             "debug": debug_data,
@@ -202,9 +230,12 @@ def render_chat(config: TestingConfig) -> None:
 
     # Export buttons in sidebar
     with st.sidebar:
-        if st.session_state.messages:
+        has_active = bool(session.messages)
+        has_any = any(s.messages for s in config.sessions)
+        if has_active or has_any:
             st.subheader("Exportar")
-            json_data = export_as_json(st.session_state.messages)
+        if has_active:
+            json_data = export_as_json(session.messages)
             st.download_button(
                 "💾 JSON",
                 data=json_data,
@@ -212,7 +243,7 @@ def render_chat(config: TestingConfig) -> None:
                 mime="application/json",
                 key="export_json",
             )
-            text_data = export_as_text(st.session_state.messages)
+            text_data = export_as_text(session.messages)
             st.download_button(
                 "📄 Texto",
                 data=text_data,
@@ -222,6 +253,25 @@ def render_chat(config: TestingConfig) -> None:
             )
             render_copy_button(text_data, "📋 Copiar conversación")
             render_copy_button(
-                export_as_text(st.session_state.messages, include_debug=True),
+                export_as_text(session.messages, include_debug=True),
                 "🐞 Copiar con debug",
+            )
+        if has_any:
+            st.download_button(
+                "💾 JSON (todas)",
+                data=export_sessions_as_json(config.sessions),
+                file_name="luka_test_sessions.json",
+                mime="application/json",
+                key="export_all_json",
+            )
+            st.download_button(
+                "📄 Texto (todas)",
+                data=export_sessions_as_text(config.sessions),
+                file_name="luka_test_sessions.txt",
+                mime="text/plain",
+                key="export_all_text",
+            )
+            render_copy_button(
+                export_sessions_as_text(config.sessions, include_debug=True),
+                "🐞 Copiar todas con debug",
             )

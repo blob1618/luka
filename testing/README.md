@@ -11,17 +11,23 @@ El entorno vive dentro de `testing/` y se levanta únicamente con Docker o Podma
   - Provider LLM (Gemini o Mistral, según los providers registrados en el factory).
   - Archivo de prompt (`prompts/core_prompt.md` por defecto; el selector lista los `.md` del repo en `prompts/` y los de `testing/prompts/`).
   - Modelo (lista por provider, el primer item es el default).
-  - Usuario simulado: toggle registrado/no registrado, teléfono y nombre.
-- Simulador de usuario: si el toggle "Registrado" está activo, se crea en la base de datos el usuario de test con el teléfono y nombre configurados (via `UserSimulator`). Con el toggle apagado se puede probar el flujo de usuario no registrado.
+  - Sesiones (ver abajo).
+- Sesiones: cada sesión simula un número distinto y tiene su propio teléfono y su propia conversación visible, sin mezclar mensajes entre números. Desde la sidebar se puede:
+  - Crear una nueva sesión con etiqueta, teléfono, nombre y "Ya registrado" (el teléfono no puede repetirse).
+  - Cambiar la sesión activa con el selector, sin tocar los mensajes de las demás.
+  - Vincular o desvincular la sesión activa (checkbox "Vinculado"): al vincular se crea el usuario de test en la base y al desvincular se borran sus datos (via `UserSimulator`).
+  - Eliminar la sesión activa (solo si hay más de una); no borra el usuario de la base.
 - Modos de debug, activables por checkboxes, visibles en un panel desplegable por mensaje:
   - JSON crudo de la respuesta del LLM.
   - Latencia de procesamiento en milisegundos.
   - Estado de Redis (estado multi-turno de la conversación).
   - Memoria conversacional: últimos turnos guardados en Redis y su TTL.
   - Servicio invocado / logs del dispatcher.
-- Reset de base de datos: borra movimientos, categorías y recordatorios del usuario de test (el usuario se conserva).
-- Exportar la conversación como JSON o texto plano, y copiarla al portapapeles con o sin datos de debug.
+- Reset de base de datos: borra movimientos, categorías y recordatorios del usuario de la sesión activa (el usuario se conserva).
+- Exportar la conversación de la sesión activa como JSON o texto plano, y copiarla al portapapeles con o sin datos de debug. También se pueden exportar todas las sesiones (JSON y texto, más copiar con debug) para comparar el aislamiento de la memoria Redis entre números.
 - Base de datos SQLite aislada (`testing_luka.db`): no toca la base local (`luka.db`) ni Supabase.
+
+> Las sesiones viven en el estado de la app de Streamlit: un refresh las pierde (la app vuelve a crear "Sesión 1"), aunque los usuarios y movimientos quedan en SQLite y la memoria conversacional en Redis. El flujo de usuario no registrado se prueba hasta el link de registro: la respuesta arma la URL con `ONBOARDING_REGISTRATION_URL`, pero `/registro` no existe en este repositorio, así que no hay pantalla de alta detrás del link.
 
 ## Requisitos iniciales
 
