@@ -39,6 +39,7 @@ El flujo oficial de alta/vinculación de usuarios, las categorías default o per
 - `app/services/finance.py`: validación y persistencia de movimientos financieros y otras reglas de negocio.
 - `app/services/limit.py`: CRUD y validación de límites mensuales por categoría.
 - `app/services/budget.py`: cálculo de consumo, disponibilidad, porcentaje y exceso.
+- `app/services/telemetry.py`: medición por mensaje de latencia total y fases del pipeline.
 - `app/models/database.py`: engine, sesión y modelos SQLAlchemy.
 - `tests/`: tests del backend.
 - `testing/`: entorno de testing de WhatsApp en Streamlit contra el mismo backend, se inicia solo con Docker o Podman (ver `testing/README.md`).
@@ -98,8 +99,10 @@ El repositorio usa Supabase CLI y migraciones timestamped en `supabase/migration
 
 - La deduplicación por `whatsapp_message_id` evita insertar dos filas. Cuando Meta reenvía un mensaje ya persistido, el reintento se procesa en silencio: la respuesta visible se suprime porque la confirmación ya se envió en la primera entrega.
 - Los índices productivos de usuarios y movimientos, incluido el índice único parcial de `whatsapp_message_id`, deben verificarse en Supabase. El contrato versionado puede contenerlos sin que eso pruebe su aplicación remota.
-- El flujo completo puede tardar aproximadamente entre 5 y 10 segundos por la suma de LLM, base de datos, API de WhatsApp y hosting.
-- Faltan métricas de latencia por etapa e investigación sobre typing indicator o mark as read en WhatsApp Business API.
+- `POST /webhook` confirma la recepción inmediatamente y procesa mensajes de texto e interactivos con `BackgroundTasks`. Este mecanismo corre dentro del mismo proceso y no es durable: si el worker cae después del HTTP 200, el trabajo pendiente no se recupera. Una garantía de entrega requerirá una cola durable u outbox en una tarea posterior.
+- Al comenzar el procesamiento en segundo plano se intenta enviar la reacción `⏳` al mensaje original. Es una señal de mejor esfuerzo, con timeout HTTP de 3 segundos; su falla queda registrada y no interrumpe el procesamiento financiero.
+- Cada mensaje genera logs `[BACKGROUND_MESSAGE]` y `[METRICS]` con `message_id`, estado, latencia total y las fases presentes: `reaction_ms`, `redis_ms`, `llm_ms`, `db_ms` y `reply_ms`. No registrar cuerpo del mensaje, teléfono completo, montos ni otras credenciales o datos personales.
+- Las métricas actuales viven en logs. Todavía no existe almacenamiento histórico, dashboard ni alertas automáticas para percentiles de latencia o tasas de error.
 - Quedan pendientes rate limiting, protección frente al abuso de tokens y optimizaciones para evitar llamadas innecesarias al LLM: validar usuarios y duplicados antes del LLM y usar un pre-router para saludos o mensajes fuera de alcance.
 
 ## Verificar cambios
