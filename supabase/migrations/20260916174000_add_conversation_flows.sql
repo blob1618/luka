@@ -1,4 +1,4 @@
--- Mensajes y recorridos administrables para HU-FLU-01 / STK-168.
+-- Mensajes y recorridos administrables.
 -- El backend es el unico escritor. RLS queda habilitado sin policies publicas.
 
 CREATE TABLE public.conversation_flow (

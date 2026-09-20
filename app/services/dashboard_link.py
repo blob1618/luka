@@ -81,7 +81,7 @@ def _login_url_from_frontend_host(onboarding_url: str | None) -> str:
 class DashboardLinkService:
     """Genera enlaces mágicos de acceso al dashboard para usuarios ya vinculados.
 
-    Independiente de OnboardingService (STK-143/144), que sólo cubre altas
+    Independiente de OnboardingService, que sólo cubre altas
     nuevas: acá el usuario ya tiene `usuario.auth_user_id` asignado y sólo
     necesita una forma de volver a entrar desde WhatsApp.
     """

@@ -79,8 +79,8 @@ Ver [testing/README.md](testing/README.md) para la guía completa.
 | Deploy en Render | https://luka-f2nb.onrender.com |
 | DeepWiki - Overview | https://deepwiki.com/blob1618/luka/1-luka-overview |
 | DeepWiki - Arquitectura | https://deepwiki.com/blob1618/luka/2-core-architecture |
-| Guía de base de datos | `SUPABASE_SETUP.md` |
-| Notas de base de datos | `docs/database.md` |
-| Guía de deploy en Render | `RENDER_DEPLOYMENT.md` |
-| Guía para desarrolladores | `docs/developer-guide.md` |
-| Arquitectura MVP | `docs/architecture.md` |
+| Guía de base de datos | `docs/database.md` |
+| Arquitectura | `docs/architecture.md` |
+| Funcionalidades | `docs/features.md` |
+| Flujos de conversación | `docs/conversation-flows.md` |
+| Guía de desarrollo (setup, tests y deploy) | `docs/development.md` |

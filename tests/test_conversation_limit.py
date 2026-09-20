@@ -1,4 +1,4 @@
-"""Tests para el estado multi-turno de límites de gasto (STK-46)."""
+"""Tests para el estado multi-turno de límites de gasto."""
 from decimal import Decimal
 
 import pytest

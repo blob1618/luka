@@ -11,6 +11,7 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 - **Estado de conversación y caché**: Redis (`app/services/conversation.py`).
 - **Tareas en segundo plano**: APScheduler (`app/scheduler.py`).
 - **Deploy**: Docker + Render.
+- **Documentación**: `docs/architecture.md`, `docs/features.md`, `docs/conversation-flows.md`, `docs/database.md` y `docs/development.md`.
 
 ## Organización del código
 
@@ -22,7 +23,7 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 - `app/services/reminder.py`: recordatorios (CRUD, título único, multi-turno).
 - `app/services/conversation.py`: estado multi-turno en Redis (confirmación de categoría, recordatorio pendiente, rename).
 - `app/models/database.py`: engine, sesión y todos los modelos SQLAlchemy (un solo archivo).
-- `app/scheduler.py`: jobs en background cada 5 min: recordatorios de pago y recordatorio proactivo diario (STK-60: a la hora `PROACTIVE_PROMPT_HOUR`, solo dentro de la ventana de 24h, a usuarios con `proactivo_habilitado` que no registraron movimientos hoy; máximo uno por día).
+- `app/scheduler.py`: jobs en background cada 5 min: recordatorios de pago y recordatorio proactivo diario (a la hora `PROACTIVE_PROMPT_HOUR`, solo dentro de la ventana de 24h, a usuarios con `proactivo_habilitado` que no registraron movimientos hoy; máximo uno por día).
 - `testing/`: entorno de testing aislado. App Streamlit (`testing/streamlit_app.py`) que simula el flujo de WhatsApp de Luka contra el mismo backend, con sidebar de configuración (provider/modelo LLM, simular usuario registrado, phone, nombre), paneles de debug (JSON del LLM, latencia, estado Redis, logs del dispatcher), simulador de usuario y reset de DB. Usa una DB SQLite aislada (`sqlite:///./testing_luka.db`). Solo se levanta con Docker/Podman (`testing/docker-compose.yml` + `testing/Dockerfile`, servicios `streamlit` en `:8501` y `redis` en `:6380`); tiene sus propios tests en `testing/tests/` y sus dependencias en `testing/requirements.txt`. Logos en `testing/public/`.
 
 ## Guías de ingeniería
@@ -43,7 +44,7 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 - Flujo: WhatsApp webhook -> `LLMService` -> `FinanceService` -> `public.movimientos_financieros` -> respuesta.
 - `intent="expense"` se conserva por compatibilidad; `movement_type` define `ingreso`/`egreso`.
 - Confirmar el registro solo tras una persistencia exitosa; nunca confiar en `reply_text` del LLM.
-- Requiere usuario previamente registrado y vinculado por `whatsapp_id`; STK-35 no crea usuarios.
+- Requiere usuario previamente registrado y vinculado por `whatsapp_id`; el registro por texto no crea usuarios.
 - `categoria_id` solo si existe una categoría activa del usuario; si no, queda `null`. No crear categorías automáticamente.
 - No persistir como movimientos los intents `greeting`, `out_of_scope`, `reminder`, `budget_query`, `expense_summary`.
 - No asumir que una migración versionada o el snapshot local prueban el estado aplicado en Supabase; comprobar el historial con `supabase migration list` y verificar los objetos afectados en remoto.
@@ -53,34 +54,32 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 - **Redis es opcional en local pero obligatorio para multi-turno**: `ConversationService` crea su propio cliente (separado del `redis_client` global de `main.py`) y ante fallo logs y devuelve estado vacío (degradación silenciosa). Los flujos multi-turno (confirmación de categoría, creación de recordatorio en pasos, rename por título duplicado) dependen de Redis.
 - **Scheduler debe correr una sola vez, no por worker**: el `Dockerfile` usa `gunicorn -w 1 -k uvicorn.workers.UvicornWorker` a propósito. No agregar workers extras.
 - **`load_dotenv()` va ANTES de importar submódulos en `main.py`**; mantener ese orden si se tocan imports de `app.`.
-- En `main.py` hay dos ramas de dispatcher (STK-39 v2 con hint de categoría y el flujo legacy) que pueden superponerse; al tocar el webhook revisar que el `intent` no se procese dos veces.
+- En `main.py` hay dos ramas de dispatcher (con hint de categoría y el flujo legacy) que pueden superponerse; al tocar el webhook revisar que el `intent` no se procese dos veces.
 - **Streamlit NO está en el `requirements.txt` raíz**: solo vive en `testing/requirements.txt` (que incluye `-r ../requirements.txt` + streamlit). El entorno de testing se levanta únicamente con Docker/Podman; no correr `streamlit run` local con pip.
 - **`testing/streamlit_app.py` hardcodea `DATABASE_URL=sqlite:///./testing_luka.db`** (sobreescribe el `.env`). Es una DB SQLite aislada del entorno productivo (el compose la setea de nuevo en `environment`).
 - **El docker-compose del testing requiere `.env` en la raíz**: usa `env_file: ../.env`; sin ese archivo el compose falla.
-- **Los logos viven solo en `testing/public/`**: `_public_asset()` en `testing/components/` (chat.py y sidebar.py) resuelve `Path(__file__).resolve().parent.parent / "public"`, es decir `testing/public/`. No existe carpeta `public/` en la raíz del repo.
+- **Los logos del entorno de testing viven en `testing/public/`**: `_public_asset()` en `testing/components/` (chat.py y sidebar.py) resuelve `Path(__file__).resolve().parent.parent / "public"`, es decir `testing/public/`. La carpeta `public/` de la raíz es la del README (`logo-luka-texto.png`, `hero-readme.jpg`) y no la usa el entorno de testing.
 - **Los tests del entorno de testing viven en `testing/tests/`** (no en `tests/`).
 
 ## Verificar cambios
 
-- Usar el runner aislado de `.codex\dev.py`; no ejecutar `pytest` directamente porque
-  podría cargar `.env` o intentar conectarse a infraestructura real.
 - Durante el desarrollo, ejecutar primero el ciclo rápido:
 
-```powershell
-python -I .codex\dev.py test -q -m unit
+```bash
+python -m pytest -q -m unit
 ```
 
 - Para cambios en webhook o idempotencia, ejecutar la regresión focalizada:
 
-```powershell
-python -I .codex\dev.py test -q tests/test_webhook.py tests/test_webhook_idempotency.py --durations=40
+```bash
+python -m pytest -q tests/test_webhook.py tests/test_webhook_idempotency.py --durations=40
 ```
 
 - Antes de integrar, ejecutar el gate completo:
 
-```powershell
-python -I .codex\dev.py lint
-python -I .codex\dev.py verify
+```bash
+ruff check .
+python -m pytest -v
 ```
 
 - Los tests no requieren red real. `tests/conftest.py` provee Redis en memoria y

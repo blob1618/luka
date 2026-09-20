@@ -341,7 +341,7 @@ async def test_process_message_expense_summary():
 
 @pytest.mark.asyncio
 async def test_process_message_query_movements():
-    """Prueba: El bot reconoce y normaliza una consulta de movimientos (STK-149)."""
+    """Prueba: El bot reconoce y normaliza una consulta de movimientos."""
     mock_response = {
         "intent": "query_movements",
         "movement_type": "egreso",
@@ -405,7 +405,7 @@ async def test_process_message_forwards_recent_history_to_provider():
 
 @pytest.mark.asyncio
 async def test_list_response_no_crash_and_asks_reformulate():
-    """STK-158: respuesta lista no crashea; pide reformular sin perder el mensaje."""
+    """Respuesta lista no crashea; pide reformular sin perder el mensaje."""
     mock_response = [{"intent": "expense", "amount": 50000}]
     result = await _process_message_with_mock_response(mock_response)
     assert result["intent"] == "out_of_scope"
@@ -415,7 +415,7 @@ async def test_list_response_no_crash_and_asks_reformulate():
 
 @pytest.mark.asyncio
 async def test_list_response_retry_recovers_object():
-    """STK-158: primer intento lista, retry devuelve dict -> se procesa normal."""
+    """Primer intento lista, retry devuelve dict -> se procesa normal."""
     calls = {"n": 0}
 
     async def fake_generate_json(*args, **kwargs):
@@ -593,7 +593,7 @@ def test_reset_provider_clears_cached_instance():
 
 
 # =============================================================================
-# Tests de carga de prompt (STK-181)
+# Tests de carga de prompt
 # =============================================================================
 
 @pytest.mark.asyncio
@@ -628,7 +628,7 @@ async def test_system_prompt_fallback_on_missing_explicit_file():
 
 
 def test_system_prompt_default_loads_core_prompt(monkeypatch):
-    """Prueba STK-181: Por defecto, busca prompts/core_prompt.md antes de prompt.md."""
+    """Prueba: Por defecto, busca prompts/core_prompt.md antes de prompt.md."""
     LLMService._system_prompt = None
     LLMService.set_prompt_path(None)
     monkeypatch.delenv("SYSTEM_PROMPT_PATH", raising=False)
@@ -640,7 +640,7 @@ def test_system_prompt_default_loads_core_prompt(monkeypatch):
 
 
 def test_system_prompt_default_fallback_to_legacy_when_core_missing(monkeypatch):
-    """Prueba STK-181: Si core_prompt.md no existe, recurre a prompt.md."""
+    """Prueba: Si core_prompt.md no existe, recurre a prompt.md."""
     LLMService._system_prompt = None
     LLMService.set_prompt_path(None)
     monkeypatch.delenv("SYSTEM_PROMPT_PATH", raising=False)
@@ -659,7 +659,7 @@ def test_system_prompt_default_fallback_to_legacy_when_core_missing(monkeypatch)
 
 
 def test_system_prompt_default_fallback_to_internal_when_both_missing(monkeypatch):
-    """Prueba STK-181: Si ni core_prompt.md ni prompt.md existen, usa fallback interno."""
+    """Prueba: Si ni core_prompt.md ni prompt.md existen, usa fallback interno."""
     LLMService._system_prompt = None
     LLMService.set_prompt_path(None)
     monkeypatch.delenv("SYSTEM_PROMPT_PATH", raising=False)
@@ -671,7 +671,7 @@ def test_system_prompt_default_fallback_to_internal_when_both_missing(monkeypatc
 
 
 def test_system_prompt_env_var_override(tmp_path, monkeypatch):
-    """Prueba STK-181: SYSTEM_PROMPT_PATH tiene precedencia sobre la búsqueda por defecto."""
+    """Prueba: SYSTEM_PROMPT_PATH tiene precedencia sobre la búsqueda por defecto."""
     custom_prompt = tmp_path / "custom_prompt.md"
     custom_prompt.write_text("Prompt personalizado por env", encoding="utf-8")
 

@@ -405,7 +405,7 @@ class TestDispatcherQueryIntegration:
 
     @pytest.mark.asyncio
     async def test_process_incoming_message_normalizes_period_summary_to_query_movements(self):
-        """STK-153: 'resumen de gastos de septiembre' no cae en legacy expense_summary sino en query_movements."""
+        """'resumen de gastos de septiembre' no cae en legacy expense_summary sino en query_movements."""
         u_id = uuid.uuid4()
         m1 = make_movement(tipo="egreso", cantidad=Decimal("3500"), descripcion="Gasto Septiembre", fecha=date(2026, 9, 10))
         fake_result = MovementQueryResult(status="ok", message="ok", movements=[m1], total_found=1)

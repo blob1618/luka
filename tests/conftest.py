@@ -1,4 +1,4 @@
-"""Global test fixtures and isolation for STK-220."""
+"""Global test fixtures and isolation."""
 
 from datetime import timedelta
 import sys

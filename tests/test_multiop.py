@@ -58,7 +58,7 @@ async def test_invalid_movement_in_list_is_normalized_not_dropped_silently():
 
 @pytest.mark.asyncio
 async def test_single_movement_in_list_reply_not_none_amount(monkeypatch):
-    """STK-157: un solo movimiento dentro de movements[] (sin monto en la raíz)
+    """Un solo movimiento dentro de movements[] (sin monto en la raíz)
     debe responder con el monto real del movimiento, no '$None'."""
     monkeypatch.setattr(
         FinanceService,

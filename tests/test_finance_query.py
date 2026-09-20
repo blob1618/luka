@@ -97,7 +97,7 @@ def create_movement(
 
 
 class TestFinanceQueryUserIsolation:
-    """Verifica el aislamiento estricto entre usuarios (criterio crítico STK-150)."""
+    """Verifica el aislamiento estricto entre usuarios (criterio crítico)."""
 
     def test_query_movements_isolates_user_data(self, db_context):
         session = db_context["session"]
@@ -210,7 +210,7 @@ class TestFinanceQueryReadOnly:
         assert session.query(LimiteCategoria).count() == count_lim_before
 
     def test_query_movements_strict_financial_immutability(self, db_context):
-        """STK-153: Comprueba que ningún atributo financiero mute, usando valores escalares en sesión fresca."""
+        """Comprueba que ningún atributo financiero mute, usando valores escalares en sesión fresca."""
         session = db_context["session"]
         session_factory = db_context["session_factory"]
         user = create_user(session)
@@ -283,7 +283,7 @@ class TestFinanceQueryReadOnly:
 
 
 class TestFinanceQueryFilters:
-    """Verifica el filtrado por tipo, categoría, rango de fechas y límites (STK-149/150)."""
+    """Verifica el filtrado por tipo, categoría, rango de fechas y límites."""
 
     def test_filter_by_movement_type(self, db_context):
         session = db_context["session"]
@@ -359,7 +359,7 @@ class TestFinanceQueryFilters:
         assert res_invalido.status == "invalid_filters"
 
     def test_max_limit_enforced_to_five(self, db_context):
-        """STK-149 exige como máximo 5 movimientos en la respuesta."""
+        """Exige como máximo 5 movimientos en la respuesta."""
         session = db_context["session"]
         user = create_user(session)
 
@@ -441,7 +441,7 @@ class TestFinanceQueryFilters:
         assert [m.id for m in res1.movements] == [m.id for m in res2.movements]
 
     def test_filter_by_date_range_exact_boundaries(self, db_context):
-        """STK-153: Verifica límites de período con movimientos dentro y fuera del rango."""
+        """Verifica límites de período con movimientos dentro y fuera del rango."""
         session = db_context["session"]
         user = create_user(session)
 
@@ -477,7 +477,7 @@ class TestFinanceQueryFilters:
         assert res_single.movements[0].descripcion == "Start"
 
     def test_query_movements_combined_filters_with_mixed_tenant_data(self, db_context):
-        """STK-153: Integración real con datos mezclados que combina período, tipo, categoría y aislamiento multi-tenant."""
+        """Integración real con datos mezclados que combina período, tipo, categoría y aislamiento multi-tenant."""
         session = db_context["session"]
         user_a = create_user(session, whatsapp_id="5491100000001")
         user_b = create_user(session, whatsapp_id="5491100000002")
@@ -527,7 +527,7 @@ class TestFinanceQueryFilters:
         assert mov.cantidad == Decimal("500")
 
     def test_query_movements_database_exception_returns_error_status(self, db_context):
-        """STK-153: Falla de base de datos controlada retorna status='error' sin propagar excepción."""
+        """Falla de base de datos controlada retorna status='error' sin propagar excepción."""
         from unittest.mock import MagicMock
         broken_session = MagicMock()
         broken_session.query.side_effect = RuntimeError("database disk failure")

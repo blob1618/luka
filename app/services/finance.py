@@ -544,7 +544,7 @@ class FinanceService:
             session.close()
 
     # ------------------------------------------------------------------
-    # STK-39: Gestión de categorías
+    # Gestión de categorías
     # ------------------------------------------------------------------
 
     @classmethod
@@ -912,7 +912,7 @@ class FinanceService:
     ) -> MovementQueryResult:
         """Consulta movimientos financieros con filtros deterministas y aislamiento estricto por usuario.
 
-        Contrato STK-150 / STK-149:
+        Contrato de consulta de movimientos:
         - Requiere usuario válido y filtra exclusivamente por su user_id.
         - Filtros opcionales: tipo ('ingreso'/'egreso'), categoría (por id o nombre), y rango de fechas.
         - Ordenamiento determinista: fecha_movimiento DESC, creado_en DESC.

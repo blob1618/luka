@@ -1,4 +1,4 @@
-"""Tests for FakeRedis and test isolation fixtures (STK-220)."""
+"""Tests for FakeRedis and test isolation fixtures."""
 
 import socket
 import pytest

@@ -192,7 +192,7 @@ def create_movement(
 
 
 class TestWebhookQueryMovementsIntegration:
-    """Pruebas end-to-end de STK-151: consulta de movimientos por el webhook de WhatsApp."""
+    """Pruebas end-to-end de consulta de movimientos por el webhook de WhatsApp."""
 
     def test_ca1_single_visible_response_and_ca2_no_data_modification(self, db_context):
         """CA 1: Una interacción genera como máximo una respuesta visible.
@@ -281,8 +281,8 @@ class TestWebhookQueryMovementsIntegration:
             assert "RuntimeError" not in reply_text
             assert "Traceback" not in reply_text
 
-    def test_unknown_user_derived_to_stk139_onboarding(self, db_context):
-        """Deriva usuarios desconocidos a STK-139 / STK-144 sin consultar finanzas ni LLM."""
+    def test_unknown_user_derived_to_onboarding(self, db_context):
+        """Deriva usuarios desconocidos al onboarding sin consultar finanzas ni LLM."""
         unknown_phone = "5491199998888"
         payload = make_webhook_payload("mis ultimos gastos", sender_phone=unknown_phone)
 
@@ -437,7 +437,7 @@ class TestWebhookQueryMovementsIntegration:
             )
 
     def test_webhook_query_movements_offers_dashboard_link_when_more_found(self, db_context):
-        """STK-152: Ofrece enlace canónico al dashboard cuando total_found > cantidad_mostrada (5)."""
+        """Ofrece enlace canónico al dashboard cuando total_found > cantidad_mostrada (5)."""
         session = db_context["session"]
         # Usuario vinculado con auth_user_id
         linked_auth_id = uuid.uuid4()
@@ -493,7 +493,7 @@ class TestWebhookQueryMovementsIntegration:
             assert "5491100000001" not in reply
 
     def test_webhook_query_movements_no_link_when_total_found_lte_displayed(self, db_context):
-        """STK-152: No ofrece enlace al dashboard cuando total_found <= cantidad_mostrada (<= 5)."""
+        """No ofrece enlace al dashboard cuando total_found <= cantidad_mostrada (<= 5)."""
         session = db_context["session"]
         user = create_user(session, whatsapp_id="5491100000001", auth_user_id=uuid.uuid4())
 
@@ -527,7 +527,7 @@ class TestWebhookQueryMovementsIntegration:
             assert "Ver este período en tu dashboard" not in reply
 
     def test_webhook_query_movements_linked_user_no_dates_omits_link_when_more_found(self, db_context):
-        """STK-152: Usuario vinculado con más de 5 resultados pero sin fechas: no debe generarse enlace."""
+        """Usuario vinculado con más de 5 resultados pero sin fechas: no debe generarse enlace."""
         session = db_context["session"]
         user = create_user(session, whatsapp_id="5491100000001", auth_user_id=uuid.uuid4())
 
@@ -560,7 +560,7 @@ class TestWebhookQueryMovementsIntegration:
             assert "Ver este período en tu dashboard" not in reply
 
     def test_webhook_query_movements_unlinked_user_omits_link_when_more_found(self, db_context):
-        """STK-152: Usuario no vinculado (NOT_ELIGIBLE) recibe movimientos pero se omite el enlace silenciosamente."""
+        """Usuario no vinculado (NOT_ELIGIBLE) recibe movimientos pero se omite el enlace silenciosamente."""
         session = db_context["session"]
         # Usuario sin auth_user_id
         user = create_user(session, whatsapp_id="5491100000001", auth_user_id=None)
@@ -599,7 +599,7 @@ class TestWebhookQueryMovementsIntegration:
             assert "Ver este período en tu dashboard" not in reply
 
     def test_webhook_query_movements_registered_user_zero_movements(self, db_context):
-        """STK-153: Webhook integral para un usuario registrado sin movimientos."""
+        """Webhook integral para un usuario registrado sin movimientos."""
         session = db_context["session"]
         create_user(session, whatsapp_id="5491100000001", auth_user_id=uuid.uuid4())
 
@@ -631,7 +631,7 @@ class TestWebhookQueryMovementsIntegration:
             mock_link.assert_not_called()
 
     def test_webhook_query_movements_strict_financial_immutability(self, db_context):
-        """STK-153: Verificación fuerte de inmutabilidad financiera en webhook integral con sesión fresca y escalares."""
+        """Verificación fuerte de inmutabilidad financiera en webhook integral con sesión fresca y escalares."""
         session = db_context["session"]
         session_factory = db_context["session_factory"]
         user = create_user(session, whatsapp_id="5491100000001", auth_user_id=uuid.uuid4())
@@ -718,7 +718,7 @@ class TestWebhookQueryMovementsIntegration:
             assert snapshot_after == snapshot_before
 
     def test_period_summary_phrase_normalizes_to_query_movements_not_legacy_summary_or_register(self, db_context):
-        """STK-153: Frase inequívoca como 'resumen de gastos de septiembre' se normaliza a query_movements,
+        """Frase inequívoca como 'resumen de gastos de septiembre' se normaliza a query_movements,
         conserva filtros temporales, no cae en el flujo legacy expense_summary y no registra movimientos.
         """
         session = db_context["session"]

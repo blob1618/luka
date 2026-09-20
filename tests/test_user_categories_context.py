@@ -1,4 +1,4 @@
-"""Tests for STK-160: inyección de categorías del usuario en el contexto del LLM."""
+"""Tests de inyección de categorías del usuario en el contexto del LLM."""
 
 import uuid
 from unittest.mock import AsyncMock, patch
