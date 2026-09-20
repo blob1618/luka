@@ -297,7 +297,7 @@ local existing = redis.call('LRANGE', key, -max_turns, -1)
 if message_id ~= '' then
   for _, entry in ipairs(existing) do
     local ok, decoded = pcall(cjson.decode, entry)
-    if ok and decoded['user'] and decoded['user']['id'] == message_id then
+if type(decoded) == 'table' and type(decoded['user']) == 'table' and decoded['user']['id'] == message_id then
       return 0
     end
   end
