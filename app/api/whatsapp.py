@@ -1,3 +1,4 @@
+import inspect
 import os
 import re
 from dataclasses import dataclass
@@ -266,6 +267,48 @@ def _optional_bounded_text(
         _bounded_text(value, field=field, minimum=1, maximum=maximum)
 
 
+_whatsapp_client: httpx.AsyncClient | None = None
+
+
+def _is_client_closed(client: httpx.AsyncClient) -> bool:
+    is_closed = getattr(client, "is_closed", False)
+    if isinstance(is_closed, bool):
+        return is_closed
+    return False
+
+
+def get_whatsapp_client() -> httpx.AsyncClient:
+    """Return a shared httpx.AsyncClient configured for WhatsApp API calls.
+
+    Reuses the existing client if open; recreates it if None or closed.
+    """
+    global _whatsapp_client
+    if _whatsapp_client is None or _is_client_closed(_whatsapp_client):
+        _whatsapp_client = httpx.AsyncClient(
+            limits=httpx.Limits(
+                max_keepalive_connections=10,
+                max_connections=20,
+                keepalive_expiry=30.0,
+            ),
+            timeout=5.0,
+        )
+    return _whatsapp_client
+
+
+async def close_whatsapp_client() -> None:
+    """Safely and idempotently close the shared WhatsApp httpx.AsyncClient."""
+    global _whatsapp_client
+    if _whatsapp_client is not None:
+        client = _whatsapp_client
+        _whatsapp_client = None
+        if not _is_client_closed(client):
+            aclose = getattr(client, "aclose", None)
+            if callable(aclose):
+                res = aclose()
+                if inspect.isawaitable(res):
+                    await res
+
+
 async def send_whatsapp_message(
     to_number: str,
     message_text: str | OutboundWhatsAppMessage | None = None,
@@ -301,7 +344,8 @@ async def send_whatsapp_message(
         "Content-Type": "application/json",
     }
 
-    async with httpx.AsyncClient() as client:
+    client = get_whatsapp_client()
+    try:
         response = await client.post(url, headers=headers, json=payload)
         if response.status_code != 200:
             print(f"Error al enviar el mensaje: {response.text}")
@@ -309,6 +353,9 @@ async def send_whatsapp_message(
 
         print(f"Mensaje enviado a {payload['to']}")
         return True
+    except Exception as exc:
+        print(f"Excepción al enviar el mensaje de WhatsApp: {type(exc).__name__}")
+        return False
 
 
 async def send_whatsapp_reaction(
@@ -350,12 +397,12 @@ async def send_whatsapp_reaction(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            response = await client.post(url, headers=headers, json=payload)
-            if response.status_code != 200:
-                print(f"Error al enviar la reacción: {response.status_code}")
-                return False
-            return True
+        client = get_whatsapp_client()
+        response = await client.post(url, headers=headers, json=payload)
+        if response.status_code != 200:
+            print(f"Error al enviar la reacción: {response.status_code}")
+            return False
+        return True
     except Exception as exc:
         print(f"Excepción al enviar la reacción de WhatsApp: {type(exc).__name__}")
         return False

@@ -2,6 +2,7 @@ import logging
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+import pytest_asyncio
 from fastapi.testclient import TestClient
 
 from app.main import _process_inbound_message_background, app
@@ -40,6 +41,31 @@ def no_pending_conversation_flows(monkeypatch):
         "app.services.webhook_idempotency.WebhookIdempotencyService.release",
         AsyncMock(return_value=True),
     )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def cleanup_pending_reaction_tasks():
+    import asyncio
+    from app.api.whatsapp import close_whatsapp_client
+    from app.main import _pending_reaction_tasks
+
+    if _pending_reaction_tasks:
+        tasks = list(_pending_reaction_tasks)
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        _pending_reaction_tasks.clear()
+    await close_whatsapp_client()
+
+    yield
+
+    if _pending_reaction_tasks:
+        tasks = list(_pending_reaction_tasks)
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        _pending_reaction_tasks.clear()
+    await close_whatsapp_client()
 
 
 def make_webhook_payload(messages=None, statuses=None):
@@ -310,32 +336,40 @@ class TestProcessInboundMessageBackground:
 
     @pytest.mark.asyncio
     async def test_reaction_is_sent_before_processing_for_text_message(self, caplog):
+        import asyncio
         caplog.set_level(logging.INFO, logger="luka.metrics")
         msg = make_text_message(msg_id="wamid.react.text")
         fake_redis = MagicMock()
-        call_order = []
+        reaction_blocked = asyncio.Event()
+        process_started = asyncio.Event()
 
-        async def mock_reaction(*args, **kwargs):
-            call_order.append("reaction")
+        async def slow_reaction(*args, **kwargs):
+            await reaction_blocked.wait()
             return True
 
         async def mock_process(*args, **kwargs):
-            call_order.append("process")
+            process_started.set()
             return "completed"
 
         with (
-            patch("app.main.send_whatsapp_reaction", side_effect=mock_reaction) as mock_react,
+            patch("app.main.send_whatsapp_reaction", side_effect=slow_reaction) as mock_react,
             patch("app.main.process_text_message_once", side_effect=mock_process) as mock_proc,
         ):
-            await _process_inbound_message_background(msg, fake_redis)
+            task = asyncio.create_task(_process_inbound_message_background(msg, fake_redis))
 
-        assert call_order == ["reaction", "process"]
+            # Domain processing starts immediately while reaction HTTP call is still pending
+            await asyncio.wait_for(process_started.wait(), timeout=1.0)
+            assert not reaction_blocked.is_set()
+
+            reaction_blocked.set()
+            await asyncio.wait_for(task, timeout=1.0)
+
+        mock_proc.assert_awaited_once()
         mock_react.assert_awaited_once_with(
             to_number="5491112345678",
             message_id="wamid.react.text",
             emoji="⏳",
         )
-        mock_proc.assert_awaited_once()
 
         # Telemetry verification
         assert "[METRICS]" in caplog.text
@@ -345,6 +379,7 @@ class TestProcessInboundMessageBackground:
 
     @pytest.mark.asyncio
     async def test_reaction_is_sent_for_interactive_message(self):
+        import asyncio
         msg = make_interactive_message(option_id="opt_1", msg_id="wamid.react.inter")
         fake_redis = MagicMock()
 
@@ -353,6 +388,7 @@ class TestProcessInboundMessageBackground:
             patch("app.main.process_interactive_message_once", new_callable=AsyncMock, return_value="completed"),
         ):
             await _process_inbound_message_background(msg, fake_redis)
+            await asyncio.sleep(0)
 
         mock_react.assert_awaited_once_with(
             to_number="5491112345678",
@@ -362,6 +398,7 @@ class TestProcessInboundMessageBackground:
 
     @pytest.mark.asyncio
     async def test_reaction_failure_does_not_abort_processing(self, caplog):
+        import asyncio
         caplog.set_level(logging.INFO)
         msg = make_text_message(msg_id="wamid.react.fail")
         fake_redis = MagicMock()
@@ -371,6 +408,7 @@ class TestProcessInboundMessageBackground:
             patch("app.main.process_text_message_once", new_callable=AsyncMock, return_value="completed") as mock_proc,
         ):
             await _process_inbound_message_background(msg, fake_redis)
+            await asyncio.sleep(0)
 
         mock_proc.assert_awaited_once()
         assert "reaction_failed" in caplog.text
@@ -393,7 +431,89 @@ class TestProcessInboundMessageBackground:
         assert "status=idempotency_unavailable" in caplog.text
 
     @pytest.mark.asyncio
+    async def test_lifespan_shutdown_cleans_pending_tasks_and_closes_client(self):
+        import asyncio
+        from app.main import _dispatch_whatsapp_reaction, _pending_reaction_tasks, lifespan, app
+
+        reaction_unblock = asyncio.Event()
+
+        async def hanging_reaction(*args, **kwargs):
+            await reaction_unblock.wait()
+            return True
+
+        with (
+            patch("app.main.start_scheduler"),
+            patch("app.main.send_whatsapp_reaction", side_effect=hanging_reaction),
+            patch("app.main.close_whatsapp_client", new_callable=AsyncMock) as mock_close_client,
+        ):
+            _dispatch_whatsapp_reaction("5491112345678", "wamid.hanging")
+            assert len(_pending_reaction_tasks) == 1
+
+            async with lifespan(app):
+                pass
+
+            assert len(_pending_reaction_tasks) == 0
+            mock_close_client.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_lifespan_shutdown_cleans_up_even_on_exception_in_body(self):
+        import asyncio
+        from app.main import _dispatch_whatsapp_reaction, _pending_reaction_tasks, lifespan, app
+
+        reaction_unblock = asyncio.Event()
+
+        async def hanging_reaction(*args, **kwargs):
+            await reaction_unblock.wait()
+            return True
+
+        mock_redis = AsyncMock()
+        with (
+            patch("app.main.start_scheduler"),
+            patch("app.main.redis.from_url", return_value=mock_redis),
+            patch("app.main.send_whatsapp_reaction", side_effect=hanging_reaction),
+            patch("app.main.close_whatsapp_client", new_callable=AsyncMock) as mock_close_client,
+        ):
+            _dispatch_whatsapp_reaction("5491112345678", "wamid.exc_test")
+            assert len(_pending_reaction_tasks) == 1
+
+            with pytest.raises(RuntimeError, match="Crash inside lifespan"):
+                async with lifespan(app):
+                    raise RuntimeError("Crash inside lifespan")
+
+            # Cleanup must still have occurred!
+            assert len(_pending_reaction_tasks) == 0
+            mock_close_client.assert_awaited_once()
+            mock_redis.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reaction_returned_false_logs_reaction_failed(self, caplog):
+        import asyncio
+        caplog.set_level(logging.INFO)
+        from app.main import _dispatch_whatsapp_reaction
+
+        with patch("app.main.send_whatsapp_reaction", new_callable=AsyncMock, return_value=False):
+            task = _dispatch_whatsapp_reaction("5491112345678", "wamid.false_test")
+            await asyncio.sleep(0)
+            assert task.done()
+            assert "reaction_failed" in caplog.text
+            assert "error=send_returned_false" in caplog.text
+            assert "message_id=wamid.false_test" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_reaction_exception_is_retrieved_and_not_leaked(self):
+        import asyncio
+        from app.main import _dispatch_whatsapp_reaction, _pending_reaction_tasks
+
+        with patch("app.main.send_whatsapp_reaction", new_callable=AsyncMock, side_effect=RuntimeError("Meta 500")):
+            task = _dispatch_whatsapp_reaction("5491112345678", "wamid.err")
+            await asyncio.sleep(0)
+            assert task.done()
+            assert task.exception() is None
+            assert task not in _pending_reaction_tasks
+
+    @pytest.mark.asyncio
     async def test_telemetry_records_all_pipeline_phases_end_to_end(self, caplog, monkeypatch):
+        import asyncio
         caplog.set_level(logging.INFO, logger="luka.metrics")
         msg = make_text_message(body="Gaste 5000 en supermercado", msg_id="wamid.full.pipeline")
 
@@ -443,6 +563,7 @@ class TestProcessInboundMessageBackground:
             patch("app.main.send_whatsapp_message", new_callable=AsyncMock, return_value=True) as mock_send,
         ):
             await _process_inbound_message_background(msg, fake_redis)
+            await asyncio.sleep(0)
 
         mock_react.assert_awaited_once()
         mock_send.assert_awaited_once()
