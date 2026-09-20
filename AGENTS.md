@@ -58,7 +58,7 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 - **Streamlit NO está en el `requirements.txt` raíz**: solo vive en `testing/requirements.txt` (que incluye `-r ../requirements.txt` + streamlit). El entorno de testing se levanta únicamente con Docker/Podman; no correr `streamlit run` local con pip.
 - **`testing/streamlit_app.py` hardcodea `DATABASE_URL=sqlite:///./testing_luka.db`** (sobreescribe el `.env`). Es una DB SQLite aislada del entorno productivo (el compose la setea de nuevo en `environment`).
 - **El docker-compose del testing requiere `.env` en la raíz**: usa `env_file: ../.env`; sin ese archivo el compose falla.
-- **Los logos viven solo en `testing/public/`**: `_public_asset()` en `testing/components/` (chat.py y sidebar.py) resuelve `Path(__file__).resolve().parent.parent / "public"`, es decir `testing/public/`. No existe carpeta `public/` en la raíz del repo.
+- **Los logos del entorno de testing viven en `testing/public/`**: `_public_asset()` en `testing/components/` (chat.py y sidebar.py) resuelve `Path(__file__).resolve().parent.parent / "public"`, es decir `testing/public/`. La carpeta `public/` de la raíz es la del README (`logo-luka-texto.png`, `hero-readme.jpg`) y no la usa el entorno de testing.
 - **Los tests del entorno de testing viven en `testing/tests/`** (no en `tests/`).
 
 ## Verificar cambios
