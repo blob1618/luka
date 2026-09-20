@@ -26,8 +26,14 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 from app.api.whatsapp import (  # noqa: E402
     parse_interactive_reply,
     send_whatsapp_message,
+    send_whatsapp_reaction,
 )
 from app.scheduler import start_scheduler  # noqa: E402
+from app.services.telemetry import (  # noqa: E402
+    finish_message_telemetry,
+    start_message_telemetry,
+    track_phase,
+)
 from app.services.conversation_flow import (  # noqa: E402
     ConversationFlowConflict,
     ConversationFlowNotFound,
@@ -282,17 +288,34 @@ async def _process_inbound_message_background(message: dict, redis_instance) -> 
     whatsapp_message_id = message.get("id")
     message_type = message.get("type")
 
+    start_message_telemetry(whatsapp_message_id or "unknown")
+
     logger.info(
         "[BACKGROUND_MESSAGE] message_id=%s type=%s status=started",
         whatsapp_message_id,
         message_type,
     )
 
+    status = "completed"
     try:
         if message_type == "text":
             sender_phone = message.get("from")
             text_body = message.get("text", {}).get("body", "")
-            await process_text_message_once(
+            if sender_phone and whatsapp_message_id:
+                with track_phase("reaction"):
+                    try:
+                        await send_whatsapp_reaction(
+                            to_number=sender_phone,
+                            message_id=whatsapp_message_id,
+                            emoji="⏳",
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[BACKGROUND_MESSAGE] message_id=%s reaction_failed error=%s",
+                            whatsapp_message_id,
+                            type(exc).__name__,
+                        )
+            status = await process_text_message_once(
                 redis_client=redis_instance,
                 sender_phone=sender_phone,
                 text_body=text_body,
@@ -307,8 +330,23 @@ async def _process_inbound_message_background(message: dict, redis_instance) -> 
                     "[BACKGROUND_MESSAGE] message_id=%s status=ignored_invalid_interactive",
                     whatsapp_message_id,
                 )
+                finish_message_telemetry(status="ignored_invalid_interactive")
                 return
-            await process_interactive_message_once(
+            if interactive_reply.sender_phone and interactive_reply.message_id:
+                with track_phase("reaction"):
+                    try:
+                        await send_whatsapp_reaction(
+                            to_number=interactive_reply.sender_phone,
+                            message_id=interactive_reply.message_id,
+                            emoji="⏳",
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[BACKGROUND_MESSAGE] message_id=%s reaction_failed error=%s",
+                            interactive_reply.message_id,
+                            type(exc).__name__,
+                        )
+            status = await process_interactive_message_once(
                 redis_client=redis_instance,
                 interactive_reply=interactive_reply,
                 process_reply=process_incoming_interactive_reply,
@@ -320,6 +358,7 @@ async def _process_inbound_message_background(message: dict, redis_instance) -> 
                 whatsapp_message_id,
                 message_type,
             )
+            finish_message_telemetry(status="unsupported_type")
             return
 
         duration_ms = (time.perf_counter() - start_time) * 1000
@@ -328,6 +367,7 @@ async def _process_inbound_message_background(message: dict, redis_instance) -> 
             whatsapp_message_id,
             duration_ms,
         )
+        finish_message_telemetry(status=status or "completed")
     except IdempotencyUnavailable as exc:
         duration_ms = (time.perf_counter() - start_time) * 1000
         logger.warning(
@@ -336,6 +376,7 @@ async def _process_inbound_message_background(message: dict, redis_instance) -> 
             type(exc).__name__,
             duration_ms,
         )
+        finish_message_telemetry(status="idempotency_unavailable")
     except Exception as exc:
         duration_ms = (time.perf_counter() - start_time) * 1000
         logger.exception(
@@ -344,6 +385,7 @@ async def _process_inbound_message_background(message: dict, redis_instance) -> 
             type(exc).__name__,
             duration_ms,
         )
+        finish_message_telemetry(status="error")
 
 
 @app.post("/webhook")

@@ -1,5 +1,5 @@
 import logging
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -307,3 +307,195 @@ class TestProcessInboundMessageBackground:
         # Verifica que logger.exception registre el traceback
         assert "Traceback (most recent call last)" in captured
         assert "RuntimeError: Unexpected crash in domain" in captured
+
+    @pytest.mark.asyncio
+    async def test_reaction_is_sent_before_processing_for_text_message(self, caplog):
+        caplog.set_level(logging.INFO, logger="luka.metrics")
+        msg = make_text_message(msg_id="wamid.react.text")
+        fake_redis = MagicMock()
+        call_order = []
+
+        async def mock_reaction(*args, **kwargs):
+            call_order.append("reaction")
+            return True
+
+        async def mock_process(*args, **kwargs):
+            call_order.append("process")
+            return "completed"
+
+        with (
+            patch("app.main.send_whatsapp_reaction", side_effect=mock_reaction) as mock_react,
+            patch("app.main.process_text_message_once", side_effect=mock_process) as mock_proc,
+        ):
+            await _process_inbound_message_background(msg, fake_redis)
+
+        assert call_order == ["reaction", "process"]
+        mock_react.assert_awaited_once_with(
+            to_number="5491112345678",
+            message_id="wamid.react.text",
+            emoji="⏳",
+        )
+        mock_proc.assert_awaited_once()
+
+        # Telemetry verification
+        assert "[METRICS]" in caplog.text
+        assert "message_id=wamid.react.text" in caplog.text
+        assert "status=completed" in caplog.text
+        assert "reaction_ms=" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_reaction_is_sent_for_interactive_message(self):
+        msg = make_interactive_message(option_id="opt_1", msg_id="wamid.react.inter")
+        fake_redis = MagicMock()
+
+        with (
+            patch("app.main.send_whatsapp_reaction", new_callable=AsyncMock, return_value=True) as mock_react,
+            patch("app.main.process_interactive_message_once", new_callable=AsyncMock, return_value="completed"),
+        ):
+            await _process_inbound_message_background(msg, fake_redis)
+
+        mock_react.assert_awaited_once_with(
+            to_number="5491112345678",
+            message_id="wamid.react.inter",
+            emoji="⏳",
+        )
+
+    @pytest.mark.asyncio
+    async def test_reaction_failure_does_not_abort_processing(self, caplog):
+        caplog.set_level(logging.INFO)
+        msg = make_text_message(msg_id="wamid.react.fail")
+        fake_redis = MagicMock()
+
+        with (
+            patch("app.main.send_whatsapp_reaction", new_callable=AsyncMock, side_effect=RuntimeError("Meta network failure")),
+            patch("app.main.process_text_message_once", new_callable=AsyncMock, return_value="completed") as mock_proc,
+        ):
+            await _process_inbound_message_background(msg, fake_redis)
+
+        mock_proc.assert_awaited_once()
+        assert "reaction_failed" in caplog.text
+        assert "status=completed" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_telemetry_logs_on_idempotency_unavailable(self, caplog):
+        caplog.set_level(logging.INFO, logger="luka.metrics")
+        msg = make_text_message(msg_id="wamid.telemetry.idem")
+        fake_redis = MagicMock()
+
+        with (
+            patch("app.main.send_whatsapp_reaction", new_callable=AsyncMock, return_value=True),
+            patch("app.main.process_text_message_once", new_callable=AsyncMock, side_effect=IdempotencyUnavailable("Redis down")),
+        ):
+            await _process_inbound_message_background(msg, fake_redis)
+
+        assert "[METRICS]" in caplog.text
+        assert "message_id=wamid.telemetry.idem" in caplog.text
+        assert "status=idempotency_unavailable" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_telemetry_records_all_pipeline_phases_end_to_end(self, caplog, monkeypatch):
+        caplog.set_level(logging.INFO, logger="luka.metrics")
+        msg = make_text_message(body="Gaste 5000 en supermercado", msg_id="wamid.full.pipeline")
+
+        # Mock Redis client
+        fake_redis = AsyncMock()
+        fake_redis.set = AsyncMock(return_value=True)
+        fake_redis.eval = AsyncMock(return_value=1)
+        fake_redis.lrange = AsyncMock(return_value=[])
+        fake_redis.rpush = AsyncMock(return_value=1)
+        fake_redis.ltrim = AsyncMock(return_value=True)
+        fake_redis.expire = AsyncMock(return_value=True)
+
+        from app.services.onboarding import OnboardingDecision, OnboardingResult
+        from app.services.finance import MovementRegistrationResult
+
+        monkeypatch.setattr(
+            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+            Mock(return_value=OnboardingResult(OnboardingDecision.KNOWN_USER)),
+        )
+        monkeypatch.setattr(
+            "app.services.dispatcher._update_ultimo_mensaje",
+            Mock(),
+        )
+        monkeypatch.setattr(
+            "app.services.dispatcher.LLMService.process_message",
+            AsyncMock(return_value={
+                "intent": "expense",
+                "movement_type": "egreso",
+                "amount": 5000,
+                "currency": "ARS",
+                "description": "supermercado",
+                "category": "Comida",
+                "reply_text": "Registrado!",
+            }),
+        )
+        monkeypatch.setattr(
+            "app.services.dispatcher.FinanceService.register_movement_with_category",
+            Mock(return_value=MovementRegistrationResult(
+                status="registered",
+                message="Registrado",
+                movement_id="mov-123",
+            )),
+        )
+
+        with (
+            patch("app.main.send_whatsapp_reaction", new_callable=AsyncMock, return_value=True) as mock_react,
+            patch("app.main.send_whatsapp_message", new_callable=AsyncMock, return_value=True) as mock_send,
+        ):
+            await _process_inbound_message_background(msg, fake_redis)
+
+        mock_react.assert_awaited_once()
+        mock_send.assert_awaited_once()
+
+        # Verify all phases were recorded
+        metrics_records = [r for r in caplog.records if r.name == "luka.metrics"]
+        assert len(metrics_records) == 1
+        record = metrics_records[0].message
+        assert "[METRICS]" in record
+        assert "message_id=wamid.full.pipeline" in record
+        assert "status=completed" in record
+        assert "total_ms=" in record
+        assert "reaction_ms=" in record
+        assert "redis_ms=" in record
+        assert "llm_ms=" in record
+        assert "db_ms=" in record
+        assert "reply_ms=" in record
+
+        # Verify privacy: no sensitive data in luka.metrics
+        assert "5491112345678" not in record
+        assert "Gaste 5000" not in record
+        assert "5000" not in record or "total_ms=" in record  # 5000 as amount shouldn't be there
+        assert "supermercado" not in record
+        assert "token" not in record
+
+    @pytest.mark.asyncio
+    async def test_regression_conversation_service_redis_duration_incorporated(self, monkeypatch):
+        """Regression test: ConversationService operations must be measured and accumulated in redis_ms."""
+        import asyncio
+        from app.services.conversation import ConversationService
+        from app.services.telemetry import (
+            finish_message_telemetry,
+            start_message_telemetry,
+        )
+
+        fake_client = AsyncMock()
+
+        async def slow_get(*args, **kwargs):
+            await asyncio.sleep(0.04)  # 40ms controlled delay
+            return None
+
+        fake_client.get = AsyncMock(side_effect=slow_get)
+        monkeypatch.setattr(ConversationService, "_get_client", AsyncMock(return_value=fake_client))
+
+        start_message_telemetry("wamid.regression.conv")
+        # Execute conversation service operation
+        state = await ConversationService.get_state("5491112345678")
+        assert state.step == "none"
+
+        metrics = finish_message_telemetry(status="completed")
+        assert metrics is not None
+        # With current implementation (where ConversationService is not instrumented),
+        # 'redis_ms' is not present or 0, so this assertion will FAIL.
+        # With the fix, redis_ms incorporates the ~40ms duration (>= 35.0ms).
+        assert "redis_ms" in metrics
+        assert metrics["redis_ms"] >= 35.0

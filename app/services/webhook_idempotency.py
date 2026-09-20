@@ -7,6 +7,7 @@ from typing import Any
 
 from app.api.whatsapp import WhatsAppList, WhatsAppReplyButtons, WhatsAppText
 from app.services.conversation import ConversationHistoryService
+from app.services.telemetry import track_phase
 
 
 PROCESSING_TTL_SECONDS = 15 * 60
@@ -48,12 +49,13 @@ class WebhookIdempotencyService:
             token=secrets.token_urlsafe(18),
         )
         try:
-            acquired = await client.set(
-                claim.key,
-                claim.processing_value,
-                nx=True,
-                ex=PROCESSING_TTL_SECONDS,
-            )
+            with track_phase("redis"):
+                acquired = await client.set(
+                    claim.key,
+                    claim.processing_value,
+                    nx=True,
+                    ex=PROCESSING_TTL_SECONDS,
+                )
         except Exception as exc:
             raise IdempotencyUnavailable("Could not claim inbound message") from exc
         return claim if acquired else None
@@ -68,13 +70,14 @@ class WebhookIdempotencyService:
         return 0
         """
         try:
-            result = await client.eval(
-                script,
-                1,
-                claim.key,
-                claim.processing_value,
-                COMPLETED_TTL_SECONDS,
-            )
+            with track_phase("redis"):
+                result = await client.eval(
+                    script,
+                    1,
+                    claim.key,
+                    claim.processing_value,
+                    COMPLETED_TTL_SECONDS,
+                )
         except Exception as exc:
             raise IdempotencyUnavailable("Could not complete inbound message") from exc
         return bool(result)
@@ -88,12 +91,13 @@ class WebhookIdempotencyService:
         return 0
         """
         try:
-            result = await client.eval(
-                script,
-                1,
-                claim.key,
-                claim.processing_value,
-            )
+            with track_phase("redis"):
+                result = await client.eval(
+                    script,
+                    1,
+                    claim.key,
+                    claim.processing_value,
+                )
         except Exception as exc:
             raise IdempotencyUnavailable("Could not release inbound message") from exc
         return bool(result)
@@ -150,7 +154,8 @@ async def process_inbound_message_once(
         if reply is None:
             reply = getattr(result, "reply_text", None)
         if reply:
-            send_result = await send_message(sender_phone, reply)
+            with track_phase("reply"):
+                send_result = await send_message(sender_phone, reply)
             send_succeeded = send_result is not False
             if send_result is False:
                 raise RuntimeError("WhatsApp reply could not be sent")

@@ -16,6 +16,8 @@ from typing import Any
 
 import redis.asyncio as redis
 
+from app.services.telemetry import track_phase
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
@@ -341,7 +343,8 @@ class ConversationHistoryService:
         if client is None:
             return []
         try:
-            raw = await client.get(_conversation_history_key(whatsapp_id))
+            with track_phase("redis"):
+                raw = await client.get(_conversation_history_key(whatsapp_id))
             if not raw:
                 return []
             payload = json.loads(raw)
@@ -378,11 +381,12 @@ class ConversationHistoryService:
             if assistant_text:
                 messages.append(ConversationMessage("assistant", assistant_text))
             bounded = messages[-CONVERSATION_HISTORY_LIMIT:]
-            await client.set(
-                _conversation_history_key(whatsapp_id),
-                json.dumps([message.to_dict() for message in bounded]),
-                ex=int(CONVERSATION_TTL.total_seconds()),
-            )
+            with track_phase("redis"):
+                await client.set(
+                    _conversation_history_key(whatsapp_id),
+                    json.dumps([message.to_dict() for message in bounded]),
+                    ex=int(CONVERSATION_TTL.total_seconds()),
+                )
         except Exception as exc:
             print(
                 "[ConversationHistoryService] append_exchange error: "
@@ -414,7 +418,8 @@ class ConversationService:
             )
             cls._loop_id = loop_id
             try:
-                await cls._client.ping()
+                with track_phase("redis"):
+                    await cls._client.ping()
             except Exception as e:
                 print(f"[ConversationService] Redis ping failed: {e}")
         return cls._client
@@ -424,7 +429,8 @@ class ConversationService:
         """Recupera el estado de conversación de un usuario."""
         try:
             client = await cls._get_client()
-            raw = await client.get(_key(whatsapp_id))
+            with track_phase("redis"):
+                raw = await client.get(_key(whatsapp_id))
             if raw is None:
                 return ConversationState.empty()
             d = json.loads(raw)
@@ -439,7 +445,8 @@ class ConversationService:
         try:
             client = await cls._get_client()
             raw = json.dumps(state.to_dict())
-            await client.setex(_key(whatsapp_id), CONVERSATION_TTL, raw)
+            with track_phase("redis"):
+                await client.setex(_key(whatsapp_id), CONVERSATION_TTL, raw)
         except Exception as exc:
             print(f"[ConversationService] set_state error: {type(exc).__name__}: {exc}")
 
@@ -448,7 +455,8 @@ class ConversationService:
         """Elimina el estado de conversación."""
         try:
             client = await cls._get_client()
-            await client.delete(_key(whatsapp_id))
+            with track_phase("redis"):
+                await client.delete(_key(whatsapp_id))
         except Exception as exc:
             print(f"[ConversationService] clear_state error: {type(exc).__name__}: {exc}")
 
@@ -459,7 +467,8 @@ class ConversationService:
     ) -> PendingConversationFlow | None:
         try:
             client = await cls._get_client()
-            raw = await client.get(_conversation_flow_key(whatsapp_id))
+            with track_phase("redis"):
+                raw = await client.get(_conversation_flow_key(whatsapp_id))
             if raw is None:
                 return None
             return PendingConversationFlow.from_dict(json.loads(raw))
@@ -476,11 +485,13 @@ class ConversationService:
     ) -> None:
         try:
             client = await cls._get_client()
-            stored = await client.set(
-                _conversation_flow_key(whatsapp_id),
-                json.dumps(pending.to_dict()),
-                ex=int(CONVERSATION_FLOW_TTL.total_seconds()),
-            )
+            payload = json.dumps(pending.to_dict())
+            with track_phase("redis"):
+                stored = await client.set(
+                    _conversation_flow_key(whatsapp_id),
+                    payload,
+                    ex=int(CONVERSATION_FLOW_TTL.total_seconds()),
+                )
             if stored is False:
                 raise RuntimeError("Redis did not store the conversation flow")
         except Exception as exc:
@@ -492,7 +503,8 @@ class ConversationService:
     async def clear_pending_conversation_flow(cls, whatsapp_id: str) -> None:
         try:
             client = await cls._get_client()
-            await client.delete(_conversation_flow_key(whatsapp_id))
+            with track_phase("redis"):
+                await client.delete(_conversation_flow_key(whatsapp_id))
         except Exception as exc:
             raise ConversationStateUnavailable(
                 "No se pudo limpiar el recorrido pendiente."
@@ -529,7 +541,8 @@ class ConversationService:
         try:
             client = await cls._get_client()
             raw = json.dumps(movement.to_dict())
-            await client.setex(_last_movement_key(whatsapp_id), LAST_MOVEMENT_TTL, raw)
+            with track_phase("redis"):
+                await client.setex(_last_movement_key(whatsapp_id), LAST_MOVEMENT_TTL, raw)
         except Exception as exc:
             print(f"[ConversationService] set_last_movement error: {type(exc).__name__}: {exc}")
 
@@ -538,7 +551,8 @@ class ConversationService:
         """Obtiene el último movimiento registrado."""
         try:
             client = await cls._get_client()
-            raw = await client.get(_last_movement_key(whatsapp_id))
+            with track_phase("redis"):
+                raw = await client.get(_last_movement_key(whatsapp_id))
             if raw is None:
                 return None
             d = json.loads(raw)
@@ -552,7 +566,8 @@ class ConversationService:
         """Elimina el último movimiento registrado."""
         try:
             client = await cls._get_client()
-            await client.delete(_last_movement_key(whatsapp_id))
+            with track_phase("redis"):
+                await client.delete(_last_movement_key(whatsapp_id))
         except Exception as exc:
             print(f"[ConversationService] clear_last_movement error: {type(exc).__name__}: {exc}")
 
@@ -560,10 +575,12 @@ class ConversationService:
     async def set_recent_items(cls, whatsapp_id: str, recent: RecentItems) -> None:
         try:
             client = await cls._get_client()
-            await client.setex(
-                _recent_items_key(whatsapp_id), CONVERSATION_TTL,
-                json.dumps(asdict(recent)),
-            )
+            payload = json.dumps(asdict(recent))
+            with track_phase("redis"):
+                await client.setex(
+                    _recent_items_key(whatsapp_id), CONVERSATION_TTL,
+                    payload,
+                )
         except Exception as exc:
             print(f"[ConversationService] set_recent_items error: {type(exc).__name__}: {exc}")
 
@@ -571,7 +588,8 @@ class ConversationService:
     async def get_recent_items(cls, whatsapp_id: str) -> RecentItems | None:
         try:
             client = await cls._get_client()
-            raw = await client.get(_recent_items_key(whatsapp_id))
+            with track_phase("redis"):
+                raw = await client.get(_recent_items_key(whatsapp_id))
             return RecentItems(**json.loads(raw)) if raw else None
         except Exception as exc:
             print(f"[ConversationService] get_recent_items error: {type(exc).__name__}: {exc}")
@@ -581,10 +599,12 @@ class ConversationService:
     async def set_pending_selection(cls, whatsapp_id: str, pending: PendingSelection) -> None:
         try:
             client = await cls._get_client()
-            await client.setex(
-                _pending_selection_key(whatsapp_id), CONVERSATION_TTL,
-                json.dumps(asdict(pending)),
-            )
+            payload = json.dumps(asdict(pending))
+            with track_phase("redis"):
+                await client.setex(
+                    _pending_selection_key(whatsapp_id), CONVERSATION_TTL,
+                    payload,
+                )
         except Exception as exc:
             print(f"[ConversationService] set_pending_selection error: {type(exc).__name__}: {exc}")
 
@@ -592,7 +612,8 @@ class ConversationService:
     async def get_pending_selection(cls, whatsapp_id: str) -> PendingSelection | None:
         try:
             client = await cls._get_client()
-            raw = await client.get(_pending_selection_key(whatsapp_id))
+            with track_phase("redis"):
+                raw = await client.get(_pending_selection_key(whatsapp_id))
             return PendingSelection(**json.loads(raw)) if raw else None
         except Exception as exc:
             print(f"[ConversationService] get_pending_selection error: {type(exc).__name__}: {exc}")
@@ -602,7 +623,8 @@ class ConversationService:
     async def clear_pending_selection(cls, whatsapp_id: str) -> None:
         try:
             client = await cls._get_client()
-            await client.delete(_pending_selection_key(whatsapp_id))
+            with track_phase("redis"):
+                await client.delete(_pending_selection_key(whatsapp_id))
         except Exception as exc:
             print(f"[ConversationService] clear_pending_selection error: {type(exc).__name__}: {exc}")
 
@@ -752,7 +774,8 @@ class ConversationService:
         try:
             client = await cls._get_client()
             raw = json.dumps(limit.to_dict())
-            await client.setex(_last_limit_key(whatsapp_id), LAST_LIMIT_TTL, raw)
+            with track_phase("redis"):
+                await client.setex(_last_limit_key(whatsapp_id), LAST_LIMIT_TTL, raw)
         except Exception as exc:
             print(f"[ConversationService] set_last_limit error: {type(exc).__name__}: {exc}")
 
@@ -761,7 +784,8 @@ class ConversationService:
         """Obtiene el último límite creado."""
         try:
             client = await cls._get_client()
-            raw = await client.get(_last_limit_key(whatsapp_id))
+            with track_phase("redis"):
+                raw = await client.get(_last_limit_key(whatsapp_id))
             if raw is None:
                 return None
             d = json.loads(raw)
@@ -775,6 +799,7 @@ class ConversationService:
         """Elimina el último límite creado."""
         try:
             client = await cls._get_client()
-            await client.delete(_last_limit_key(whatsapp_id))
+            with track_phase("redis"):
+                await client.delete(_last_limit_key(whatsapp_id))
         except Exception as exc:
             print(f"[ConversationService] clear_last_limit error: {type(exc).__name__}: {exc}")

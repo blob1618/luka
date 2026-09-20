@@ -244,3 +244,130 @@ async def test_send_rejects_invalid_graph_version_before_network(monkeypatch):
 
     assert sent is False
     client_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_reaction_contract_and_timeout(monkeypatch):
+    from app.api.whatsapp import send_whatsapp_reaction
+
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id-123")
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
+
+    response = Mock(status_code=200)
+    response.text = '{"success": true}'
+    post = AsyncMock(return_value=response)
+    client = Mock()
+    client.post = post
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=None)
+
+    client_factory = Mock(return_value=client)
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", client_factory)
+
+    sent = await send_whatsapp_reaction("5491123456789", "wamid.12345")
+
+    assert sent is True
+    # Verify timeout was passed to AsyncClient
+    client_factory.assert_called_once_with(timeout=3.0)
+    # Verify URL and payload
+    post.assert_awaited_once()
+    assert post.await_args.args[0] == "https://graph.facebook.com/v26.0/phone-id-123/messages"
+    assert post.await_args.kwargs["json"] == {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": "541123456789",
+        "type": "reaction",
+        "reaction": {
+            "message_id": "wamid.12345",
+            "emoji": "⏳",
+        },
+    }
+    assert post.await_args.kwargs["headers"]["Authorization"] == "Bearer test-token"
+
+
+@pytest.mark.asyncio
+async def test_send_reaction_custom_emoji(monkeypatch):
+    from app.api.whatsapp import send_whatsapp_reaction
+
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id-123")
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
+
+    response = Mock(status_code=200)
+    response.text = '{"success": true}'
+    post = AsyncMock(return_value=response)
+    client = Mock()
+    client.post = post
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client))
+
+    sent = await send_whatsapp_reaction("541123456789", "wamid.12345", emoji="✅")
+
+    assert sent is True
+    assert post.await_args.kwargs["json"]["reaction"]["emoji"] == "✅"
+
+
+@pytest.mark.asyncio
+async def test_send_reaction_missing_credentials_or_invalid_version(monkeypatch):
+    from app.api.whatsapp import send_whatsapp_reaction
+
+    client_factory = Mock()
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", client_factory)
+
+    # Missing credentials
+    monkeypatch.delenv("WHATSAPP_API_TOKEN", raising=False)
+    monkeypatch.delenv("WHATSAPP_PHONE_ID", raising=False)
+    assert await send_whatsapp_reaction("541123456789", "wamid.1") is False
+
+    # Invalid version
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id")
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "invalid_ver")
+    assert await send_whatsapp_reaction("541123456789", "wamid.1") is False
+
+    # Empty inputs
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
+    assert await send_whatsapp_reaction("", "wamid.1") is False
+    assert await send_whatsapp_reaction("541123456789", "") is False
+
+    client_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_reaction_error_timeout_and_network_tolerance(monkeypatch):
+    import httpx
+    from app.api.whatsapp import send_whatsapp_reaction
+
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id")
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
+
+    # Non-200 HTTP response
+    response_400 = Mock(status_code=400, text="Bad Request")
+    client_400 = Mock()
+    client_400.post = AsyncMock(return_value=response_400)
+    client_400.__aenter__ = AsyncMock(return_value=client_400)
+    client_400.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client_400))
+
+    assert await send_whatsapp_reaction("541123456789", "wamid.1") is False
+
+    # HTTP Timeout
+    client_timeout = Mock()
+    client_timeout.post = AsyncMock(side_effect=httpx.TimeoutException("Request timed out"))
+    client_timeout.__aenter__ = AsyncMock(return_value=client_timeout)
+    client_timeout.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client_timeout))
+
+    assert await send_whatsapp_reaction("541123456789", "wamid.1") is False
+
+    # Network error
+    client_network = Mock()
+    client_network.post = AsyncMock(side_effect=httpx.NetworkError("Connection refused"))
+    client_network.__aenter__ = AsyncMock(return_value=client_network)
+    client_network.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client_network))
+
+    assert await send_whatsapp_reaction("541123456789", "wamid.1") is False
