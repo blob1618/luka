@@ -129,4 +129,3 @@ def test_telemetry_concurrency_isolation_between_contextvars():
     assert "db_ms" in metrics2
     assert "reaction_ms" not in metrics2
     assert "redis_ms" not in metrics2
-
