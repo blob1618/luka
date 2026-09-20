@@ -5,7 +5,9 @@ set_state/clear_state, pending movement, last movement y rename.
 Todos usan un fake de Redis, sin red real.
 """
 
+import asyncio
 from decimal import Decimal
+import json
 
 import pytest
 
@@ -57,6 +59,7 @@ class MockRedisClient:
     def __init__(self, storage, fail_methods=()):
         self.storage = storage
         self.fail_methods = set(fail_methods)
+        self.get_calls: list[str] = []
 
     async def ping(self):
         return True
@@ -74,6 +77,7 @@ class MockRedisClient:
         return True
 
     async def get(self, key):
+        self.get_calls.append(key)
         if "get" in self.fail_methods:
             raise ConnectionError("redis down")
         return self.storage.get(key)
@@ -87,14 +91,33 @@ class MockRedisClient:
 def _install_mock_client(monkeypatch, storage=None, fail_methods=()):
     monkeypatch.setattr(ConversationService, "_client", None)
     monkeypatch.setattr(ConversationService, "_loop_id", None)
+    ConversationService.reset_cache()
     if storage is None:
         storage = {}
 
+    client = MockRedisClient(storage, fail_methods)
+
     async def mock_get_client():
-        return MockRedisClient(storage, fail_methods)
+        return client
 
     monkeypatch.setattr(ConversationService, "_get_client", mock_get_client)
     return storage
+
+
+def _install_mock_client_instance(monkeypatch, storage=None, fail_methods=()):
+    monkeypatch.setattr(ConversationService, "_client", None)
+    monkeypatch.setattr(ConversationService, "_loop_id", None)
+    ConversationService.reset_cache()
+    if storage is None:
+        storage = {}
+
+    client = MockRedisClient(storage, fail_methods)
+
+    async def mock_get_client():
+        return client
+
+    monkeypatch.setattr(ConversationService, "_get_client", mock_get_client)
+    return storage, client
 
 
 @pytest.mark.asyncio
@@ -357,3 +380,230 @@ async def test_set_and_get_pending_rename(monkeypatch):
     assert retrieved is not None
     assert retrieved.reminder_concept == "luz"
     assert retrieved.reminder_day == 15
+
+
+# ---------------------------------------------------------------------------
+# STK-182: Caché por corrutina / ContextVar para ConversationState
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_is_awaiting_helpers_trigger_single_redis_get(monkeypatch):
+    """Siete helpers is_awaiting_* para el mismo usuario producen un solo GET a Redis."""
+    storage, client = _install_mock_client_instance(monkeypatch)
+    phone = "5491100000001"
+
+    # Ejecutar secuencialmente los helpers que consulta el dispatcher
+    assert not await ConversationService.is_awaiting_rename(phone)
+    assert not await ConversationService.is_awaiting_reminder_data(phone)
+    assert not await ConversationService.is_awaiting_limit_year_confirmation(phone)
+    assert not await ConversationService.is_awaiting_limit_category_confirmation(phone)
+    assert not await ConversationService.is_awaiting_limit_data(phone)
+    assert not await ConversationService.is_awaiting_limit_delete_category(phone)
+    assert not await ConversationService.is_awaiting_limit_month_selection(phone)
+    assert not await ConversationService.is_awaiting_category_confirmation(phone)
+
+    # Todos los helpers colapsaron a un solo GET en Redis
+    assert client.get_calls == ["conversation:5491100000001"]
+
+
+@pytest.mark.asyncio
+async def test_get_state_returns_cached_value(monkeypatch):
+    """Un segundo get_state devuelve el valor cacheado sin ir a Redis (con y sin datos)."""
+    pm = _pending_movement()
+    state = ConversationState(
+        step="awaiting_category_confirmation",
+        pending_movement=pm,
+    )
+    storage = {"conversation:5491100000001": json.dumps(state.to_dict())}
+    _, client = _install_mock_client_instance(monkeypatch, storage)
+
+    # Primer get_state: miss en caché, consulta Redis
+    s1 = await ConversationService.get_state("5491100000001")
+    assert s1.step == "awaiting_category_confirmation"
+    assert len(client.get_calls) == 1
+
+    # Segundo get_state: hit en caché, no consulta Redis
+    s2 = await ConversationService.get_state("5491100000001")
+    assert s2.step == "awaiting_category_confirmation"
+    assert len(client.get_calls) == 1
+
+    # Usuario sin estado (miss en Redis -> cachea ConversationState.empty())
+    empty1 = await ConversationService.get_state("5491100000002")
+    assert empty1.step == "none"
+    assert client.get_calls.count("conversation:5491100000002") == 1
+
+    empty2 = await ConversationService.get_state("5491100000002")
+    assert empty2.step == "none"
+    assert client.get_calls.count("conversation:5491100000002") == 1
+
+
+@pytest.mark.asyncio
+async def test_set_state_refreshes_cache_only_on_success(monkeypatch):
+    """set_state refresca la entrada solo después del éxito en Redis."""
+    storage, client = _install_mock_client_instance(monkeypatch)
+    phone = "5491100000001"
+    pm = _pending_movement()
+    state1 = ConversationState(
+        step="awaiting_category_confirmation",
+        pending_movement=pm,
+    )
+
+    # 1. Éxito: set_state persiste y actualiza la caché
+    await ConversationService.set_state(phone, state1)
+    # get_state inmediato no debe llamar a Redis
+    cached = await ConversationService.get_state(phone)
+    assert cached.step == "awaiting_category_confirmation"
+    assert len(client.get_calls) == 0
+
+    # 2. Falla: si setex falla, la caché no se actualiza con el nuevo valor
+    client.fail_methods.add("setex")
+    state2 = ConversationState(step="awaiting_rename")
+    await ConversationService.set_state(phone, state2)
+
+    # get_state sigue devolviendo state1 (la caché previa no se corrompe)
+    cached_after_fail = await ConversationService.get_state(phone)
+    assert cached_after_fail.step == "awaiting_category_confirmation"
+    assert len(client.get_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_clear_state_invalidates_cache_only_on_success(monkeypatch):
+    """clear_state invalida la entrada solo después del éxito en Redis."""
+    pm = _pending_movement()
+    state = ConversationState(
+        step="awaiting_category_confirmation",
+        pending_movement=pm,
+    )
+    phone = "5491100000001"
+    storage = {f"conversation:{phone}": json.dumps(state.to_dict())}
+    _, client = _install_mock_client_instance(monkeypatch, storage)
+
+    # Poblar la caché
+    s = await ConversationService.get_state(phone)
+    assert s.step == "awaiting_category_confirmation"
+    assert len(client.get_calls) == 1
+
+    # Si delete falla en Redis, la caché no se invalida
+    client.fail_methods.add("delete")
+    await ConversationService.clear_state(phone)
+    s_cached = await ConversationService.get_state(phone)
+    assert s_cached.step == "awaiting_category_confirmation"
+    assert len(client.get_calls) == 1
+
+    # Si delete tiene éxito, la caché se invalida y la próxima lectura va a Redis
+    client.fail_methods.remove("delete")
+    await ConversationService.clear_state(phone)
+    assert f"conversation:{phone}" not in storage
+
+    s_after_clear = await ConversationService.get_state(phone)
+    assert s_after_clear.step == "none"
+    assert len(client.get_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_redis_failures_do_not_corrupt_previous_cache(monkeypatch):
+    """Fallos de Redis no corrompen una entrada previa."""
+    phone = "5491100000001"
+    pm = _pending_movement()
+    state = ConversationState(
+        step="awaiting_category_confirmation",
+        pending_movement=pm,
+    )
+    storage = {f"conversation:{phone}": json.dumps(state.to_dict())}
+    _, client = _install_mock_client_instance(monkeypatch, storage)
+
+    # Cargar en caché
+    assert (
+        await ConversationService.get_state(phone)
+    ).step == "awaiting_category_confirmation"
+    assert len(client.get_calls) == 1
+
+    # Redis se cae por completo (get, setex, delete fallan)
+    client.fail_methods.update({"get", "setex", "delete"})
+
+    # Intento de set_state falla
+    await ConversationService.set_state(phone, ConversationState.empty())
+    # Intento de clear_state falla
+    await ConversationService.clear_state(phone)
+
+    # La entrada previa en caché sigue intacta y get_state no explota
+    recovered = await ConversationService.get_state(phone)
+    assert recovered.step == "awaiting_category_confirmation"
+    assert len(client.get_calls) == 1  # No intentó Redis porque estaba en caché
+
+
+@pytest.mark.asyncio
+async def test_concurrent_tasks_and_different_users_isolated(monkeypatch):
+    """Dos tareas concurrentes y usuarios distintos no comparten ni contaminan caché."""
+    storage, client = _install_mock_client_instance(monkeypatch)
+
+    user1 = "5491100000001"
+    user2 = "5491100000002"
+
+    state1 = ConversationState(step="awaiting_reminder_data")
+    state2 = ConversationState(step="awaiting_category_confirmation")
+
+    barrier = asyncio.Barrier(2)
+
+    async def task_1():
+        # Setea user1
+        await ConversationService.set_state(user1, state1)
+        await barrier.wait()
+        # Lee user1 de su caché
+        u1_state = await ConversationService.get_state(user1)
+        # Lee user2 (miss en su caché local -> consulta Redis)
+        u2_state = await ConversationService.get_state(user2)
+        return u1_state, u2_state
+
+    async def task_2():
+        # Setea user2
+        await ConversationService.set_state(user2, state2)
+        await barrier.wait()
+        # Lee user2 de su caché
+        u2_state = await ConversationService.get_state(user2)
+        # Lee user1 (miss en su caché local -> consulta Redis)
+        u1_state = await ConversationService.get_state(user1)
+        return u1_state, u2_state
+
+    (t1_u1, t1_u2), (t2_u1, t2_u2) = await asyncio.gather(task_1(), task_2())
+
+    assert t1_u1.step == "awaiting_reminder_data"
+    assert t1_u2.step == "awaiting_category_confirmation"
+    assert t2_u1.step == "awaiting_reminder_data"
+    assert t2_u2.step == "awaiting_category_confirmation"
+
+
+@pytest.mark.asyncio
+async def test_copy_on_write_prevents_context_cache_mutation(monkeypatch):
+    """Copy-on-write asegura que tareas hijas o contextos heredados no muten el dict del padre."""
+    storage, client = _install_mock_client_instance(monkeypatch)
+    phone_parent = "5491100000001"
+    phone_child = "5491100000002"
+
+    # Contexto padre establece phone_parent
+    await ConversationService.set_state(
+        phone_parent,
+        ConversationState(step="awaiting_category_confirmation"),
+    )
+    parent_cache_dict = ConversationService._state_cache.get()
+    assert parent_cache_dict is not None
+    assert phone_parent in parent_cache_dict
+
+    async def child_task():
+        # Tarea hija hereda el contexto, pero al escribir debe usar COW
+        await ConversationService.set_state(
+            phone_child,
+            ConversationState(step="awaiting_reminder_data"),
+        )
+        child_cache = ConversationService._state_cache.get()
+        assert phone_child in child_cache
+        assert phone_parent in child_cache
+
+    task = asyncio.create_task(child_task())
+    await task
+
+    # El padre NO debe tener phone_child en su diccionario de caché
+    assert phone_child not in ConversationService._state_cache.get()
+    # Y el diccionario original del padre no fue mutado in-place
+    assert phone_child not in parent_cache_dict

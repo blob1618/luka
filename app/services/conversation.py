@@ -6,6 +6,7 @@ enabling the category confirmation flow (STK-39).
 """
 
 import asyncio
+import contextvars
 import json
 import os
 import re
@@ -399,11 +400,22 @@ class ConversationHistoryService:
 # ---------------------------------------------------------------------------
 
 
+_state_cache: contextvars.ContextVar[dict[str, ConversationState] | None] = (
+    contextvars.ContextVar("conversation_state_cache", default=None)
+)
+
+
 class ConversationService:
     """Maneja el estado de conversación multi-turno vía Redis."""
 
     _client: redis.Redis | None = None
     _loop_id: int | None = None
+    _state_cache = _state_cache
+
+    @classmethod
+    def reset_cache(cls) -> None:
+        """Reinicia la caché de estado de la corrutina/contexto actual."""
+        _state_cache.set(None)
 
     @classmethod
     async def _get_client(cls) -> redis.Redis:
@@ -427,14 +439,26 @@ class ConversationService:
     @classmethod
     async def get_state(cls, whatsapp_id: str) -> ConversationState:
         """Recupera el estado de conversación de un usuario."""
+        cache = _state_cache.get()
+        if cache is not None and whatsapp_id in cache:
+            return cache[whatsapp_id]
+
         try:
             client = await cls._get_client()
             with track_phase("redis"):
                 raw = await client.get(_key(whatsapp_id))
             if raw is None:
-                return ConversationState.empty()
-            d = json.loads(raw)
-            return ConversationState.from_dict(d)
+                state = ConversationState.empty()
+            else:
+                d = json.loads(raw)
+                state = ConversationState.from_dict(d)
+
+            # Copy-on-write para evitar mutar diccionarios compartidos entre contextos
+            new_cache = dict(_state_cache.get() or {})
+            new_cache[whatsapp_id] = state
+            _state_cache.set(new_cache)
+
+            return state
         except Exception as exc:
             print(f"[ConversationService] get_state error: {type(exc).__name__}: {exc}")
             return ConversationState.empty()
@@ -447,6 +471,11 @@ class ConversationService:
             raw = json.dumps(state.to_dict())
             with track_phase("redis"):
                 await client.setex(_key(whatsapp_id), CONVERSATION_TTL, raw)
+
+            # Actualizar caché SOLO tras persistir con éxito en Redis (Copy-on-write)
+            new_cache = dict(_state_cache.get() or {})
+            new_cache[whatsapp_id] = state
+            _state_cache.set(new_cache)
         except Exception as exc:
             print(f"[ConversationService] set_state error: {type(exc).__name__}: {exc}")
 
@@ -457,6 +486,13 @@ class ConversationService:
             client = await cls._get_client()
             with track_phase("redis"):
                 await client.delete(_key(whatsapp_id))
+
+            # Invalidar solo esa entrada SOLO tras eliminar con éxito en Redis (Copy-on-write)
+            current_cache = _state_cache.get()
+            if current_cache is not None and whatsapp_id in current_cache:
+                new_cache = dict(current_cache)
+                del new_cache[whatsapp_id]
+                _state_cache.set(new_cache)
         except Exception as exc:
             print(f"[ConversationService] clear_state error: {type(exc).__name__}: {exc}")
 
