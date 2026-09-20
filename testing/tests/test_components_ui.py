@@ -1,10 +1,35 @@
 """Tests for UI components using a mocked streamlit module."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
-from testing.config.settings import TestingConfig
+from testing.config.settings import TestingConfig, new_session
+
+
+def make_session(
+    label="Sesión 1",
+    phone="5491112345678",
+    user_name="Test User",
+    registered=True,
+    messages=None,
+):
+    session = new_session(label, phone, user_name, registered)
+    if messages:
+        session.messages.extend(messages)
+    return session
+
+
+def make_config(*sessions, active_index=0, **kwargs):
+    config = TestingConfig(**kwargs)
+    config.sessions.extend(sessions)
+    if sessions:
+        config.active_session_id = sessions[active_index].id
+    return config
+
+
+def session_option(session):
+    return f"{session.label} — {session.phone}"
 
 
 @pytest.fixture
@@ -18,13 +43,22 @@ def mock_st():
             self[name] = value
 
     with patch("testing.components.sidebar.st") as sidebar_st, \
+         patch("testing.components.sidebar.sync_test_user") as sidebar_sync, \
          patch("testing.components.chat.st") as chat_st, \
          patch("testing.components.debug_panel.st") as debug_st, \
          patch("testing.components.chat.components_html") as components_html:
-        sidebar_st.session_state = SessionState()
-        chat_st.session_state = SessionState()
+        for st in (sidebar_st, chat_st, debug_st):
+            st.session_state = SessionState()
+        for container in (sidebar_st.sidebar, chat_st.sidebar):
+            container.__enter__ = MagicMock(return_value=None)
+            container.__exit__ = MagicMock(return_value=False)
+        col = MagicMock()
+        col.__enter__ = MagicMock(return_value=None)
+        col.__exit__ = MagicMock(return_value=False)
+        sidebar_st.columns.return_value = (col, col)
         yield {
             "sidebar": sidebar_st,
+            "sync": sidebar_sync,
             "chat": chat_st,
             "debug": debug_st,
             "components_html": components_html,
@@ -36,65 +70,71 @@ class TestRenderSidebar:
         from testing.components.sidebar import render_sidebar
 
         st = mock_st["sidebar"]
-        st.sidebar.__enter__ = MagicMock(return_value=None)
-        st.sidebar.__exit__ = MagicMock(return_value=False)
+        session = make_session()
+        config = make_config(session)
+        st.session_state["config"] = config
 
-        col = MagicMock()
-        col.__enter__ = MagicMock(return_value=None)
-        col.__exit__ = MagicMock(return_value=False)
-        st.columns.return_value = (col, col)
-
-        st.selectbox.return_value = "gemini"
+        st.selectbox.side_effect = [
+            "gemini",
+            "prompt.md",
+            "gemini-3.6-flash",
+            session_option(session),
+        ]
         st.text_input.return_value = "5491112345678"
         st.checkbox.return_value = True
         st.button.return_value = False
 
-        config = render_sidebar()
+        rendered = render_sidebar()
 
-        assert config.provider == "gemini"
+        assert rendered is config
+        assert rendered.provider == "gemini"
         assert st.session_state["config"] is config
 
     def test_render_sidebar_clear_chat_button(self, mock_st):
         from testing.components.sidebar import render_sidebar
 
         st = mock_st["sidebar"]
-        st.sidebar.__enter__ = MagicMock(return_value=None)
-        st.sidebar.__exit__ = MagicMock(return_value=False)
+        active = make_session(messages=[{"role": "user", "content": "hola", "debug": {}}])
+        other = make_session(
+            "Sesión 2",
+            "5491187654321",
+            messages=[{"role": "user", "content": "otra", "debug": {}}],
+        )
+        config = make_config(active, other)
+        st.session_state["config"] = config
 
-        col = MagicMock()
-        col.__enter__ = MagicMock(return_value=None)
-        col.__exit__ = MagicMock(return_value=False)
-        st.columns.return_value = (col, col)
-
-        st.selectbox.return_value = "gemini"
+        st.selectbox.side_effect = [
+            "gemini",
+            "prompt.md",
+            "gemini-3.6-flash",
+            session_option(active),
+        ]
         st.text_input.return_value = "5491112345678"
         st.checkbox.return_value = True
-
-        # First button (clear chat) returns True, reset returns False
-        st.button.side_effect = [True, False]
-        st.session_state.messages = [{"role": "user", "content": "hola"}]
+        st.button.side_effect = [False, False, True, False]
 
         render_sidebar()
 
-        assert st.session_state.messages == []
+        assert active.messages == []
+        assert other.messages == [{"role": "user", "content": "otra", "debug": {}}]
 
     def test_render_sidebar_reset_db_button(self, mock_st):
         from testing.components.sidebar import render_sidebar
 
         st = mock_st["sidebar"]
-        st.sidebar.__enter__ = MagicMock(return_value=None)
-        st.sidebar.__exit__ = MagicMock(return_value=False)
+        session = make_session()
+        config = make_config(session)
+        st.session_state["config"] = config
 
-        col = MagicMock()
-        col.__enter__ = MagicMock(return_value=None)
-        col.__exit__ = MagicMock(return_value=False)
-        st.columns.return_value = (col, col)
-
-        st.selectbox.return_value = "gemini"
+        st.selectbox.side_effect = [
+            "gemini",
+            "prompt.md",
+            "gemini-3.6-flash",
+            session_option(session),
+        ]
         st.text_input.return_value = "5491112345678"
         st.checkbox.return_value = True
-
-        st.button.side_effect = [False, True]
+        st.button.side_effect = [False, False, True]
 
         render_sidebar()
 
@@ -104,46 +144,208 @@ class TestRenderSidebar:
         from testing.components.sidebar import render_sidebar
 
         st = mock_st["sidebar"]
-        st.sidebar.__enter__ = MagicMock(return_value=None)
-        st.sidebar.__exit__ = MagicMock(return_value=False)
-        col = MagicMock()
-        col.__enter__ = MagicMock(return_value=None)
-        col.__exit__ = MagicMock(return_value=False)
-        st.columns.return_value = (col, col)
+        session = make_session()
+        config = make_config(session)
+        st.session_state["config"] = config
 
-        # orden de llamadas: Provider, Prompt, Modelo
-        st.selectbox.side_effect = ["gemini", "prompt.md", "gemini-3.5-flash"]
+        st.selectbox.side_effect = [
+            "gemini",
+            "prompt.md",
+            "gemini-3.5-flash",
+            session_option(session),
+        ]
         st.text_input.return_value = "5491112345678"
         st.checkbox.return_value = True
         st.button.return_value = False
 
-        config = render_sidebar()
+        rendered = render_sidebar()
 
-        assert config.model == "gemini-3.5-flash"
+        assert rendered.model == "gemini-3.5-flash"
 
     def test_modelo_fuera_de_lista_resetea_a_primero(self, mock_st):
         from testing.components.sidebar import render_sidebar
-        from testing.config.settings import TestingConfig
 
         st = mock_st["sidebar"]
-        st.session_state["config"] = TestingConfig(provider="gemini", model="mistral-small-latest")
-        st.sidebar.__enter__ = MagicMock(return_value=None)
-        st.sidebar.__exit__ = MagicMock(return_value=False)
-        col = MagicMock()
-        col.__enter__ = MagicMock(return_value=None)
-        col.__exit__ = MagicMock(return_value=False)
-        st.columns.return_value = (col, col)
+        session = make_session()
+        st.session_state["config"] = make_config(
+            session, provider="gemini", model="mistral-small-latest"
+        )
 
-        st.selectbox.return_value = "gemini-3.6-flash"
+        st.selectbox.side_effect = [
+            "gemini",
+            "prompt.md",
+            "gemini-3.6-flash",
+            session_option(session),
+        ]
         st.text_input.return_value = "5491112345678"
         st.checkbox.return_value = True
         st.button.return_value = False
 
         render_sidebar()
 
-        # el selectbox de modelo debe arrancar en índice 0 (primer item de gemini)
         model_call = st.selectbox.call_args_list[2]
         assert model_call.kwargs["index"] == 0
+
+
+class TestSidebarSessions:
+    def test_crear_sesion_la_activa_y_sincroniza(self, mock_st):
+        from testing.components.sidebar import _render_sessions
+
+        st = mock_st["sidebar"]
+        first = make_session()
+        config = make_config(first)
+        st.selectbox.return_value = session_option(first)
+        st.text_input.side_effect = ["Sesión 2", "5491187654321", "María"]
+        st.checkbox.side_effect = [True, True]
+        st.button.side_effect = [True, False]
+
+        _render_sessions(config)
+
+        assert len(config.sessions) == 2
+        created = config.sessions[1]
+        assert created.phone == "5491187654321"
+        assert created.user_name == "María"
+        assert created.user_registered is True
+        assert config.active_session() is created
+        mock_st["sync"].assert_called_once_with(
+            ANY, phone="5491187654321", name="María", registered=True
+        )
+        st.error.assert_not_called()
+
+    def test_telefono_vacio_no_crea_y_avisa(self, mock_st):
+        from testing.components.sidebar import _render_sessions
+
+        st = mock_st["sidebar"]
+        first = make_session()
+        config = make_config(first)
+        st.selectbox.return_value = session_option(first)
+        st.text_input.side_effect = ["Sesión 2", "   ", "María"]
+        st.checkbox.return_value = True
+        st.button.side_effect = [True]
+
+        _render_sessions(config)
+
+        assert config.sessions == [first]
+        st.error.assert_called_once_with("Ingresá un teléfono")
+        mock_st["sync"].assert_not_called()
+
+    def test_telefono_repetido_no_crea_y_avisa(self, mock_st):
+        from testing.components.sidebar import _render_sessions
+
+        st = mock_st["sidebar"]
+        first = make_session()
+        config = make_config(first)
+        st.selectbox.return_value = session_option(first)
+        st.text_input.side_effect = ["Sesión 2", first.phone, "María"]
+        st.checkbox.return_value = True
+        st.button.side_effect = [True]
+
+        _render_sessions(config)
+
+        assert config.sessions == [first]
+        st.error.assert_called_once_with("Ese teléfono ya está en uso")
+        mock_st["sync"].assert_not_called()
+
+    def test_cambiar_de_sesion_no_toca_los_mensajes(self, mock_st):
+        from testing.components.sidebar import _render_sessions
+
+        st = mock_st["sidebar"]
+        first = make_session(messages=[{"role": "user", "content": "uno", "debug": {}}])
+        second = make_session(
+            "Sesión 2",
+            "5491187654321",
+            messages=[{"role": "user", "content": "dos", "debug": {}}],
+        )
+        config = make_config(first, second)
+        st.selectbox.return_value = session_option(second)
+        st.checkbox.return_value = True
+        st.button.return_value = False
+
+        active = _render_sessions(config)
+
+        assert active is second
+        assert config.active_session_id == second.id
+        assert first.messages == [{"role": "user", "content": "uno", "debug": {}}]
+        assert second.messages == [{"role": "user", "content": "dos", "debug": {}}]
+        mock_st["sync"].assert_not_called()
+
+    def test_toggle_vinculado_actualiza_y_sincroniza(self, mock_st):
+        from testing.components.sidebar import _render_sessions
+
+        st = mock_st["sidebar"]
+        first = make_session(registered=True)
+        config = make_config(first)
+        st.selectbox.return_value = session_option(first)
+        st.checkbox.side_effect = [False, True]
+        st.button.return_value = False
+
+        _render_sessions(config)
+
+        assert first.user_registered is False
+        mock_st["sync"].assert_called_once_with(
+            ANY, phone=first.phone, name=first.user_name, registered=False
+        )
+
+    def test_eliminar_solo_con_mas_de_una_sesion(self, mock_st):
+        from testing.components.sidebar import _render_sessions
+
+        st = mock_st["sidebar"]
+        first = make_session()
+        second = make_session("Sesión 2", "5491187654321")
+        config = make_config(first, second, active_index=1)
+        st.selectbox.return_value = session_option(second)
+        st.text_input.side_effect = ["Sesión 3", "", ""]
+        st.checkbox.return_value = True
+        st.button.side_effect = [False, True]
+
+        _render_sessions(config)
+
+        assert config.sessions == [first]
+        assert config.active_session_id == first.id
+        mock_st["sync"].assert_not_called()
+
+    def test_no_hay_boton_eliminar_con_una_sola_sesion(self, mock_st):
+        from testing.components.sidebar import _render_sessions
+
+        st = mock_st["sidebar"]
+        first = make_session()
+        config = make_config(first)
+        st.selectbox.return_value = session_option(first)
+        st.checkbox.return_value = True
+        st.button.return_value = False
+
+        _render_sessions(config)
+
+        assert config.sessions == [first]
+        assert [call.kwargs["key"] for call in st.button.call_args_list] == ["create_session"]
+
+    def test_limpiar_chat_vacia_solo_la_activa(self, mock_st):
+        from testing.components.sidebar import render_sidebar
+
+        st = mock_st["sidebar"]
+        active = make_session(messages=[{"role": "user", "content": "uno", "debug": {}}])
+        other = make_session(
+            "Sesión 2",
+            "5491187654321",
+            messages=[{"role": "user", "content": "dos", "debug": {}}],
+        )
+        config = make_config(active, other)
+        st.session_state["config"] = config
+
+        st.selectbox.side_effect = [
+            "gemini",
+            "prompt.md",
+            "gemini-3.6-flash",
+            session_option(active),
+        ]
+        st.text_input.side_effect = ["Sesión 3", "", ""]
+        st.checkbox.return_value = True
+        st.button.side_effect = [False, False, True, False]
+
+        render_sidebar()
+
+        assert active.messages == []
+        assert other.messages == [{"role": "user", "content": "dos", "debug": {}}]
 
 
 class TestSinModoDirecto:
@@ -156,14 +358,15 @@ class TestSinModoDirecto:
         from testing.components.sidebar import render_sidebar
 
         st = mock_st["sidebar"]
-        st.sidebar.__enter__ = MagicMock(return_value=None)
-        st.sidebar.__exit__ = MagicMock(return_value=False)
-        col = MagicMock()
-        col.__enter__ = MagicMock(return_value=None)
-        col.__exit__ = MagicMock(return_value=False)
-        st.columns.return_value = (col, col)
+        session = make_session()
+        st.session_state["config"] = make_config(session)
 
-        st.selectbox.return_value = "gemini"
+        st.selectbox.side_effect = [
+            "gemini",
+            "prompt.md",
+            "gemini-3.6-flash",
+            session_option(session),
+        ]
         st.text_input.return_value = "5491112345678"
         st.checkbox.return_value = True
         st.button.return_value = False
@@ -278,11 +481,12 @@ class TestChatLogic:
                 prompt_path="prompt.md",
                 redis_state={"step": "none"},
             )
-            reply, debug = await _process_message("Gasté 5000", config)
+            reply, debug = await _process_message("Gasté 5000", config, "5491187654321")
 
         assert reply == "✅ registrado"
         assert debug["service_log"] == "finance"
         assert debug["redis_state"]["step"] == "none"
+        assert mock_send.await_args.kwargs["phone"] == "5491187654321"
 
     @pytest.mark.asyncio
     async def test_process_message_webhook_unknown_service(self, mock_st):
@@ -306,7 +510,7 @@ class TestChatLogic:
                 prompt_path="prompt.md",
                 redis_state=None,
             )
-            reply, debug = await _process_message("test", config)
+            reply, debug = await _process_message("test", config, "5491112345678")
 
         assert debug["service_log"] == "unknown"
 
@@ -331,14 +535,19 @@ class TestChatLogic:
         from testing.components.chat import render_chat
 
         chat_st = mock_st["chat"]
-        chat_st.session_state.messages = [
-            {"role": "user", "content": "hola", "debug": {}},
-            {
-                "role": "assistant",
-                "content": "respuesta",
-                "debug": {"raw_json": {"intent": "greeting"}, "latency_ms": 5.0},
-            },
-        ]
+        config = make_config(
+            make_session(
+                messages=[
+                    {"role": "user", "content": "hola", "debug": {}},
+                    {
+                        "role": "assistant",
+                        "content": "respuesta",
+                        "debug": {"raw_json": {"intent": "greeting"}, "latency_ms": 5.0},
+                    },
+                ]
+            ),
+            debug_json=True,
+        )
         chat_st.chat_input.return_value = None
 
         chat_msg = MagicMock()
@@ -346,64 +555,118 @@ class TestChatLogic:
         chat_msg.__exit__ = MagicMock(return_value=False)
         chat_st.chat_message.return_value = chat_msg
 
-        render_chat(TestingConfig(debug_json=True))
+        render_chat(config)
 
         assert chat_st.chat_message.call_count == 2
 
 
 class TestRenderChat:
+    def test_render_chat_sin_sesion_activa_avisa(self, mock_st):
+        from testing.components.chat import render_chat
+
+        chat_st = mock_st["chat"]
+
+        render_chat(TestingConfig())
+
+        chat_st.info.assert_called_once()
+        chat_st.chat_message.assert_not_called()
+
     def test_render_chat_displays_and_handles_input(self, mock_st):
         from testing.components.chat import render_chat
 
         chat_st = mock_st["chat"]
-        chat_st.session_state.messages = []
+        config = make_config(make_session())
         chat_st.chat_input.return_value = None
 
-        render_chat(TestingConfig())
+        render_chat(config)
 
         chat_st.chat_message.assert_not_called()
+        assert config.active_session().messages == []
 
-    def test_render_chat_with_prompt(self, mock_st):
+    def test_render_chat_appendea_en_la_sesion_activa(self, mock_st):
         from testing.components.chat import render_chat
 
         chat_st = mock_st["chat"]
-        chat_st.session_state.messages = []
+        first = make_session()
+        second = make_session("Sesión 2", "5491187654321")
+        config = make_config(first, second, active_index=1)
         chat_st.chat_input.return_value = "hola"
         chat_st.chat_message.return_value.__enter__ = MagicMock(return_value=None)
         chat_st.chat_message.return_value.__exit__ = MagicMock(return_value=False)
         chat_st.spinner.return_value.__enter__ = MagicMock(return_value=None)
         chat_st.spinner.return_value.__exit__ = MagicMock(return_value=False)
-        chat_st.sidebar.__enter__ = MagicMock(return_value=None)
-        chat_st.sidebar.__exit__ = MagicMock(return_value=False)
-        chat_st.download_button.return_value = None
 
-        # Real async processing would hit the LLM; patch it
         with (
             patch(
                 "testing.components.chat._process_message",
                 new_callable=AsyncMock,
+                return_value=("respuesta", {"latency_ms": 1.0}),
+            ),
+        ):
+            render_chat(config)
+
+        assert second.messages[0]["role"] == "user"
+        assert second.messages[1]["content"] == "respuesta"
+        assert first.messages == []
+
+    def test_pipeline_recibe_el_telefono_de_la_sesion_activa(self, mock_st):
+        from testing.components.chat import render_chat
+
+        chat_st = mock_st["chat"]
+        first = make_session()
+        second = make_session("Sesión 2", "5491187654321")
+        config = make_config(first, second, active_index=1)
+        chat_st.chat_input.return_value = "hola"
+        chat_st.chat_message.return_value.__enter__ = MagicMock(return_value=None)
+        chat_st.chat_message.return_value.__exit__ = MagicMock(return_value=False)
+        chat_st.spinner.return_value.__enter__ = MagicMock(return_value=None)
+        chat_st.spinner.return_value.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch(
+                "testing.components.chat._process_message",
+                new_callable=AsyncMock,
+                return_value=("respuesta", {"latency_ms": 1.0}),
             ) as mock_process,
         ):
-            mock_process.return_value = ("respuesta", {"latency_ms": 1.0})
+            render_chat(config)
 
-            render_chat(TestingConfig())
+        assert mock_process.await_count == 1
+        assert mock_process.call_args.args[2] == second.phone
 
-        assert len(chat_st.session_state["messages"]) == 2
-        assert chat_st.session_state["messages"][0]["role"] == "user"
-        assert chat_st.session_state["messages"][1]["content"] == "respuesta"
+    def test_render_chat_no_renderiza_mensajes_de_otra_sesion(self, mock_st):
+        from testing.components.chat import render_chat
+
+        chat_st = mock_st["chat"]
+        first = make_session(messages=[{"role": "user", "content": "uno", "debug": {}}])
+        second = make_session(
+            "Sesión 2",
+            "5491187654321",
+            messages=[
+                {"role": "user", "content": "dos", "debug": {}},
+                {"role": "assistant", "content": "tres", "debug": {}},
+            ],
+        )
+        config = make_config(first, second)
+        chat_st.chat_input.return_value = None
+        chat_st.chat_message.return_value.__enter__ = MagicMock(return_value=None)
+        chat_st.chat_message.return_value.__exit__ = MagicMock(return_value=False)
+
+        render_chat(config)
+
+        assert chat_st.chat_message.call_count == 1
+        chat_st.write.assert_called_once_with("uno")
 
     def test_render_chat_empty_response(self, mock_st):
         from testing.components.chat import render_chat
 
         chat_st = mock_st["chat"]
-        chat_st.session_state.messages = []
+        config = make_config(make_session())
         chat_st.chat_input.return_value = "hola"
         chat_st.chat_message.return_value.__enter__ = MagicMock(return_value=None)
         chat_st.chat_message.return_value.__exit__ = MagicMock(return_value=False)
         chat_st.spinner.return_value.__enter__ = MagicMock(return_value=None)
         chat_st.spinner.return_value.__exit__ = MagicMock(return_value=False)
-        chat_st.sidebar.__enter__ = MagicMock(return_value=None)
-        chat_st.sidebar.__exit__ = MagicMock(return_value=False)
 
         with (
             patch(
@@ -412,23 +675,20 @@ class TestRenderChat:
                 return_value=("", {"latency_ms": 1.0}),
             ),
         ):
-            render_chat(TestingConfig())
+            render_chat(config)
 
-        assert chat_st.session_state["messages"][1]["content"] == "Sin respuesta"
+        assert config.active_session().messages[1]["content"] == "Sin respuesta"
 
     def test_muestra_error_del_llm_con_st_error(self, mock_st):
         from testing.components.chat import render_chat
 
         st = mock_st["chat"]
+        config = make_config(make_session())
         st.chat_input.return_value = "Gasté 5000 en supermercado"
-        st.session_state.messages = []
         st.chat_message.return_value.__enter__ = MagicMock(return_value=None)
         st.chat_message.return_value.__exit__ = MagicMock(return_value=False)
         st.spinner.return_value.__enter__ = MagicMock(return_value=None)
         st.spinner.return_value.__exit__ = MagicMock(return_value=False)
-        st.sidebar.__enter__ = MagicMock(return_value=None)
-        st.sidebar.__exit__ = MagicMock(return_value=False)
-        st.download_button.return_value = None
 
         with (
             patch(
@@ -440,7 +700,7 @@ class TestRenderChat:
                 ),
             ),
         ):
-            render_chat(TestingConfig())
+            render_chat(config)
 
         st.error.assert_called_once()
 
@@ -448,9 +708,9 @@ class TestRenderChat:
         from testing.components.chat import render_chat
 
         chat_st = mock_st["chat"]
-        chat_st.session_state.messages = [
-            {"role": "assistant", "content": "l1\nl2", "debug": {}},
-        ]
+        config = make_config(
+            make_session(messages=[{"role": "assistant", "content": "l1\nl2", "debug": {}}])
+        )
         chat_st.chat_input.return_value = None
 
         chat_msg = MagicMock()
@@ -458,7 +718,7 @@ class TestRenderChat:
         chat_msg.__exit__ = MagicMock(return_value=False)
         chat_st.chat_message.return_value = chat_msg
 
-        render_chat(TestingConfig())
+        render_chat(config)
 
         chat_st.markdown.assert_called_once_with("l1  \nl2")
         chat_st.write.assert_not_called()
@@ -467,15 +727,12 @@ class TestRenderChat:
         from testing.components.chat import render_chat
 
         chat_st = mock_st["chat"]
-        chat_st.session_state.messages = []
+        config = make_config(make_session())
         chat_st.chat_input.return_value = "hola"
         chat_st.chat_message.return_value.__enter__ = MagicMock(return_value=None)
         chat_st.chat_message.return_value.__exit__ = MagicMock(return_value=False)
         chat_st.spinner.return_value.__enter__ = MagicMock(return_value=None)
         chat_st.spinner.return_value.__exit__ = MagicMock(return_value=False)
-        chat_st.sidebar.__enter__ = MagicMock(return_value=None)
-        chat_st.sidebar.__exit__ = MagicMock(return_value=False)
-        chat_st.download_button.return_value = None
 
         with (
             patch(
@@ -484,7 +741,7 @@ class TestRenderChat:
                 return_value=("l1\nl2", {"latency_ms": 1.0}),
             ),
         ):
-            render_chat(TestingConfig())
+            render_chat(config)
 
         chat_st.markdown.assert_called_once_with("l1  \nl2")
 
@@ -492,9 +749,9 @@ class TestRenderChat:
         from testing.components.chat import render_chat
 
         chat_st = mock_st["chat"]
-        chat_st.session_state.messages = [
-            {"role": "user", "content": "hola", "debug": {}},
-        ]
+        config = make_config(
+            make_session(messages=[{"role": "user", "content": "hola", "debug": {}}])
+        )
         chat_st.chat_input.return_value = None
 
         chat_msg = MagicMock()
@@ -502,7 +759,7 @@ class TestRenderChat:
         chat_msg.__exit__ = MagicMock(return_value=False)
         chat_st.chat_message.return_value = chat_msg
 
-        render_chat(TestingConfig())
+        render_chat(config)
 
         chat_st.write.assert_called_once_with("hola")
         chat_st.markdown.assert_not_called()
@@ -513,41 +770,65 @@ class TestRenderChatCopyButtons:
         from testing.components.chat import render_chat
 
         chat_st = mock_st["chat"]
-        chat_st.session_state.messages = [
-            {"role": "user", "content": "hola", "debug": {}},
-            {
-                "role": "assistant",
-                "content": "ok",
-                "debug": {"latency_ms": 42.0, "raw_json": {"intent": "greeting"}},
-            },
-        ]
+        config = make_config(
+            make_session(
+                messages=[
+                    {"role": "user", "content": "hola", "debug": {}},
+                    {
+                        "role": "assistant",
+                        "content": "ok",
+                        "debug": {"latency_ms": 42.0, "raw_json": {"intent": "greeting"}},
+                    },
+                ]
+            )
+        )
         chat_st.chat_input.return_value = None
         chat_st.chat_message.return_value.__enter__ = MagicMock(return_value=None)
         chat_st.chat_message.return_value.__exit__ = MagicMock(return_value=False)
-        chat_st.sidebar.__enter__ = MagicMock(return_value=None)
-        chat_st.sidebar.__exit__ = MagicMock(return_value=False)
 
-        render_chat(TestingConfig())
+        render_chat(config)
 
     def test_renders_two_copy_buttons_with_and_without_debug(self, mock_st):
         self._render_with_messages(mock_st)
 
         calls = mock_st["components_html"].call_args_list
-        assert len(calls) == 2
-        plain_markup = calls[0].args[0]
-        debug_markup = calls[1].args[0]
-        assert "📋 Copiar conversación" in plain_markup
-        assert "latency_ms" not in plain_markup
-        assert "🐞 Copiar con debug" in debug_markup
-        assert "latency_ms" in debug_markup
+        plain = [call for call in calls if "📋 Copiar conversación" in call.args[0]]
+        debug = [call for call in calls if "🐞 Copiar con debug" in call.args[0]]
+        assert len(plain) == 1
+        assert len(debug) == 1
+        assert "latency_ms" not in plain[0].args[0]
+        assert "latency_ms" in debug[0].args[0]
 
     def test_skips_copy_buttons_without_messages(self, mock_st):
         from testing.components.chat import render_chat
 
         chat_st = mock_st["chat"]
-        chat_st.session_state.messages = []
+        config = make_config(make_session())
         chat_st.chat_input.return_value = None
 
-        render_chat(TestingConfig())
+        render_chat(config)
 
         mock_st["components_html"].assert_not_called()
+
+    def test_exporta_todas_las_sesiones_si_solo_la_inactiva_tiene_mensajes(self, mock_st):
+        from testing.components.chat import render_chat
+
+        chat_st = mock_st["chat"]
+        empty = make_session()
+        other = make_session(
+            "Sesión 2",
+            "5491187654321",
+            messages=[{"role": "user", "content": "dos", "debug": {}}],
+        )
+        config = make_config(empty, other)
+        chat_st.chat_input.return_value = None
+
+        render_chat(config)
+
+        assert [call.kwargs["key"] for call in chat_st.download_button.call_args_list] == [
+            "export_all_json",
+            "export_all_text",
+        ]
+        calls = mock_st["components_html"].call_args_list
+        assert len(calls) == 1
+        assert "🐞 Copiar todas con debug" in calls[0].args[0]
