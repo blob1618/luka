@@ -23,13 +23,20 @@ def get_available_prompts(testing_dir: str = "testing") -> list[str]:
     Detect available prompt files.
 
     Always includes 'prompt.md' (project default).
-    Scans testing/prompts/ for additional .md files.
+    Scans testing/prompts/ (bare names) and prompts/ (repo-relative paths).
     """
     prompts = ["prompt.md"]
-    prompts_dir = Path(testing_dir) / "prompts"
-    if prompts_dir.exists():
-        for p in sorted(prompts_dir.glob("*.md")):
-            prompts.append(p.name)
+    testing_prompts_dir = Path(testing_dir) / "prompts"
+    if testing_prompts_dir.exists():
+        for p in sorted(testing_prompts_dir.glob("*.md")):
+            if p.name not in prompts:
+                prompts.append(p.name)
+    repo_prompts_dir = Path(testing_dir).parent / "prompts"
+    if repo_prompts_dir.exists():
+        for p in sorted(repo_prompts_dir.glob("*.md")):
+            rel = f"prompts/{p.name}"
+            if rel not in prompts:
+                prompts.append(rel)
     return prompts
 
 

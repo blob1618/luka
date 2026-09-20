@@ -9,7 +9,7 @@ El entorno vive dentro de `testing/` y se levanta únicamente con Docker o Podma
 - Chat que simula WhatsApp: entrada de mensajes, historial de conversación, avatar de Luka y respuesta procesada por el flujo completo del dispatcher (modo webhook). No se envía ningún mensaje real por WhatsApp.
 - Configuración desde la sidebar:
   - Provider LLM (Gemini o Mistral, según los providers registrados en el factory).
-  - Archivo de prompt (`prompt.md` por defecto y cualquier `.md` adicional en `testing/prompts/`).
+  - Archivo de prompt (`prompts/core_prompt.md` por defecto; el selector lista los `.md` del repo en `prompts/` y los de `testing/prompts/`).
   - Modelo (lista por provider, el primer item es el default).
   - Usuario simulado: toggle registrado/no registrado, teléfono y nombre.
 - Simulador de usuario: si el toggle "Registrado" está activo, se crea en la base de datos el usuario de test con el teléfono y nombre configurados (via `UserSimulator`). Con el toggle apagado se puede probar el flujo de usuario no registrado.
@@ -17,6 +17,7 @@ El entorno vive dentro de `testing/` y se levanta únicamente con Docker o Podma
   - JSON crudo de la respuesta del LLM.
   - Latencia de procesamiento en milisegundos.
   - Estado de Redis (estado multi-turno de la conversación).
+  - Memoria conversacional: últimos turnos guardados en Redis y su TTL.
   - Servicio invocado / logs del dispatcher.
 - Reset de base de datos: borra movimientos, categorías y recordatorios del usuario de test (el usuario se conserva).
 - Exportar la conversación como JSON o texto plano, y copiarla al portapapeles con o sin datos de debug.

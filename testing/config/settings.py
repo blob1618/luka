@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 class TestingConfig:
     """Holds all sidebar configuration state."""
     provider: str = "gemini"                  # LLM provider name
-    prompt_path: str = "prompt.md"            # path to prompt file
+    prompt_path: str = "prompts/core_prompt.md"  # path to prompt file
     model: str = ""                           # modelo seleccionado ("" = primer item de la lista)
     user_registered: bool = True              # simulate registered user
     phone: str = "5491112345678"              # simulated phone number
