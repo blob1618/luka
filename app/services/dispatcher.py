@@ -48,6 +48,7 @@ from app.services.llm import LLMService
 from app.services.llm_contract import resolve_relative_date
 from app.services.onboarding import OnboardingDecision, OnboardingService
 from app.services.reminder import ReminderListResult, ReminderResult, ReminderService
+from app.services.telemetry import track_phase
 from app.services.reference_resolution import (
     named_movement_targets, normalize_text, recent_count, select_items,
     select_named_months, selects_all, selects_recent,
@@ -481,17 +482,18 @@ async def _handle_movement_action(
 def _update_ultimo_mensaje(sender_phone: str) -> None:
     """Update usuario.ultimo_mensaje_en for WhatsApp 24h window tracking."""
     from app.models.database import Usuario
-    session = SessionLocal()
-    try:
-        session.query(Usuario).filter(
-            Usuario.whatsapp_id == sender_phone
-        ).update({"ultimo_mensaje_en": func.now()})
-        session.commit()
-    except Exception as exc:
-        session.rollback()
-        print(f"[UPDATE_ULTIMO_MENSAJE] Error: {type(exc).__name__}: {exc}")
-    finally:
-        session.close()
+    with track_phase("db"):
+        session = SessionLocal()
+        try:
+            session.query(Usuario).filter(
+                Usuario.whatsapp_id == sender_phone
+            ).update({"ultimo_mensaje_en": func.now()})
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            print(f"[UPDATE_ULTIMO_MENSAJE] Error: {type(exc).__name__}: {exc}")
+        finally:
+            session.close()
 
 
 def _is_create_reminder(extracted_data: dict) -> bool:
@@ -783,19 +785,20 @@ async def _register_single_with_hint(
 ) -> str:
     category_name = mov.get("category")
     llm_result = {**extracted_data, **mov}
-    result = await asyncio.to_thread(
-        FinanceService.register_movement_with_category,
-        sender_phone=sender_phone,
-        whatsapp_message_id=whatsapp_message_id,
-        original_text=text_body,
-        movement_type=llm_result.get("movement_type", "egreso"),
-        amount=Decimal(str(llm_result.get("amount") or 0)),
-        currency=llm_result.get("currency", "ARS"),
-        description=_movement_description(llm_result),
-        category_name=category_name,
-        create_category_if_missing=True,
-        fecha_movimiento=resolve_relative_date(mov.get("fecha"), date.today()),  # noqa: DTZ011
-    )
+    with track_phase("db"):
+        result = await asyncio.to_thread(
+            FinanceService.register_movement_with_category,
+            sender_phone=sender_phone,
+            whatsapp_message_id=whatsapp_message_id,
+            original_text=text_body,
+            movement_type=llm_result.get("movement_type", "egreso"),
+            amount=Decimal(str(llm_result.get("amount") or 0)),
+            currency=llm_result.get("currency", "ARS"),
+            description=_movement_description(llm_result),
+            category_name=category_name,
+            create_category_if_missing=True,
+            fecha_movimiento=resolve_relative_date(mov.get("fecha"), date.today()),  # noqa: DTZ011
+        )
 
     print(
         "[MOVEMENT_REGISTRATION]",
@@ -907,14 +910,15 @@ async def _register_multiop(
             f"{whatsapp_message_id}:movement:{index}"
             if whatsapp_message_id and len(movements) > 1 else whatsapp_message_id
         )
-        result = await asyncio.to_thread(
-            FinanceService.register_movement_from_whatsapp_text,
-            sender_phone=sender_phone,
-            whatsapp_message_id=item_message_id,
-            original_text=text_body,
-            llm_result=llm_result,
-            fecha_movimiento=resolve_relative_date(mov.get("fecha"), date.today()),  # noqa: DTZ011
-        )
+        with track_phase("db"):
+            result = await asyncio.to_thread(
+                FinanceService.register_movement_from_whatsapp_text,
+                sender_phone=sender_phone,
+                whatsapp_message_id=item_message_id,
+                original_text=text_body,
+                llm_result=llm_result,
+                fecha_movimiento=resolve_relative_date(mov.get("fecha"), date.today()),  # noqa: DTZ011
+            )
         print(
             "[MOVEMENT_REGISTRATION]",
             f"user={sender_phone}",
@@ -1300,13 +1304,14 @@ async def _handle_create_limit(
     if edit is None:
         edit = last_limit is not None
 
-    result = await asyncio.to_thread(
-        LimitService.create_limit,
-        sender_phone,
-        extracted_data,
-        last_limit=last_limit,
-        allow_category_creation=allow_category_creation,
-    )
+    with track_phase("db"):
+        result = await asyncio.to_thread(
+            LimitService.create_limit,
+            sender_phone,
+            extracted_data,
+            last_limit=last_limit,
+            allow_category_creation=allow_category_creation,
+        )
 
     if result.status in ("created", "updated"):
         await ConversationService.set_last_limit(
@@ -1712,15 +1717,16 @@ async def _handle_query_movements(sender_phone: str, extracted_data: dict) -> st
     }
 
     try:
-        result = await asyncio.to_thread(
-            FinanceService.query_movements,
-            user_id,
-            movement_type=movement_type,
-            category_name=category_name,
-            start_date=start_date,
-            end_date=end_date,
-            limit=limit,
-        )
+        with track_phase("db"):
+            result = await asyncio.to_thread(
+                FinanceService.query_movements,
+                user_id,
+                movement_type=movement_type,
+                category_name=category_name,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+            )
     except Exception as exc:
         print(f"[QUERY_MOVEMENTS_DISPATCHER] Error: {type(exc).__name__}: {exc}")
         return "Hubo un problema al consultar tus movimientos. Por favor, intentá nuevamente."
@@ -1873,7 +1879,8 @@ async def _dispatch_incoming_message(
     Returns:
         DispatchResult with reply_text and debug metadata.
     """
-    onboarding_result = OnboardingService.prepare_whatsapp_message(sender_phone)
+    with track_phase("db"):
+        onboarding_result = OnboardingService.prepare_whatsapp_message(sender_phone)
     if onboarding_result.decision == OnboardingDecision.SEND_INVITATION:
         return DispatchResult(
             reply_text=_onboarding_invitation_reply(
@@ -2052,11 +2059,12 @@ async def _dispatch_incoming_message(
                         for item in recent_items.items[:5]
                     )
                     context += f"\nELEMENTOS MOSTRADOS ({recent_items.entity}): {summary}."
-            llm_result_cache = await LLMService.process_message(
-                text_body,
-                context=context,
-                history=conversation_history,
-            )
+            with track_phase("llm"):
+                llm_result_cache = await LLMService.process_message(
+                    text_body,
+                    context=context,
+                    history=conversation_history,
+                )
         return llm_result_cache
 
     # ----------------------------------------------------------
@@ -2712,23 +2720,24 @@ async def _confirm_pending_category_action(sender_phone: str) -> DispatchResult:
             reply_text="Se perdió el contexto. Volvé a registrar el movimiento.",
             service_invoked="conversation_flow",
         )
-    result = await asyncio.to_thread(
-        FinanceService.register_movement_with_category,
-        sender_phone=sender_phone,
-        whatsapp_message_id=pending.whatsapp_message_id,
-        original_text=pending.original_text,
-        movement_type=pending.movement_type,
-        amount=pending.amount,
-        currency=pending.currency,
-        description=pending.description,
-        category_name=pending.inferred_category,
-        create_category_if_missing=True,
-        category_creation_confirmed=True,
-        fecha_movimiento=resolve_relative_date(
-            pending.llm_result_extra.get("fecha"),
-            date.today(),  # noqa: DTZ011
-        ),
-    )
+    with track_phase("db"):
+        result = await asyncio.to_thread(
+            FinanceService.register_movement_with_category,
+            sender_phone=sender_phone,
+            whatsapp_message_id=pending.whatsapp_message_id,
+            original_text=pending.original_text,
+            movement_type=pending.movement_type,
+            amount=pending.amount,
+            currency=pending.currency,
+            description=pending.description,
+            category_name=pending.inferred_category,
+            create_category_if_missing=True,
+            category_creation_confirmed=True,
+            fecha_movimiento=resolve_relative_date(
+                pending.llm_result_extra.get("fecha"),
+                date.today(),  # noqa: DTZ011
+            ),
+        )
     if result.status in {"registered", "duplicate"}:
         await ConversationService.clear_state(sender_phone)
     reply_text = _registration_dispatch_reply(

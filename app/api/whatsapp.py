@@ -309,3 +309,53 @@ async def send_whatsapp_message(
 
         print(f"Mensaje enviado a {payload['to']}")
         return True
+
+
+async def send_whatsapp_reaction(
+    to_number: str,
+    message_id: str,
+    emoji: str = "⏳",
+) -> bool:
+    """Send an immediate reaction emoji for an inbound WhatsApp message."""
+    api_token = os.getenv("WHATSAPP_API_TOKEN")
+    phone_id = os.getenv("WHATSAPP_PHONE_ID")
+    api_version = whatsapp_graph_api_version()
+    if not api_token or not phone_id:
+        print("Falta WHATSAPP_API_TOKEN o WHATSAPP_PHONE_ID. No se puede enviar la reacción.")
+        return False
+    if api_version is None:
+        print("WHATSAPP_GRAPH_API_VERSION tiene un formato invalido.")
+        return False
+
+    normalized_to = normalize_whatsapp_number(to_number)
+    if not normalized_to or not message_id or not emoji:
+        print("Datos insuficientes para enviar la reacción de WhatsApp.")
+        return False
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": normalized_to,
+        "type": "reaction",
+        "reaction": {
+            "message_id": message_id,
+            "emoji": emoji,
+        },
+    }
+
+    url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {api_token}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            if response.status_code != 200:
+                print(f"Error al enviar la reacción: {response.status_code}")
+                return False
+            return True
+    except Exception as exc:
+        print(f"Excepción al enviar la reacción de WhatsApp: {type(exc).__name__}")
+        return False
