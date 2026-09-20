@@ -25,36 +25,51 @@ class LLMService:
     _prompt_path: str | None = None
 
     @classmethod
-    def set_prompt_path(cls, path: str) -> None:
-        """Sobreescribe la ruta a prompt.md (útil para tests)."""
+    def set_prompt_path(cls, path: str | None) -> None:
+        """Sobreescribe la ruta al prompt (útil para tests)."""
         cls._prompt_path = path
         cls._system_prompt = None  # force reload
 
     @classmethod
     def _load_system_prompt(cls) -> str:
         """
-        Carga el system prompt desde prompt.md.
-        Se cachea en memoria tras la primera carga.
+        Carga el system prompt.
+        Si se definió una ruta explícita (set_prompt_path o SYSTEM_PROMPT_PATH),
+        se intenta cargar desde allí. En la ruta predeterminada, busca primero
+        prompts/core_prompt.md y luego prompt.md. Si ninguna existe, usa
+        un prompt de fallback interno. Se cachea en memoria tras la primera carga.
         """
         if cls._system_prompt is not None:
             return cls._system_prompt
 
-        path = cls._prompt_path or os.getenv(
-            "SYSTEM_PROMPT_PATH",
-            str(Path(__file__).resolve().parent.parent.parent / "prompt.md"),
-        )
+        explicit_path = cls._prompt_path or os.getenv("SYSTEM_PROMPT_PATH")
+        if explicit_path:
+            candidate_paths = [Path(explicit_path)]
+        else:
+            root = Path(__file__).resolve().parent.parent.parent
+            candidate_paths = [
+                root / "prompts" / "core_prompt.md",
+                root / "prompt.md",
+            ]
 
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                cls._system_prompt = f.read()
-        except FileNotFoundError:
-            print(f"[LLMService] prompt.md not found at {path}, using fallback prompt.")
-            cls._system_prompt = (
-                "Eres LUKA, un asistente financiero personal que opera por WhatsApp. "
-                "Ayudas a los usuarios a registrar y gestionar sus gastos personales. "
-                "Responde siempre en español, de forma amable y concisa. "
-                "No des consejos financieros profesionales ni temas no relacionados."
-            )
+        for path in candidate_paths:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    cls._system_prompt = f.read()
+                    return cls._system_prompt
+            except FileNotFoundError:
+                continue
+
+        print(
+            f"[LLMService] No prompt file found at {[str(p) for p in candidate_paths]}, "
+            "using fallback prompt."
+        )
+        cls._system_prompt = (
+            "Eres LUKA, un asistente financiero personal que opera por WhatsApp. "
+            "Ayudas a los usuarios a registrar y gestionar sus gastos personales. "
+            "Responde siempre en español, de forma amable y concisa. "
+            "No des consejos financieros profesionales ni temas no relacionados."
+        )
 
         return cls._system_prompt
 

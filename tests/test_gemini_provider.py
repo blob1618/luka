@@ -41,12 +41,12 @@ async def test_503_repetido_cae_al_modelo_fallback():
     assert result["intent"] == "expense"
     urls = client.requested_urls
     assert any("gemini-3.1-flash-lite" in u for u in urls)
-    assert any("gemini-3.5-flash" in u for u in urls)
+    assert any("gemini-3.1-flash-lite-preview" in u for u in urls)
 
 
 @pytest.mark.asyncio
 async def test_503_en_todos_los_modelos_expone_el_error_real():
-    async with _run_generate([FakeResponse(503)] * 6) as (provider, client):  # 2 reintentos x 3 modelos
+    async with _run_generate([FakeResponse(503)] * 8) as (provider, client):  # 2 reintentos x 4 modelos
         with pytest.raises(httpx.HTTPStatusError):
             await provider.generate_json("sys", "user")
 
@@ -66,7 +66,24 @@ async def test_404_cambia_inmediatamente_al_siguiente_modelo():
     async with _run_generate([FakeResponse(404), FakeResponse(200, text=VALID_JSON)]) as (provider, client):
         result = await provider.generate_json("sys", "user")
     assert result["intent"] == "expense"
-    assert client.requested_urls[-1].endswith("gemini-3.5-flash:generateContent")
+    assert client.requested_urls[-1].endswith("gemini-3.1-flash-lite-preview:generateContent")
+
+
+def test_gemini_provider_model_configuration():
+    assert GeminiProvider.DEFAULT_MODEL == "gemini-3.1-flash-lite"
+    assert GeminiProvider.FALLBACK_MODELS == (
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3.5-flash-lite",
+        "gemini-3-flash-preview",
+    )
+    provider = GeminiProvider()
+    candidates = provider._get_model_candidates(GeminiProvider.DEFAULT_MODEL)
+    assert candidates == [
+        "gemini-3.1-flash-lite",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3.5-flash-lite",
+        "gemini-3-flash-preview",
+    ]
 
 
 @pytest.mark.asyncio
