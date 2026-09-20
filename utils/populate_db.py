@@ -1,13 +1,15 @@
-import os
 import sys
+from pathlib import Path
+
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
-# Añadir el directorio raíz al path para que Python encuentre 'app'
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Añadir la raíz del repo al path para que Python encuentre 'app'
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT))
 
-load_dotenv()
+load_dotenv(ROOT / ".env")
 
 from app.models.database import SessionLocal, Usuario  # noqa: E402
 
