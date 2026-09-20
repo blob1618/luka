@@ -36,3 +36,17 @@ def test_legacy_financial_tables_are_removed_without_cascade():
     assert "DROP TABLE IF EXISTS PUBLIC.METAS;" in sql
     assert "DROP TABLE IF EXISTS PUBLIC.MOVIMIENTOS;" in sql
     assert "CASCADE" not in sql
+
+
+def test_recurring_expense_candidates_migration_contains_schema_guards():
+    migration = MIGRATIONS_DIR / "20260920190000_add_recurring_expense_candidates.sql"
+    sql = migration.read_text(encoding="utf-8").upper()
+
+    assert "CREATE TABLE IF NOT EXISTS PUBLIC.CANDIDATO_GASTO_RECURRENTE" in sql
+    assert "CANDIDATO_GASTO_RECURRENTE_USUARIO_PATRON_KEY UNIQUE (USUARIO_ID, PATRON_HASH)" in sql
+    assert "CANDIDATO_GASTO_RECURRENTE_ESTADO_CHECK" in sql
+    assert "'INVALIDADO'" in sql
+    assert "CANDIDATO_GASTO_RECURRENTE_PATRON_HASH_LEN_CHECK" in sql
+    assert "MOVIMIENTOS_FINANCIEROS_EGRESOS_ACTIVOS_FECHA_IDX" in sql
+    assert "ALTER TABLE PUBLIC.CANDIDATO_GASTO_RECURRENTE ENABLE ROW LEVEL SECURITY" in sql
+    assert "REVOKE ALL ON TABLE PUBLIC.CANDIDATO_GASTO_RECURRENTE FROM ANON, AUTHENTICATED" in sql
