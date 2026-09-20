@@ -13,8 +13,12 @@ class GeminiProvider(LLMProvider):
     """
 
     API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    DEFAULT_MODEL = "gemini-3.6-flash"
-    FALLBACK_MODELS = ("gemini-3.5-flash", "gemini-3-flash-preview")
+    DEFAULT_MODEL = "gemini-3.1-flash-lite"
+    FALLBACK_MODELS = (
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3.5-flash-lite",
+        "gemini-3-flash-preview",
+    )
     LOG_PREFIX = "Gemini"
 
     @staticmethod

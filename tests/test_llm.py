@@ -593,12 +593,12 @@ def test_reset_provider_clears_cached_instance():
 
 
 # =============================================================================
-# Tests de carga de prompt.md
+# Tests de carga de prompt (STK-181)
 # =============================================================================
 
 @pytest.mark.asyncio
-async def test_system_prompt_loaded_from_file(tmp_path):
-    """Prueba: El system prompt se carga correctamente desde prompt.md."""
+async def test_system_prompt_loaded_from_explicit_path(tmp_path):
+    """Prueba: El system prompt se carga correctamente desde una ruta explícita."""
     prompt_content = "# Test Prompt\nEres LUKA, un asistente de prueba."
     prompt_file = tmp_path / "prompt.md"
     prompt_file.write_text(prompt_content, encoding="utf-8")
@@ -610,17 +610,78 @@ async def test_system_prompt_loaded_from_file(tmp_path):
     loaded = LLMService._load_system_prompt()
     assert "Eres LUKA" in loaded
     assert "asistente de prueba" in loaded
+    LLMService.set_prompt_path(None)
+    LLMService._system_prompt = None
 
 
 @pytest.mark.asyncio
-async def test_system_prompt_fallback_on_missing_file():
-    """Prueba: Si no existe prompt.md, se usa un fallback."""
+async def test_system_prompt_fallback_on_missing_explicit_file():
+    """Prueba: Si no existe la ruta explícita, se usa el fallback interno."""
     LLMService._system_prompt = None
     LLMService.set_prompt_path("/ruta/inexistente/prompt.md")
 
     loaded = LLMService._load_system_prompt()
     assert "Eres LUKA" in loaded
     assert "asistente financiero" in loaded
+    LLMService.set_prompt_path(None)
+    LLMService._system_prompt = None
+
+
+def test_system_prompt_default_loads_core_prompt(monkeypatch):
+    """Prueba STK-181: Por defecto, busca prompts/core_prompt.md antes de prompt.md."""
+    LLMService._system_prompt = None
+    LLMService.set_prompt_path(None)
+    monkeypatch.delenv("SYSTEM_PROMPT_PATH", raising=False)
+
+    loaded = LLMService._load_system_prompt()
+    assert "Identidad y Alcance" in loaded
+    assert "Pagué algo" in loaded
+    LLMService._system_prompt = None
+
+
+def test_system_prompt_default_fallback_to_legacy_when_core_missing(monkeypatch):
+    """Prueba STK-181: Si core_prompt.md no existe, recurre a prompt.md."""
+    LLMService._system_prompt = None
+    LLMService.set_prompt_path(None)
+    monkeypatch.delenv("SYSTEM_PROMPT_PATH", raising=False)
+
+    orig_open = open
+
+    def fake_open(path, *args, **kwargs):
+        if "core_prompt.md" in str(path):
+            raise FileNotFoundError("core_prompt not found")
+        return orig_open(path, *args, **kwargs)
+
+    with patch("builtins.open", side_effect=fake_open):
+        loaded = LLMService._load_system_prompt()
+        assert "System Prompt — LUKA" in loaded
+    LLMService._system_prompt = None
+
+
+def test_system_prompt_default_fallback_to_internal_when_both_missing(monkeypatch):
+    """Prueba STK-181: Si ni core_prompt.md ni prompt.md existen, usa fallback interno."""
+    LLMService._system_prompt = None
+    LLMService.set_prompt_path(None)
+    monkeypatch.delenv("SYSTEM_PROMPT_PATH", raising=False)
+
+    with patch("builtins.open", side_effect=FileNotFoundError("file not found")):
+        loaded = LLMService._load_system_prompt()
+        assert "Eres LUKA, un asistente financiero personal" in loaded
+    LLMService._system_prompt = None
+
+
+def test_system_prompt_env_var_override(tmp_path, monkeypatch):
+    """Prueba STK-181: SYSTEM_PROMPT_PATH tiene precedencia sobre la búsqueda por defecto."""
+    custom_prompt = tmp_path / "custom_prompt.md"
+    custom_prompt.write_text("Prompt personalizado por env", encoding="utf-8")
+
+    LLMService._system_prompt = None
+    LLMService.set_prompt_path(None)
+    monkeypatch.setenv("SYSTEM_PROMPT_PATH", str(custom_prompt))
+
+    loaded = LLMService._load_system_prompt()
+    assert loaded == "Prompt personalizado por env"
+    LLMService._system_prompt = None
 
 
 # =============================================================================
