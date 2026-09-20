@@ -24,3 +24,5 @@ Guia practica del flujo actual del equipo.
 - Las pruebas reales de WhatsApp dependen del numero configurado en Meta y de la base de datos compartida.
 - No subir secretos al repo.
 - Si aparece una variable nueva, agregarla a `.env.example`.
+
+La guía técnica de desarrollo (setup, tests y deploy) vive en `docs/development.md`.

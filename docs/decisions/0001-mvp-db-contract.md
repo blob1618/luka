@@ -57,13 +57,13 @@ Si en una release futura el frontend consulta Supabase directamente, deberán de
 
 - Backend y frontend deben adaptarse al contrato oficial del MVP.
 - El contrato se implementa mediante migraciones timestamped y forward-only en `supabase/migrations/`. El estado heredado quedó consolidado en una migración base; todo cambio posterior se agrega como una migración nueva.
-- STK-35 debe persistir movimientos en `public.movimientos_financieros` cuando exista la migración correspondiente.
+- Todo movimiento debe persistir en `public.movimientos_financieros` mediante las migraciones versionadas correspondientes.
 - `public.evento` debe usarse para auditoría/trazabilidad, no como tabla principal de movimientos.
 - El dashboard de Release 1 debe obtener datos financieros mediante endpoints del backend.
 - No se crearán policies RLS públicas para `public.movimientos_financieros` mientras no exista una estrategia formal de Supabase Auth.
 - La autorización de acceso a movimientos financieros queda inicialmente centralizada en el backend.
-- STK-54 debe alinearse con esta decisión: frontend -> backend -> Supabase, no frontend -> Supabase directo.
+- El dashboard debe consumir el backend, no Supabase directo: frontend -> backend -> Supabase.
 
 ## Alcance
 
-Este ticket solo documenta y versiona el contrato DB MVP y el schema actual de Supabase. No implementa migraciones, no ejecuta SQL, no modifica lógica backend, no cambia modelos SQLAlchemy y no borra tablas.
+Este ADR solo documenta y versiona el contrato DB MVP y el schema actual de Supabase. No implementa migraciones, no ejecuta SQL, no modifica lógica backend, no cambia modelos SQLAlchemy y no borra tablas.
