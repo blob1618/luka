@@ -85,6 +85,26 @@ docker compose -f testing/docker-compose.yml down
 
 > Para usar con "Podman" simplemente cambia `docker` por `podman` en los comandos anteriores.
 
+### 4. Correr los Tests
+
+Los tests del entorno viven en `testing/tests/`. Dentro del contenedor se corren con:
+
+```bash
+docker compose -f testing/docker-compose.yml exec streamlit python -m pytest -v testing/tests
+```
+
+El test de integración de la memoria conversacional (`testing/tests/test_conversation_memory_redis.py`) necesita un Redis real y también se puede correr desde el host contra el Redis del compose, con el venv del repo en la raíz:
+
+```bash
+docker compose -f testing/docker-compose.yml up -d redis
+REDIS_URL=redis://localhost:6380 .venv/bin/python -m pytest -v testing/tests/test_conversation_memory_redis.py
+docker compose -f testing/docker-compose.yml stop redis
+```
+
+En Windows, reemplazá `.venv/bin/python` por `python`, o corré el comando dentro del contenedor con `docker compose -f testing/docker-compose.yml run --rm streamlit python -m pytest -v testing/tests`.
+
+Si Redis no responde, el test se saltea con `pytest.skip` en lugar de fallar.
+
 ## Características
 
 - Base de datos aislada: la app fuerza `DATABASE_URL=sqlite:///./testing_luka.db` (además de la que define el compose). Dentro del contenedor el working directory es `/app` y el volumen `..:/app` monta la raíz del repo, así que el archivo `testing_luka.db` se crea en la raíz del repositorio (no dentro de `testing/`). Es independiente de `luka.db` y de Supabase.
