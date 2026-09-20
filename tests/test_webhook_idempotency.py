@@ -12,30 +12,9 @@ from app.services.webhook_idempotency import (
 from app.api.whatsapp import InboundInteractiveReply, WhatsAppText
 from app.services.conversation import ConversationHistoryService
 
+from tests.conftest import FakeRedis
 
-class FakeRedis:
-    def __init__(self):
-        self.values = {}
-
-    async def set(self, key, value, *, nx=False, ex=None):
-        del ex
-        if nx and key in self.values:
-            return None
-        self.values[key] = value
-        return True
-
-    async def get(self, key):
-        return self.values.get(key)
-
-    async def eval(self, script, _number_of_keys, key, expected, *args):
-        if self.values.get(key) != expected:
-            return 0
-        if "'completed'" in script:
-            del args
-            self.values[key] = "completed"
-            return 1
-        del self.values[key]
-        return 1
+pytestmark = pytest.mark.unit
 
 
 @pytest.mark.asyncio

@@ -62,14 +62,30 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 
 ## Verificar cambios
 
-- Lint + tests (same as GitHub Actions en pushes y PR a `main`; `WHATSAPP_VERIFY_TOKEN` se setea con valor de test por CI):
+- Usar el runner aislado de `.codex\dev.py`; no ejecutar `pytest` directamente porque
+  podría cargar `.env` o intentar conectarse a infraestructura real.
+- Durante el desarrollo, ejecutar primero el ciclo rápido:
 
 ```powershell
-python -m ruff check .
-python -m pytest -v
+python -I .codex\dev.py test -q -m unit
 ```
 
-- Tests NO requieren red real: usan SQLite en memoria y `monkeypatch.setattr(...SessionLocal...)`; LLM, WhatsApp y Redis se mockean con `AsyncMock`/`unittest.mock`. Los tests de `ConversationService` mockean el cliente Redis.
+- Para cambios en webhook o idempotencia, ejecutar la regresión focalizada:
+
+```powershell
+python -I .codex\dev.py test -q tests/test_webhook.py tests/test_webhook_idempotency.py --durations=40
+```
+
+- Antes de integrar, ejecutar el gate completo:
+
+```powershell
+python -I .codex\dev.py lint
+python -I .codex\dev.py verify
+```
+
+- Los tests no requieren red real. `tests/conftest.py` provee Redis en memoria y
+  bloquea conexiones accidentales; Supabase, Meta y los proveedores LLM también deben
+  permanecer aislados.
 - Para levantar local: venv Python 3.11, `pip install -r requirements.txt`, copiar `.env.example` a `.env`, `python -m uvicorn app.main:app --reload`. En local, `DATABASE_URL` por defecto `sqlite:///./luka.db`.
 
 ## Principios de Diseño y Arquitectura

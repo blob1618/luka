@@ -104,16 +104,48 @@ El repositorio usa Supabase CLI y migraciones timestamped en `supabase/migration
 
 ## Verificar cambios
 
-GitHub Actions corre verificaciones automáticas. El workflow actual corre en pushes a cualquier rama y en Pull Requests a `main`.
+GitHub Actions corre verificaciones automáticas en pushes y en Pull Requests a `main`.
 
-Si el equipo no está usando Pull Requests, la verificación automática ocurre cuando el cambio llega a `main`. En lo posible, correr las mismas verificaciones en local antes de integrar cambios:
+En local, el entorno aislado utiliza `.codex\dev.py`. Existen tres niveles de ejecución según el ciclo de trabajo:
+
+### 1. Ciclo rápido (unitario)
+
+Ejecuta únicamente tests unitarios con dependencias externas aisladas (sin tocar red ni base de datos):
 
 ```powershell
-python -m ruff check .
-python -m pytest -v
+python -I .codex\dev.py test -q -m unit
 ```
 
+### 2. Regresión focalizada (webhook e idempotencia)
+
+Verifica el contrato del webhook, idempotencia y procesamiento desacoplado en segundo plano con dobles en memoria:
+
+```powershell
+python -I .codex\dev.py test -q tests/test_webhook.py tests/test_webhook_idempotency.py --durations=40
+```
+
+### 3. Suite completa y verificación estricta
+
+Corre linter (Ruff) y la suite completa de tests (unitarios + integración con SQLite aislado):
+
+```powershell
+python -I .codex\dev.py lint
+python -I .codex\dev.py verify
+```
+
+### Aislamiento de infraestructura
+
+- Las pruebas locales no requieren Redis, Supabase, Meta ni Gemini reales.
+- `tests/conftest.py` proporciona un `FakeRedis` en memoria determinista y un guardia de sockets que intercepta conexiones accidentales de red/Redis fallando de inmediato con un mensaje diagnóstico.
+- `ConversationService._client` y `_loop_id` se limpian automáticamente entre tests para evitar contaminación entre event loops.
+
+### Deuda técnica y deprecaciones observadas (seguimiento)
+
+- `StarletteDeprecationWarning: Using httpx with starlette.testclient is deprecated; install httpx2 instead.` en `fastapi.testclient`.
+- `DeprecationWarning: Call to deprecated setex. (Use 'set' instead.)` en `app/services/conversation.py` (migrar llamadas `setex(...)` a `set(..., ex=...)` en una tarea posterior).
+
 Las pruebas reales de WhatsApp ocurren después de que `main` esté desplegado en Render, porque el proyecto depende del número de teléfono de Meta, la URL del webhook y la base de datos compartida.
+
 
 ## Flujo Jira y ramas
 
