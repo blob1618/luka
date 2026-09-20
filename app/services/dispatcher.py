@@ -195,11 +195,11 @@ def _multiop_registration_reply(
     )
 
 
-def _safe_non_stk35_reply(extracted_data: dict) -> str:
+def _safe_non_persisted_reply(extracted_data: dict) -> str:
     intent = extracted_data.get("intent")
     reply_text = extracted_data.get("reply_text") or ""
 
-    # Estos intents se manejan aparte en el flujo STK-39
+    # Estos intents se manejan aparte en el flujo de gestión de categorías
     if intent in {"confirm_category", "reject_category", "delete_category", "list_categories"}:
         return reply_text
 
@@ -676,7 +676,7 @@ _DASHBOARD_LINK_NOT_ELIGIBLE_REPLY = (
 
 
 # ---------------------------------------------------------------------------
-# STK-39 v2: Handlers de gestión de categorías
+# Handlers de gestión de categorías
 # ---------------------------------------------------------------------------
 
 
@@ -968,7 +968,7 @@ async def _register_multiop(
 
 
 # ---------------------------------------------------------------------------
-# STK-46: Helpers de límites de gasto por categoría
+# Helpers de límites de gasto por categoría
 # ---------------------------------------------------------------------------
 
 
@@ -1904,7 +1904,7 @@ async def _dispatch_incoming_message(
         )
 
     # ------------------------------------------------------------------
-    # STK-89: comando exacto para pedir un enlace de acceso al dashboard.
+    # Comando exacto para pedir un enlace de acceso al dashboard.
     # ------------------------------------------------------------------
     if text_body.strip().lower() == "/link":
         dashboard_link_result = DashboardLinkService.generate_or_reuse(sender_phone)
@@ -2137,7 +2137,7 @@ async def _dispatch_incoming_message(
         return DispatchResult(reply_text=reply_text, service_invoked="conversation")
 
     # ----------------------------------------------------------
-    # Multi-turn STK-46: confirmar el año de un límite para un mes pasado
+    # Multi-turn: confirmar el año de un límite para un mes pasado
     # ----------------------------------------------------------
     is_awaiting_limit_year = await ConversationService.is_awaiting_limit_year_confirmation(sender_phone)
 
@@ -2182,7 +2182,7 @@ async def _dispatch_incoming_message(
         await ConversationService.clear_state(sender_phone)
 
     # ----------------------------------------------------------
-    # Multi-turn STK-47: confirmar creación de categoría canónica
+    # Multi-turn: confirmar creación de categoría canónica
     # ----------------------------------------------------------
     is_awaiting_limit_category = (
         await ConversationService.is_awaiting_limit_category_confirmation(sender_phone)
@@ -2249,7 +2249,7 @@ async def _dispatch_incoming_message(
         await ConversationService.clear_state(sender_phone)
 
     # ----------------------------------------------------------
-    # Multi-turn STK-46: completar categoría y/o monto del límite
+    # Multi-turn: completar categoría y/o monto del límite
     # ----------------------------------------------------------
     is_awaiting_limit_data = await ConversationService.is_awaiting_limit_data(sender_phone)
 
@@ -2290,7 +2290,7 @@ async def _dispatch_incoming_message(
         return DispatchResult(reply_text=reply_text, service_invoked="conversation")
 
     # ----------------------------------------------------------
-    # Multi-turn STK-46: el usuario debe indicar la categoría a eliminar
+    # Multi-turn: el usuario debe indicar la categoría a eliminar
     # ----------------------------------------------------------
     is_awaiting_delete_category = await ConversationService.is_awaiting_limit_delete_category(sender_phone)
 
@@ -2336,7 +2336,7 @@ async def _dispatch_incoming_message(
         return DispatchResult(reply_text=reply_text, service_invoked="conversation")
 
     # ----------------------------------------------------------
-    # Multi-turn STK-46: elegir el mes del límite a eliminar
+    # Multi-turn: elegir el mes del límite a eliminar
     # ----------------------------------------------------------
     is_awaiting_limit_month = await ConversationService.is_awaiting_limit_month_selection(sender_phone)
     if (
@@ -2434,7 +2434,7 @@ async def _dispatch_incoming_message(
     logger.info("conversation_route intent=%s", intent)
 
     # ----------------------------------------------------------
-    # STK-39 v2: Manejar intents
+    # Manejar intents
     # ----------------------------------------------------------
     if intent == "create_limit":
         reply_text = await _handle_create_limit(sender_phone, extracted_data)
@@ -2607,12 +2607,12 @@ async def _dispatch_incoming_message(
 
     elif intent in ("greeting", "out_of_scope", "reminder", "expense_summary"):
         print(f"[{intent.upper()}] User {sender_phone}: {text_body}")
-        reply_text = _safe_non_stk35_reply(extracted_data)
+        reply_text = _safe_non_persisted_reply(extracted_data)
         service_invoked = "llm"
 
     else:
         print(f"[{str(intent).upper()}] User {sender_phone}: {text_body}")
-        reply_text = _safe_non_stk35_reply(extracted_data)
+        reply_text = _safe_non_persisted_reply(extracted_data)
         service_invoked = "llm"
 
     return DispatchResult(

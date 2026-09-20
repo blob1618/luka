@@ -2,7 +2,7 @@
 Conversation state management for multi-turn WhatsApp interactions.
 
 Uses Redis to track pending movements and dialog steps per user,
-enabling the category confirmation flow (STK-39).
+enabling the category confirmation flow.
 """
 
 import asyncio
@@ -99,7 +99,7 @@ class PendingLimit:
 class LastCreatedLimit:
     """
     Datos del último límite creado, para permitir editarlo sin diálogo previo
-    (STK-46: "¿No te convence algo? Indícame y lo cambiamos.").
+    ("¿No te convence algo? Indícame y lo cambiamos.").
     """
     limit_id: str
     sender_phone: str
@@ -227,7 +227,7 @@ class PendingConversationFlow:
 class LastRegisteredMovement:
     """
     Datos del último movimiento registrado, para permitir cambio de categoría
-    sin necesidad de un diálogo de confirmación previo (STK-39 v2).
+    sin necesidad de un diálogo de confirmación previo.
     """
     movement_id: str
     sender_phone: str
@@ -568,7 +568,7 @@ class ConversationService:
         return state.pending_movement
 
     # ------------------------------------------------------------------
-    # STK-39 v2: Último movimiento registrado (para cambio de categoría)
+    # Último movimiento registrado (para cambio de categoría)
     # ------------------------------------------------------------------
 
     @classmethod
@@ -715,7 +715,7 @@ class ConversationService:
         return state.pending_reminder
 
     # ------------------------------------------------------------------
-    # Límites de gasto pendientes (STK-46)
+    # Límites de gasto pendientes
     # ------------------------------------------------------------------
 
     @classmethod
@@ -801,7 +801,7 @@ class ConversationService:
         return state.pending_limit_delete
 
     # ------------------------------------------------------------------
-    # Último límite creado (para editarlo sin diálogo previo, STK-46)
+    # Último límite creado (para editarlo sin diálogo previo)
     # ------------------------------------------------------------------
 
     @classmethod

@@ -1,4 +1,4 @@
-"""Tests del dispatcher para límites de gasto por categoría (STK-46)."""
+"""Tests del dispatcher para límites de gasto por categoría."""
 
 from contextlib import contextmanager
 from datetime import datetime

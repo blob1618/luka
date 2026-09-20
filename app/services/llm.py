@@ -200,7 +200,7 @@ class LLMService:
 
             movement_type = cls._normalize_movement_type(parsed, intent)
 
-            # Normalizar campos de query_movements (STK-149)
+            # Normalizar campos de query_movements
             date_from = parsed.get("date_from")
             if date_from is not None:
                 date_from = str(date_from).strip() or None

@@ -23,7 +23,7 @@ from app.services.dispatcher import (
     _reminder_list_reply,
     _reminder_state_reply,
     _reminder_update_reply,
-    _safe_non_stk35_reply,
+    _safe_non_persisted_reply,
     _validate_reminder_concept,
 )
 from app.services.finance import MovementRegistrationResult
@@ -166,20 +166,20 @@ class TestRegistrationReply:
         assert "No pude interpretar" in reply
 
 
-class TestSafeNonStk35Reply:
+class TestSafeNonPersistedReply:
     def test_returns_reply_text(self):
-        assert _safe_non_stk35_reply({"intent": "greeting", "reply_text": "hola"}) == "hola"
+        assert _safe_non_persisted_reply({"intent": "greeting", "reply_text": "hola"}) == "hola"
 
-    def test_handles_stk39_intents(self):
+    def test_handles_category_intents(self):
         for intent in ("confirm_category", "reject_category", "delete_category", "list_categories"):
-            assert _safe_non_stk35_reply({"intent": intent, "reply_text": "x"}) == "x"
+            assert _safe_non_persisted_reply({"intent": intent, "reply_text": "x"}) == "x"
 
     def test_empty_reply_uses_fallback(self):
-        reply = _safe_non_stk35_reply({"intent": "greeting", "reply_text": ""})
+        reply = _safe_non_persisted_reply({"intent": "greeting", "reply_text": ""})
         assert "reformular" in reply
 
     def test_none_reply_uses_fallback(self):
-        reply = _safe_non_stk35_reply({"intent": "greeting"})
+        reply = _safe_non_persisted_reply({"intent": "greeting"})
         assert "reformular" in reply
 
 

@@ -280,7 +280,7 @@ async def verify_webhook(request: Request):
 async def _process_inbound_message_background(message: dict, redis_instance) -> None:
     """Procesa un mensaje entrante en segundo plano conservando la idempotencia.
 
-    Nota de arquitectura (STK-179):
+    Nota de arquitectura:
     Este procesamiento corre in-process mediante BackgroundTasks y no es durable.
     Si el worker se reinicia durante la ejecución, el mensaje se perderá.
     """
@@ -394,7 +394,7 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
     Maneja los mensajes entrantes de la API de Meta WhatsApp desacoplándolos
     en segundo plano con BackgroundTasks para responder de inmediato.
 
-    Nota de arquitectura (STK-179):
+    Nota de arquitectura:
     BackgroundTasks es in-process y no durable. Si el proceso se reinicia
     o cae tras emitir HTTP 200, los mensajes encolados pendientes en memoria
     no se recuperarán (Meta no reintentará tras recibir 200). Para persistencia

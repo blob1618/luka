@@ -383,7 +383,7 @@ async def test_set_and_get_pending_rename(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# STK-182: Caché por corrutina / ContextVar para ConversationState
+# Caché por corrutina / ContextVar para ConversationState
 # ---------------------------------------------------------------------------
 
 
