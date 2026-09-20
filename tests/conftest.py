@@ -139,6 +139,7 @@ def isolate_redis_and_conversation(monkeypatch, fake_redis: FakeRedis):
     """Aisla ConversationService y Redis para cada prueba."""
     ConversationService._client = None
     ConversationService._loop_id = None
+    ConversationService.reset_cache()
 
     # Redirigir la creación de clientes en ConversationService al fake
     def _fake_from_url(*args, **kwargs):
@@ -151,3 +152,4 @@ def isolate_redis_and_conversation(monkeypatch, fake_redis: FakeRedis):
 
     ConversationService._client = None
     ConversationService._loop_id = None
+    ConversationService.reset_cache()
