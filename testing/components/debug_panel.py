@@ -16,6 +16,8 @@ def format_debug_for_export(debug_data: dict) -> dict:
         "redis_state": debug_data.get("redis_state"),
         "provider": debug_data.get("provider"),
         "prompt_used": debug_data.get("prompt_used"),
+        "memory": debug_data.get("memory"),
+        "memory_ttl_seconds": debug_data.get("memory_ttl_seconds"),
     }
 
 
@@ -50,3 +52,11 @@ def render_debug(debug_data: dict, flags: dict) -> None:
         if flags.get("redis") and debug_data.get("redis_state") is not None:
             st.subheader("Estado Redis")
             st.json(debug_data["redis_state"])
+
+        memory = debug_data.get("memory")
+        if flags.get("redis") and memory is not None:
+            st.caption(
+                f"Memoria conversacional: {len(memory)} mensajes · "
+                f"TTL {debug_data.get('memory_ttl_seconds')}s"
+            )
+            st.json(memory)

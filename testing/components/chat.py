@@ -109,8 +109,8 @@ def render_assistant_text(text: str) -> None:
 
 def _get_prompt_path(config: TestingConfig) -> str:
     """Resolve prompt path from config."""
-    if config.prompt_path == "prompt.md":
-        return "prompt.md"
+    if config.prompt_path == "prompt.md" or config.prompt_path.startswith("prompts/"):
+        return config.prompt_path
     return f"testing/prompts/{config.prompt_path}"
 
 
@@ -136,6 +136,8 @@ async def _process_message(text: str, config: TestingConfig) -> tuple[str, dict]
         "provider": result.provider,
         "model": result.model,
         "prompt_used": result.prompt_path,
+        "memory": result.memory,
+        "memory_ttl_seconds": result.memory_ttl_seconds,
     }
     return result.reply_text, debug_data
 

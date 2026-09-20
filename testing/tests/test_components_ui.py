@@ -206,6 +206,36 @@ class TestRenderDebug:
         st.metric.assert_called_once()
         st.code.assert_called_once()
 
+    def test_renders_memory_when_present(self, mock_st):
+        from testing.components.debug_panel import render_debug
+
+        st = mock_st["debug"]
+        st.expander.return_value.__enter__ = MagicMock(return_value=None)
+        st.expander.return_value.__exit__ = MagicMock(return_value=False)
+
+        memory = [{"role": "user", "content": "hola"}]
+        render_debug(
+            {"memory": memory, "memory_ttl_seconds": 3600},
+            {"json": False, "latency": False, "redis": True, "logs": False},
+        )
+
+        st.caption.assert_called_once()
+        st.json.assert_called_once_with(memory)
+
+    def test_omits_memory_when_absent(self, mock_st):
+        from testing.components.debug_panel import render_debug
+
+        st = mock_st["debug"]
+        st.expander.return_value.__enter__ = MagicMock(return_value=None)
+        st.expander.return_value.__exit__ = MagicMock(return_value=False)
+
+        render_debug(
+            {"redis_state": {"step": "none"}},
+            {"json": False, "latency": False, "redis": True, "logs": False},
+        )
+
+        st.caption.assert_not_called()
+
 
 class TestChatLogic:
     def test_get_prompt_path_default(self):
@@ -219,6 +249,12 @@ class TestChatLogic:
 
         config = TestingConfig(prompt_path="prompt_v2.md")
         assert _get_prompt_path(config) == "testing/prompts/prompt_v2.md"
+
+    def test_get_prompt_path_repo_relative(self):
+        from testing.components.chat import _get_prompt_path
+
+        config = TestingConfig(prompt_path="prompts/core_prompt.md")
+        assert _get_prompt_path(config) == "prompts/core_prompt.md"
 
     @pytest.mark.asyncio
     async def test_process_message_webhook_mode(self, mock_st):
