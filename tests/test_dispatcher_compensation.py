@@ -191,8 +191,11 @@ class TestUserRequestedCompensation:
     @pytest.mark.asyncio
     async def test_user_request_stores_pending_without_writes(self):
         proposal = make_proposal()
+        stored = PendingCompensation(
+            sender_phone="12345", proposal=proposal.to_dict()
+        )
         with (
-            compensation_flow_patches() as mocks,
+            compensation_flow_patches(pending_compensation=stored) as mocks,
             patch(
                 "app.services.dispatcher._user_id_by_phone",
                 return_value=uuid4(),
@@ -233,6 +236,35 @@ class TestUserRequestedCompensation:
             "requested_amount": Decimal("500"),
             "currency": "ARS",
         }
+        mock_apply.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_user_request_reports_soft_failure_when_storage_lost(self):
+        with (
+            compensation_flow_patches(),
+            patch(
+                "app.services.dispatcher._user_id_by_phone",
+                return_value=uuid4(),
+            ),
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.build_proposal",
+                return_value=CompensationProposalResult(
+                    "ok", "created", make_proposal()
+                ),
+            ),
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.apply",
+            ) as mock_apply,
+        ):
+            result = await process_incoming_message(
+                "12345", "compensá mi presupuesto"
+            )
+
+        assert result.reply_text == (
+            "No pude preparar la propuesta de compensación. Intentá nuevamente."
+        )
+        assert result.event_key is None
+        assert result.service_invoked == "compensation"
         mock_apply.assert_not_called()
 
     @pytest.mark.asyncio
@@ -352,6 +384,33 @@ class TestCompensationConfirmation:
         assert result.service_invoked == "llm"
         mocks["clear_state"].assert_awaited_once()
         mocks["llm"].assert_awaited_once()
+        mock_apply.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "intent", ["confirm_compensation", "reject_compensation"]
+    )
+    async def test_confirmation_without_pending_explains_and_does_not_apply(
+        self, intent
+    ):
+        with (
+            compensation_flow_patches(
+                llm={"intent": intent, "reply_text": "Estoy procesando."}
+            ),
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.apply",
+            ) as mock_apply,
+        ):
+            result = await process_incoming_message(
+                "12345", "confirmar compensación"
+            )
+
+        assert result.reply_text == (
+            "No tengo una propuesta de compensación vigente. "
+            "Pedime que evalúe tu presupuesto."
+        )
+        assert result.service_invoked == "conversation"
+        assert result.intent == intent
         mock_apply.assert_not_called()
 
     @pytest.mark.asyncio

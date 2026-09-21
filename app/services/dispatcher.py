@@ -1800,6 +1800,15 @@ async def _handle_budget_compensation(sender_phone: str, extracted_data: dict) -
         await ConversationService.set_pending_compensation(
             sender_phone, result.proposal.to_dict()
         )
+        stored = await ConversationService.get_pending_compensation(sender_phone)
+        if (
+            stored is None
+            or stored.proposal.get("proposal_id") != result.proposal.proposal_id
+        ):
+            return (
+                "No pude preparar la propuesta de compensación. "
+                "Intentá nuevamente."
+            )
         extracted_data["_conversation_event_key"] = "budget.compensation_proposed"
         extracted_data["_conversation_event_variables"] = {
             "summary": _compensation_summary(result.proposal)
@@ -2891,6 +2900,13 @@ async def _dispatch_incoming_message(
 
     elif intent in ("confirm_category", "reject_category"):
         reply_text = "No encontré un movimiento pendiente para confirmar."
+        service_invoked = "conversation"
+
+    elif intent in ("confirm_compensation", "reject_compensation"):
+        reply_text = (
+            "No tengo una propuesta de compensación vigente. "
+            "Pedime que evalúe tu presupuesto."
+        )
         service_invoked = "conversation"
 
     elif intent in ("greeting", "out_of_scope", "reminder", "expense_summary"):
