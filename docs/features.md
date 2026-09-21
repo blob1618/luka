@@ -130,6 +130,20 @@ procesa en silencio para no repetir una confirmación ya enviada.
 - `/link` genera (o reutiliza) un enlace mágico de acceso al dashboard para usuarios ya
   vinculados, con vencimiento corto y un solo uso.
 
+## Educación financiera
+
+- Luka explica en chat presupuesto, gastos fijos y variables, ahorro, interés simple y
+  compuesto, inflación, deuda y costo financiero total (CFT), con una definición breve
+  y un ejemplo ilustrativo.
+- Las consultas educativas no crean ni cambian movimientos, categorías, límites,
+  presupuestos ni recordatorios, incluso si el ejemplo incluye un importe.
+- Ante «interés» sin más contexto pide aclaración entre interés simple y compuesto. Si
+  se solicita un valor actual, una tasa vigente o un concepto no revisado, reconoce el
+  límite en vez de inventar información. Las recomendaciones personalizadas de inversión
+  están fuera de alcance.
+- El contenido y el proceso de revisión están en
+  [financial-glossary.md](financial-glossary.md).
+
 ## Recordatorios
 
 - Un recordatorio de pago tiene concepto, día del mes (1-31) y, opcionalmente, monto y

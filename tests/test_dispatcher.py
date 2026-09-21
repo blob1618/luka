@@ -137,16 +137,16 @@ def common_patches(**overrides):
         patch(
             "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
             return_value=defaults["onboarding"],
-        ),
+        ) as onboarding_mock,
         patch(
             "app.services.dispatcher.LLMService.process_message",
             new_callable=AsyncMock,
             return_value=defaults["llm"],
-        ),
+        ) as llm_mock,
         patch(
             "app.services.dispatcher.FinanceService.register_movement_with_category",
             return_value=defaults["register"],
-        ),
+        ) as register_mock,
         patch(
             "app.services.dispatcher.ConversationService.is_awaiting_rename",
             new_callable=AsyncMock,
@@ -165,7 +165,11 @@ def common_patches(**overrides):
             "app.services.dispatcher._update_ultimo_mensaje",
         ),
     ):
-        yield
+        yield {
+            "onboarding": onboarding_mock,
+            "llm": llm_mock,
+            "register": register_mock,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +481,65 @@ class TestNonFinancialIntents:
 
         assert result.reply_text == "¡Hola! Soy Luka."
         assert result.intent == "greeting"
+
+    @pytest.mark.asyncio
+    async def test_financial_education_example_never_invokes_llm_or_finance_write(self):
+        with (
+            common_patches() as mocks,
+            patch(
+                "app.services.dispatcher.FinanceService.update_movement",
+                side_effect=AssertionError("No debe mutar movimientos"),
+            ),
+            patch(
+                "app.services.dispatcher.LimitService.create_limit",
+                side_effect=AssertionError("No debe mutar límites"),
+            ),
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.apply",
+                side_effect=AssertionError("No debe compensar presupuestos"),
+            ),
+        ):
+            result = await process_incoming_message(
+                "12345",
+                "Si ahorro 1000 por mes, ¿cómo funciona el interés compuesto?",
+                "wamid.education-example",
+            )
+
+        assert result.intent == "financial_education"
+        assert result.service_invoked == "financial_education"
+        assert "Ejemplo ilustrativo" in result.reply_text
+        mocks["llm"].assert_not_awaited()
+        mocks["register"].assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_llm_education_intent_still_cannot_write_a_movement(self):
+        llm_result = greeting_llm_result()
+        llm_result.update(
+            intent="financial_education",
+            education_term="ahorro",
+            reply_text="",
+        )
+        with (
+            common_patches(llm=llm_result) as mocks,
+            patch(
+                "app.services.dispatcher.FinanceService.update_movement",
+                side_effect=AssertionError("No debe mutar movimientos"),
+            ),
+            patch(
+                "app.services.dispatcher.LimitService.create_limit",
+                side_effect=AssertionError("No debe mutar límites"),
+            ),
+        ):
+            result = await process_incoming_message(
+                "12345",
+                "Necesito educación financiera sobre ahorro para un taller",
+                "wamid.education-llm",
+            )
+
+        assert result.intent == "financial_education"
+        assert result.service_invoked == "financial_education"
+        assert result.raw_llm_response["education_status"] == "supported"
+        mocks["register"].assert_not_called()
         assert result.raw_llm_response is not None
 
     @pytest.mark.asyncio
