@@ -18,6 +18,7 @@ from app.services.compensation import (
 )
 from app.services.conversation import ConversationService, ConversationState, PendingCompensation
 from app.services.dispatcher import (
+    _handle_configured_action,
     _movement_budget_after_change,
     _register_multiop,
     _register_single_with_hint,
@@ -656,3 +657,105 @@ class TestRegistrationAutoProposal:
         pending = await ConversationService.get_pending_compensation("12345")
         assert pending is not None
         assert pending.proposal == proposal.to_dict()
+
+
+class TestConfiguredCompensationActions:
+    @pytest.mark.asyncio
+    async def test_confirm_action_applies_pending_proposal(self):
+        proposal = make_proposal()
+        pending = PendingCompensation(sender_phone="12345", proposal=proposal.to_dict())
+        with (
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_compensation",
+                new_callable=AsyncMock,
+                return_value=pending,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ) as mock_clear,
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.apply",
+                return_value=CompensationApplyResult(
+                    "applied", "compensation applied", proposal
+                ),
+            ) as mock_apply,
+        ):
+            result = await _handle_configured_action("12345", "confirm_compensation")
+
+        assert result.service_invoked == "compensation"
+        assert "Comida: $2000 → $2500 ARS" in result.reply_text
+        assert "Transporte: $1000 → $500 ARS" in result.reply_text
+        assert "No se modificó ningún movimiento" in result.reply_text
+        mock_apply.assert_called_once_with(proposal.to_dict())
+        mock_clear.assert_awaited_once_with("12345")
+
+    @pytest.mark.asyncio
+    async def test_confirm_action_with_stale_proposal_asks_for_new_calculation(self):
+        proposal = make_proposal()
+        pending = PendingCompensation(sender_phone="12345", proposal=proposal.to_dict())
+        with (
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_compensation",
+                new_callable=AsyncMock,
+                return_value=pending,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ) as mock_clear,
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.apply",
+                return_value=CompensationApplyResult("stale", "limits changed"),
+            ),
+        ):
+            result = await _handle_configured_action("12345", "confirm_compensation")
+
+        assert result.reply_text == (
+            "Los saldos cambiaron desde que armé la propuesta. "
+            "Pedime un nuevo cálculo."
+        )
+        mock_clear.assert_awaited_once_with("12345")
+
+    @pytest.mark.asyncio
+    async def test_confirm_action_without_pending_proposal(self):
+        with (
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_compensation",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ) as mock_clear,
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.apply",
+            ) as mock_apply,
+        ):
+            result = await _handle_configured_action("12345", "confirm_compensation")
+
+        assert result.reply_text == (
+            "No encontré una propuesta de compensación pendiente."
+        )
+        assert result.service_invoked == "conversation_flow"
+        mock_apply.assert_not_called()
+        mock_clear.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reject_action_clears_without_writing(self):
+        with (
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                new_callable=AsyncMock,
+            ) as mock_clear,
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.apply",
+            ) as mock_apply,
+        ):
+            result = await _handle_configured_action("12345", "reject_compensation")
+
+        assert result.reply_text == "Listo, no hice ningún cambio."
+        assert result.service_invoked == "conversation_flow"
+        mock_apply.assert_not_called()
+        mock_clear.assert_awaited_once_with("12345")

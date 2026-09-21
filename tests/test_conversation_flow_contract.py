@@ -36,6 +36,26 @@ def button_definition(**option_overrides):
     }
 
 
+def compensation_definition():
+    return {
+        "start_node": "compensation",
+        "nodes": [
+            {
+                "id": "compensation",
+                "type": "reply_button",
+                "body": "Propuesta: {summary}",
+                "options": [
+                    {
+                        "id": "confirm",
+                        "title": "Confirmar",
+                        "action": "confirm_compensation",
+                    }
+                ],
+            }
+        ],
+    }
+
+
 def issue_messages(exc_info):
     return [issue.message for issue in exc_info.value.issues]
 
@@ -56,6 +76,15 @@ def test_valid_allowed_action_is_accepted():
     )
 
     assert definition["nodes"][0]["options"][0]["action"] == "confirm_category"
+
+
+def test_compensation_event_accepts_configured_confirmation():
+    definition = validate_flow_definition(
+        "budget.compensation_proposed",
+        compensation_definition(),
+    )
+
+    assert definition["nodes"][0]["options"][0]["action"] == "confirm_compensation"
 
 
 def test_unknown_event_is_rejected():

@@ -33,7 +33,11 @@ from app.services.conversation import (
 )
 from app.services.conversation_flow_runtime import ConversationFlowRuntime
 from app.services.budget import BudgetEvaluation, BudgetService, BudgetStatus
-from app.services.compensation import BudgetCompensationService, CompensationProposal
+from app.services.compensation import (
+    BudgetCompensationService,
+    CompensationApplyResult,
+    CompensationProposal,
+)
 from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkService
 from app.services.finance import (
     FinanceService,
@@ -1192,6 +1196,19 @@ def _compensation_applied_reply(proposal: CompensationProposal) -> str:
         f"{allocations}\n\n"
         "No se modificó ningún movimiento."
     )
+
+
+def _compensation_apply_reply(apply_result: CompensationApplyResult) -> str:
+    if apply_result.status == "applied" and apply_result.proposal is not None:
+        return _compensation_applied_reply(apply_result.proposal)
+    if apply_result.status == "stale":
+        return (
+            "Los saldos cambiaron desde que armé la propuesta. "
+            "Pedime un nuevo cálculo."
+        )
+    if apply_result.status == "expired":
+        return "La propuesta venció. Pedime un nuevo cálculo."
+    return "No pude aplicar la compensación. No se modificó ningún límite."
 
 
 def _budget_feedback_reply(evaluation: BudgetEvaluation) -> str:
@@ -2664,21 +2681,8 @@ async def _dispatch_incoming_message(
                 BudgetCompensationService.apply, pending.proposal
             )
             await ConversationService.clear_state(sender_phone)
-            if apply_result.status == "applied" and apply_result.proposal is not None:
-                reply_text = _compensation_applied_reply(apply_result.proposal)
-            elif apply_result.status == "stale":
-                reply_text = (
-                    "Los saldos cambiaron desde que armé la propuesta. "
-                    "Pedime un nuevo cálculo."
-                )
-            elif apply_result.status == "expired":
-                reply_text = "La propuesta venció. Pedime un nuevo cálculo."
-            else:
-                reply_text = (
-                    "No pude aplicar la compensación. No se modificó ningún límite."
-                )
             return DispatchResult(
-                reply_text=reply_text,
+                reply_text=_compensation_apply_reply(apply_result),
                 service_invoked="compensation",
             )
         # El mensaje no responde la confirmación: la propuesta quedó abandonada.
@@ -2976,7 +2980,7 @@ async def _handle_configured_action(
             reply_text="Listo, cancelé la operación pendiente.",
             service_invoked="conversation_flow",
         )
-    if action in {"reject_category", "reject_limit"}:
+    if action in {"reject_category", "reject_limit", "reject_compensation"}:
         await ConversationService.clear_state(sender_phone)
         return DispatchResult(
             reply_text="Listo, no hice ningún cambio.",
@@ -2989,6 +2993,8 @@ async def _handle_configured_action(
         )
     if action == "confirm_category":
         return await _confirm_pending_category_action(sender_phone)
+    if action == "confirm_compensation":
+        return await _confirm_pending_compensation_action(sender_phone)
     if action in {"confirm_limit_year", "confirm_limit_category"}:
         return await _confirm_pending_limit_action(sender_phone, action)
     return DispatchResult(
@@ -3043,6 +3049,23 @@ async def _confirm_pending_category_action(sender_phone: str) -> DispatchResult:
             "amount": _format_amount(pending.amount),
             "currency": pending.currency,
         },
+    )
+
+
+async def _confirm_pending_compensation_action(sender_phone: str) -> DispatchResult:
+    pending = await ConversationService.get_pending_compensation(sender_phone)
+    if pending is None:
+        return DispatchResult(
+            reply_text="No encontré una propuesta de compensación pendiente.",
+            service_invoked="conversation_flow",
+        )
+    apply_result = await asyncio.to_thread(
+        BudgetCompensationService.apply, pending.proposal
+    )
+    await ConversationService.clear_state(sender_phone)
+    return DispatchResult(
+        reply_text=_compensation_apply_reply(apply_result),
+        service_invoked="compensation",
     )
 
 
