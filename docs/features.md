@@ -145,6 +145,14 @@ procesa en silencio para no repetir una confirmación ya enviada.
   de la hora configurada, con la ventana de 24h abierta, a usuarios habilitados y que no
   hayan registrado movimientos ese día, con un máximo de un aviso diario.
 
+## Recordatorios inteligentes de gastos recurrentes
+
+- **Detección automática en background**: Un worker nocturno analiza los movimientos de los últimos 4 meses calendario. Si detecta al menos 3 egresos en meses consecutivos con la misma descripción normalizada (y categoría/moneda) con variación máxima de $\pm 3$ días respecto al día mediano del mes, genera un `CandidatoGastoRecurrente` en estado `pendiente`.
+- **Propuesta no invasiva por WhatsApp**: Cuando el usuario registra un nuevo egreso que coincide con un candidato pendiente y tiene `proactivo_habilitado=True`, Luka adjunta a la confirmación habitual del gasto una propuesta con botones interactivos nativos: «Sí, avisame» y «No, gracias». No se interrumpe el registro del egreso ni se requiere un comando especial.
+- **Conversión atómica**: Si el usuario pulsa «Sí, avisame», el candidato pasa a `aceptado` y se crea un `Recordatorio` (`origen='recurrente_inteligente'`, `dias_anticipacion=3`). Si pulsa «No, gracias», el candidato pasa a `rechazado` y el sistema no vuelve a sugerirlo para ese concepto.
+- **Despacho anticipado y supresión determinista**: El scheduler evalúa los recordatorios cada 5 minutos y despacha el aviso 3 días antes del vencimiento estimado. Si el usuario paga y registra el egreso antes del día de alerta dentro del período, el envío se suprime automáticamente (`AvisoRecordatorio` en estado `suprimido` con motivo `gasto_registrado`), evitando avisos redundantes.
+- **Cumplimiento de ventana de 24h de WhatsApp**: Dentro de las 24h del último mensaje del usuario se envía texto libre interactivo; fuera de la ventana se envía mediante la plantilla aprobada en Meta (`WHATSAPP_REMINDER_TEMPLATE_NAME`).
+
 ## Onboarding y vinculación
 
 - Un remitente con `whatsapp_id` ya vinculado continúa el flujo normal.
@@ -194,3 +202,4 @@ procesa en silencio para no repetir una confirmación ya enviada.
 - [database.md](database.md): contrato de datos y migraciones.
 - [development.md](development.md): setup, tests, variables de entorno y deploy.
 - [conversation-flows.md](conversation-flows.md): flujos de presentación administrables.
+- [recurring-expenses-runbook.md](recurring-expenses-runbook.md): operación, observabilidad, mitigación y rollback de gastos recurrentes.

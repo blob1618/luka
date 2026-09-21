@@ -604,30 +604,50 @@ def _run_daily_recurring_detection_sync(as_of_date: date | None = None) -> None:
     if as_of_date is None:
         as_of_date = datetime.now(ARGENTINA_TZ).date()
 
-    session = SessionLocal()
-    try:
-        bind = session.get_bind()
-        dialect_name = bind.dialect.name
-        if dialect_name == "postgresql":
-            # Advisory lock key canónico: 5354418701
-            lock_acquired = session.execute(
+    bind = getattr(SessionLocal, "kw", {}).get("bind")
+    if bind is None:
+        session_tmp = SessionLocal()
+        bind = session_tmp.get_bind()
+        session_tmp.close()
+
+    dialect_name = bind.dialect.name
+    if dialect_name == "postgresql":
+        # Advisory lock key canónico: 5354418701
+        # Pinea la conexión física del pool para garantizar que acquire, commits
+        # internos de detect_candidates() y unlock ejecuten sobre el mismo backend PID.
+        with bind.connect() as lock_conn:
+            lock_acquired = lock_conn.execute(
                 text("SELECT pg_try_advisory_lock(5354418701)")
             ).scalar()
             if not lock_acquired:
                 logger.info("[DAILY_DETECTION] Advisory lock 5354418701 ocupado; otro worker está en ejecución.")
                 return
 
+            session = SessionLocal(bind=lock_conn)
             try:
                 result = RecurringExpenseService.run_daily_detection(session, as_of_date=as_of_date)
+                session.commit()
                 logger.info(
                     "[DAILY_DETECTION] Completado: creados=%d actualizados=%d",
                     result.metrics.candidates_created,
                     result.metrics.candidates_updated,
                 )
+            except Exception as exc:
+                logger.exception("[DAILY_DETECTION_ERROR] %s: %s", type(exc).__name__, exc)
             finally:
-                session.execute(text("SELECT pg_advisory_unlock(5354418701)"))
-        else:
-            # Fallback en SQLite: reclamo por fila única en CronJobClaim
+                session.close()
+                try:
+                    lock_conn.rollback()
+                    unlocked = lock_conn.execute(text("SELECT pg_advisory_unlock(5354418701)")).scalar()
+                    if not unlocked:
+                        logger.warning("[DAILY_DETECTION] Error al liberar advisory lock: pg_advisory_unlock retorno False")
+                except Exception as unlock_err:
+                    logger.warning("[DAILY_DETECTION] Error al liberar advisory lock: %s", unlock_err)
+                    lock_conn.invalidate()
+    else:
+        # Fallback en SQLite: reclamo por fila única en CronJobClaim
+        session = SessionLocal()
+        try:
             today = as_of_date
             job_claim = CronJobClaim(
                 job_name="daily_recurring_detection",
@@ -649,10 +669,10 @@ def _run_daily_recurring_detection_sync(as_of_date: date | None = None) -> None:
                 result.metrics.candidates_created,
                 result.metrics.candidates_updated,
             )
-    except Exception as exc:
-        logger.exception("[DAILY_DETECTION_ERROR] %s: %s", type(exc).__name__, exc)
-    finally:
-        session.close()
+        except Exception as exc:
+            logger.exception("[DAILY_DETECTION_ERROR] %s: %s", type(exc).__name__, exc)
+        finally:
+            session.close()
 
 
 async def run_daily_recurring_detection(as_of_date: date | None = None) -> None:
