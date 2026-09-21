@@ -4,9 +4,11 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from app.models.database import SessionLocal
+from sqlalchemy.exc import IntegrityError
+
+from app.models.database import LimiteCategoria, SessionLocal
 from app.services.budget import ARGENTINA_TZ, BudgetService, BudgetStatus
 
 
@@ -101,8 +103,15 @@ class CompensationProposalResult:
     proposal: CompensationProposal | None = None
 
 
+@dataclass
+class CompensationApplyResult:
+    status: str
+    message: str
+    proposal: CompensationProposal | None = None
+
+
 class BudgetCompensationService:
-    """Calculates compensation proposals without persisting any change."""
+    """Builds compensation proposals and applies them atomically."""
 
     @staticmethod
     def _matches(category_name: str, name: str | None) -> bool:
@@ -270,6 +279,116 @@ class BudgetCompensationService:
             print(f"[COMPENSATION_PROPOSAL] Error: {type(exc).__name__}: {exc}")
             return CompensationProposalResult(
                 "error", "could not build compensation proposal"
+            )
+        finally:
+            session.close()
+
+    @staticmethod
+    def _snapshot_matches(row: LimiteCategoria, expected: str | None) -> bool:
+        if expected is None:
+            return False
+        try:
+            return Decimal(str(row.cantidad_max)) == Decimal(str(expected))
+        except (InvalidOperation, ValueError):
+            return False
+
+    @classmethod
+    def apply(
+        cls,
+        proposal: CompensationProposal | dict,
+        *,
+        now: datetime | None = None,
+    ) -> CompensationApplyResult:
+        if isinstance(proposal, dict):
+            try:
+                proposal = CompensationProposal.from_dict(proposal)
+            except Exception:
+                return CompensationApplyResult("invalid_data", "invalid proposal")
+        elif not isinstance(proposal, CompensationProposal):
+            return CompensationApplyResult("invalid_data", "invalid proposal")
+
+        current = now or datetime.now(ARGENTINA_TZ)
+        try:
+            if datetime.fromisoformat(proposal.expires_at) < current:
+                return CompensationApplyResult("expired", "proposal expired")
+        except (TypeError, ValueError):
+            return CompensationApplyResult("invalid_data", "invalid expiration")
+
+        try:
+            parsed_user = UUID(proposal.user_id)
+            ids = [
+                UUID(proposal.target.limit_id),
+                *(UUID(donor.limit_id) for donor in proposal.donors),
+            ]
+        except (TypeError, ValueError, AttributeError):
+            return CompensationApplyResult("invalid_data", "invalid limit reference")
+
+        session = SessionLocal()
+        try:
+            rows = (
+                session.query(LimiteCategoria)
+                .filter(
+                    LimiteCategoria.id.in_(ids),
+                    LimiteCategoria.usuario_id == parsed_user,
+                )
+                .with_for_update()
+                .all()
+            )
+            by_id = {str(row.id): row for row in rows}
+            if len(by_id) != len(set(ids)):
+                return CompensationApplyResult("stale", "limits changed since proposal")
+
+            allocations = [proposal.target, *proposal.donors]
+            for allocation in allocations:
+                if not cls._snapshot_matches(
+                    by_id[allocation.limit_id],
+                    proposal.snapshot.get(allocation.limit_id),
+                ):
+                    return CompensationApplyResult(
+                        "stale", "limits changed since proposal"
+                    )
+
+            statuses = BudgetService.query_statuses(
+                session,
+                parsed_user,
+                proposal.period_start,
+                currency=proposal.currency,
+            )
+            status_by_limit = {status.limit_id: status for status in statuses}
+
+            target_status = status_by_limit.get(proposal.target.limit_id)
+            if (
+                target_status is None
+                or target_status.exceeded_amount < proposal.amount
+            ):
+                return CompensationApplyResult("stale", "budget excess changed")
+
+            for donor in proposal.donors:
+                donor_status = status_by_limit.get(donor.limit_id)
+                if donor_status is None or donor_status.remaining_amount < (
+                    donor.before_limit - donor.after_limit
+                ):
+                    return CompensationApplyResult("stale", "donor funds changed")
+
+            target_row = by_id[proposal.target.limit_id]
+            target_row.cantidad_max = target_row.cantidad_max + proposal.amount
+            for donor in proposal.donors:
+                by_id[donor.limit_id].cantidad_max = Decimal(donor.after_limit)
+            session.commit()
+            return CompensationApplyResult(
+                "applied", "compensation applied", proposal
+            )
+        except IntegrityError as exc:
+            session.rollback()
+            print(f"[COMPENSATION_APPLY] Integrity error: {type(exc).__name__}: {exc}")
+            return CompensationApplyResult(
+                "persistence_error", "could not apply compensation"
+            )
+        except Exception as exc:
+            session.rollback()
+            print(f"[COMPENSATION_APPLY] Error: {type(exc).__name__}: {exc}")
+            return CompensationApplyResult(
+                "persistence_error", "could not apply compensation"
             )
         finally:
             session.close()

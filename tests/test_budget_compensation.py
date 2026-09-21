@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -597,3 +597,223 @@ def test_proposal_snapshot_and_expiration(db_context):
     assert created_at.tzinfo is not None
     assert expires_at.tzinfo is not None
     assert expires_at - created_at == timedelta(minutes=30)
+
+
+def build_standard_proposal(session, user):
+    food = create_category(session, user, "Comida")
+    transport = create_category(session, user, "Transporte")
+    food_budget = create_budget(session, user, food, amount="1000")
+    donor_budget = create_budget(session, user, transport, amount="500")
+    create_movement(session, user, food, 1100)
+    create_movement(session, user, transport, 400)
+
+    proposal = BudgetCompensationService.build_proposal(
+        user.id,
+        target_category="Comida",
+        reference_date=REFERENCE_DATE,
+    ).proposal
+    assert proposal is not None
+    return proposal, food_budget, donor_budget
+
+
+def test_apply_moves_limits_and_preserves_total_and_movements(db_context):
+    session = db_context
+    user = create_user(session)
+    proposal, food_budget, donor_budget = build_standard_proposal(session, user)
+
+    result = BudgetCompensationService.apply(proposal)
+
+    assert result.status == "applied"
+    assert result.proposal is proposal
+    session.expire_all()
+    food_row = session.get(LimiteCategoria, food_budget.id)
+    donor_row = session.get(LimiteCategoria, donor_budget.id)
+    assert food_row.cantidad_max == Decimal("1100.00")
+    assert donor_row.cantidad_max == Decimal("400.00")
+    assert food_row.cantidad_max + donor_row.cantidad_max == Decimal("1500.00")
+    assert session.query(MovimientoFinanciero).count() == 2
+    total = session.query(func.sum(MovimientoFinanciero.cantidad)).scalar()
+    assert Decimal(str(total)) == Decimal("1500.00")
+
+
+def test_apply_rejects_changed_donor_snapshot(db_context):
+    session = db_context
+    user = create_user(session)
+    proposal, food_budget, donor_budget = build_standard_proposal(session, user)
+
+    donor_budget.cantidad_max = Decimal("450")
+    session.commit()
+
+    result = BudgetCompensationService.apply(proposal)
+
+    assert result.status == "stale"
+    session.expire_all()
+    assert (
+        session.get(LimiteCategoria, food_budget.id).cantidad_max
+        == Decimal("1000.00")
+    )
+    assert (
+        session.get(LimiteCategoria, donor_budget.id).cantidad_max
+        == Decimal("450.00")
+    )
+
+
+def test_apply_rejects_donor_consumed_by_new_movement(db_context):
+    session = db_context
+    user = create_user(session)
+    proposal, food_budget, donor_budget = build_standard_proposal(session, user)
+
+    transport = session.get(Categoria, donor_budget.categoria_id)
+    create_movement(session, user, transport, 50)
+
+    result = BudgetCompensationService.apply(proposal)
+
+    assert result.status == "stale"
+    session.expire_all()
+    assert (
+        session.get(LimiteCategoria, food_budget.id).cantidad_max
+        == Decimal("1000.00")
+    )
+    assert (
+        session.get(LimiteCategoria, donor_budget.id).cantidad_max
+        == Decimal("500.00")
+    )
+
+
+def test_apply_rejects_expired_proposal(db_context):
+    session = db_context
+    user = create_user(session)
+    proposal, food_budget, donor_budget = build_standard_proposal(session, user)
+    now = datetime.fromisoformat(proposal.expires_at) + timedelta(seconds=1)
+
+    result = BudgetCompensationService.apply(proposal, now=now)
+
+    assert result.status == "expired"
+    session.expire_all()
+    assert (
+        session.get(LimiteCategoria, food_budget.id).cantidad_max
+        == Decimal("1000.00")
+    )
+    assert (
+        session.get(LimiteCategoria, donor_budget.id).cantidad_max
+        == Decimal("500.00")
+    )
+
+
+def test_apply_is_idempotent_on_same_proposal(db_context):
+    session = db_context
+    user = create_user(session)
+    proposal, food_budget, donor_budget = build_standard_proposal(session, user)
+
+    first = BudgetCompensationService.apply(proposal)
+    second = BudgetCompensationService.apply(proposal)
+
+    assert first.status == "applied"
+    assert second.status == "stale"
+    session.expire_all()
+    assert (
+        session.get(LimiteCategoria, food_budget.id).cantidad_max
+        == Decimal("1100.00")
+    )
+    assert (
+        session.get(LimiteCategoria, donor_budget.id).cantidad_max
+        == Decimal("400.00")
+    )
+
+
+def test_apply_allows_donor_reaching_zero(db_context):
+    session = db_context
+    user = create_user(session)
+    food = create_category(session, user, "Comida")
+    transport = create_category(session, user, "Transporte")
+    food_budget = create_budget(session, user, food, amount="1000")
+    donor_budget = create_budget(session, user, transport, amount="100")
+    create_movement(session, user, food, 1100)
+
+    proposal = BudgetCompensationService.build_proposal(
+        user.id,
+        target_category="Comida",
+        reference_date=REFERENCE_DATE,
+    ).proposal
+    assert proposal is not None
+    assert proposal.donors[0].after_limit == Decimal("0.00")
+
+    result = BudgetCompensationService.apply(proposal)
+
+    assert result.status == "applied"
+    session.expire_all()
+    food_row = session.get(LimiteCategoria, food_budget.id)
+    donor_row = session.get(LimiteCategoria, donor_budget.id)
+    assert food_row.cantidad_max == Decimal("1100.00")
+    assert donor_row.cantidad_max == Decimal("0")
+    assert food_row.cantidad_max + donor_row.cantidad_max == Decimal("1100.00")
+
+
+def test_apply_rolls_back_on_commit_failure(db_context, monkeypatch):
+    session = db_context
+    user = create_user(session)
+    proposal, food_budget, donor_budget = build_standard_proposal(session, user)
+
+    class FailingCommitSession:
+        def __init__(self, wrapped_session):
+            self._wrapped_session = wrapped_session
+
+        def __getattr__(self, name):
+            return getattr(self._wrapped_session, name)
+
+        def commit(self):
+            raise RuntimeError("commit failed")
+
+    session_factory = sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        bind=session.get_bind(),
+    )
+    monkeypatch.setattr(
+        compensation_module,
+        "SessionLocal",
+        lambda: FailingCommitSession(session_factory()),
+    )
+
+    result = BudgetCompensationService.apply(proposal)
+
+    assert result.status == "persistence_error"
+    session.expire_all()
+    assert (
+        session.get(LimiteCategoria, food_budget.id).cantidad_max
+        == Decimal("1000.00")
+    )
+    assert (
+        session.get(LimiteCategoria, donor_budget.id).cantidad_max
+        == Decimal("500.00")
+    )
+
+
+def test_apply_requires_same_user(db_context):
+    session = db_context
+    user = create_user(session)
+    other_user = create_user(session, phone="5492222222222")
+    proposal, food_budget, donor_budget = build_standard_proposal(session, user)
+
+    payload = proposal.to_dict()
+    payload["user_id"] = str(other_user.id)
+
+    result = BudgetCompensationService.apply(payload)
+
+    assert result.status == "stale"
+    session.expire_all()
+    assert (
+        session.get(LimiteCategoria, food_budget.id).cantidad_max
+        == Decimal("1000.00")
+    )
+    assert (
+        session.get(LimiteCategoria, donor_budget.id).cantidad_max
+        == Decimal("500.00")
+    )
+
+
+def test_apply_invalid_proposal_dict_returns_invalid_data(db_context):
+    result = BudgetCompensationService.apply({"amount": "not-a-number"})
+
+    assert result.status == "invalid_data"
+    assert result.proposal is None
