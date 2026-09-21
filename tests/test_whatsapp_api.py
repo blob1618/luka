@@ -326,7 +326,9 @@ async def test_whatsapp_client_close_idempotent():
 
 
 @pytest.mark.asyncio
-async def test_shared_client_used_by_message_and_reaction(monkeypatch):
+async def test_shared_client_used_by_message_reaction_and_typing(monkeypatch):
+    from app.api.whatsapp import send_whatsapp_typing_indicator
+
     monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
     monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id")
     monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
@@ -343,9 +345,12 @@ async def test_shared_client_used_by_message_and_reaction(monkeypatch):
     sent_react = await send_whatsapp_reaction("541123456789", "wamid.123")
     assert sent_react is True
 
-    # Both reuse the exact same client instance
+    sent_typing = await send_whatsapp_typing_indicator("wamid.123")
+    assert sent_typing is True
+
+    # All senders reuse the exact same client instance
     client_factory.assert_called_once()
-    assert mock_client.post.await_count == 2
+    assert mock_client.post.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -461,3 +466,89 @@ async def test_send_reaction_error_timeout_and_network_tolerance(monkeypatch):
     monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client_network))
 
     assert await send_whatsapp_reaction("541123456789", "wamid.1") is False
+
+
+@pytest.mark.asyncio
+async def test_send_typing_indicator_contract_and_payload(monkeypatch):
+    from app.api.whatsapp import send_whatsapp_typing_indicator
+
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id-123")
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
+
+    response = Mock(status_code=200)
+    response.text = '{"success": true}'
+    post = AsyncMock(return_value=response)
+    client = Mock()
+    client.is_closed = False
+    client.post = post
+
+    client_factory = Mock(return_value=client)
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", client_factory)
+
+    sent = await send_whatsapp_typing_indicator("wamid.12345")
+
+    assert sent is True
+    client_factory.assert_called_once()
+    post.assert_awaited_once()
+    assert post.await_args.args[0] == "https://graph.facebook.com/v26.0/phone-id-123/messages"
+    assert post.await_args.kwargs["json"] == {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": "wamid.12345",
+        "typing_indicator": {"type": "text"},
+    }
+    assert post.await_args.kwargs["headers"]["Authorization"] == "Bearer test-token"
+
+
+@pytest.mark.asyncio
+async def test_send_typing_indicator_skips_network_without_config(monkeypatch):
+    from app.api.whatsapp import send_whatsapp_typing_indicator
+
+    client_factory = Mock()
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", client_factory)
+
+    monkeypatch.delenv("WHATSAPP_API_TOKEN", raising=False)
+    monkeypatch.delenv("WHATSAPP_PHONE_ID", raising=False)
+    assert await send_whatsapp_typing_indicator("wamid.1") is False
+
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id")
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "invalid_ver")
+    assert await send_whatsapp_typing_indicator("wamid.1") is False
+
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
+    assert await send_whatsapp_typing_indicator("") is False
+
+    client_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_typing_indicator_error_timeout_and_network_tolerance(monkeypatch):
+    import httpx
+    from app.api.whatsapp import send_whatsapp_typing_indicator
+
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id")
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
+
+    response_400 = Mock(status_code=400, text="Bad Request")
+    client_400 = Mock()
+    client_400.is_closed = False
+    client_400.post = AsyncMock(return_value=response_400)
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client_400))
+    assert await send_whatsapp_typing_indicator("wamid.1") is False
+
+    await close_whatsapp_client()
+    client_timeout = Mock()
+    client_timeout.is_closed = False
+    client_timeout.post = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client_timeout))
+    assert await send_whatsapp_typing_indicator("wamid.1") is False
+
+    await close_whatsapp_client()
+    client_network = Mock()
+    client_network.is_closed = False
+    client_network.post = AsyncMock(side_effect=httpx.NetworkError("refused"))
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client_network))
+    assert await send_whatsapp_typing_indicator("wamid.1") is False

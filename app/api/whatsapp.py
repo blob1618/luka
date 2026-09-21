@@ -406,3 +406,46 @@ async def send_whatsapp_reaction(
     except Exception as exc:
         print(f"Excepción al enviar la reacción de WhatsApp: {type(exc).__name__}")
         return False
+
+
+async def send_whatsapp_typing_indicator(message_id: str) -> bool:
+    """Show the typing indicator for an inbound WhatsApp message (marks it read)."""
+    api_token = os.getenv("WHATSAPP_API_TOKEN")
+    phone_id = os.getenv("WHATSAPP_PHONE_ID")
+    api_version = whatsapp_graph_api_version()
+    if not api_token or not phone_id:
+        print(
+            "Falta WHATSAPP_API_TOKEN o WHATSAPP_PHONE_ID. "
+            "No se puede enviar el typing indicator."
+        )
+        return False
+    if api_version is None:
+        print("WHATSAPP_GRAPH_API_VERSION tiene un formato invalido.")
+        return False
+    if not message_id:
+        print("Datos insuficientes para enviar el typing indicator de WhatsApp.")
+        return False
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id,
+        "typing_indicator": {"type": "text"},
+    }
+
+    url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {api_token}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        client = get_whatsapp_client()
+        response = await client.post(url, headers=headers, json=payload)
+        if response.status_code != 200:
+            print(f"Error al enviar el typing indicator: {response.status_code}")
+            return False
+        return True
+    except Exception as exc:
+        print(f"Excepción al enviar el typing indicator de WhatsApp: {type(exc).__name__}")
+        return False
