@@ -53,6 +53,10 @@ def test_conceptual_detection_accepts_an_amount_inside_an_example():
     assert not FinancialEducationService.is_conceptual_query("Ahorré 1000 pesos hoy")
 
 
+def test_budget_command_is_not_intercepted_as_education():
+    assert not FinancialEducationService.is_conceptual_query("Compensá mi presupuesto")
+
+
 def test_glossary_is_versioned_and_safe_for_a_shared_static_prompt():
     glossary = load_glossary()
     static_context = FinancialEducationService.static_prompt_context()

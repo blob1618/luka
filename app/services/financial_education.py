@@ -109,12 +109,15 @@ class FinancialEducationService:
         if not normalized:
             return False
 
-        has_known_term = FinancialEducationService._find_entry(normalized) is not None
-        is_ambiguous_interest = "interes" in normalized
         if _CONCEPTUAL_MARKERS.search(normalized):
             return True
 
-        return (has_known_term or is_ambiguous_interest) and len(normalized.split()) <= 4
+        # Search-style queries such as "interés compuesto" are educational,
+        # but commands that merely mention a term (for example, "compensá mi
+        # presupuesto") must continue through the normal intent dispatcher.
+        return normalized == "interes" or any(
+            normalized in entry.aliases for entry in load_glossary().entries
+        )
 
     @staticmethod
     def answer(text: str, *, requested_term: str | None = None) -> FinancialEducationReply:
