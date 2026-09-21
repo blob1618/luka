@@ -7,6 +7,7 @@ from app.services.conversation import LastCreatedLimit
 from app.services.intent_routing import (
     normalize_limit_intent,
     normalize_movement_action,
+    normalize_movement_chart_intent,
     normalize_movement_query_intent,
     references_recent_limit,
 )
@@ -133,3 +134,33 @@ def test_normalize_movement_query_intent_does_not_override_expense_with_amount()
         {"intent": "expense", "amount": 5000.0},
     )
     assert result["intent"] == "expense"
+
+
+@pytest.mark.parametrize(
+    ("text", "chart_type", "ranking", "movement_type"),
+    [
+        ("grafico de gastos por categoria", "bar", "highest", "egreso"),
+        ("torta de las categorias con menor gasto", "pie", "lowest", "egreso"),
+        ("diagrama de barras de ingresos", "bar", "highest", "ingreso"),
+    ],
+)
+def test_explicit_chart_requests_are_normalized(
+    text,
+    chart_type,
+    ranking,
+    movement_type,
+):
+    result = normalize_movement_chart_intent(text, {"intent": "out_of_scope"})
+    assert result["intent"] == "movement_chart"
+    assert result["chart_explicit"] is True
+    assert result["chart_type"] == chart_type
+    assert result["chart_ranking"] == ranking
+    assert result["movement_type"] == movement_type
+
+
+def test_non_explicit_statistics_request_is_not_a_chart():
+    result = normalize_movement_chart_intent(
+        "mostrame un resumen de mis gastos",
+        {"intent": "expense_summary"},
+    )
+    assert result["intent"] == "expense_summary"

@@ -5,6 +5,7 @@ import pytest_asyncio
 
 from app.api.whatsapp import (
     InboundInteractiveReply,
+    WhatsAppImage,
     WhatsAppList,
     WhatsAppListRow,
     WhatsAppListSection,
@@ -655,3 +656,74 @@ async def test_send_detailed_missing_config_is_permanent(monkeypatch):
     result = await send_whatsapp_message_detailed("541123456789", "Hola")
     assert result.status == WhatsAppDeliveryStatus.PERMANENT
     assert result.error_code == "missing_credentials"
+
+
+@pytest.mark.asyncio
+async def test_send_image_uploads_png_then_sends_media_id(monkeypatch):
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id")
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
+
+    upload_response = Mock(status_code=200)
+    upload_response.json.return_value = {"id": "media-123"}
+    send_response = Mock(status_code=200)
+    send_response.json.return_value = {"messages": [{"id": "wamid.image"}]}
+    client = Mock(is_closed=False)
+    client.post = AsyncMock(side_effect=[upload_response, send_response])
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client))
+
+    result = await send_whatsapp_message_detailed(
+        "5491123456789",
+        WhatsAppImage(
+            content=b"\x89PNG\r\n\x1a\nchart",
+            caption="Gastos de septiembre",
+        ),
+    )
+
+    assert result.is_success
+    assert result.message_id == "wamid.image"
+    assert client.post.await_count == 2
+    upload_call, send_call = client.post.await_args_list
+    assert upload_call.args[0].endswith("/phone-id/media")
+    assert upload_call.kwargs["files"]["file"][2] == "image/png"
+    assert send_call.kwargs["json"]["image"] == {
+        "id": "media-123",
+        "caption": "Gastos de septiembre",
+    }
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_image_timeout_is_not_retried_and_sends_text_fallback(monkeypatch):
+    import httpx
+
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id")
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
+
+    upload_response = Mock(status_code=200)
+    upload_response.json.return_value = {"id": "media-123"}
+    fallback_response = Mock(status_code=200)
+    fallback_response.json.return_value = {"messages": [{"id": "wamid.fallback"}]}
+    client = Mock(is_closed=False)
+    client.post = AsyncMock(
+        side_effect=[
+            upload_response,
+            httpx.ReadTimeout("unknown delivery"),
+            fallback_response,
+        ]
+    )
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client))
+
+    sent = await send_whatsapp_message(
+        "541123456789",
+        WhatsAppImage(content=b"\x89PNG\r\n\x1a\nchart"),
+    )
+
+    assert sent is True
+    assert client.post.await_count == 3
+    image_posts = [
+        call for call in client.post.await_args_list
+        if call.kwargs.get("json", {}).get("type") == "image"
+    ]
+    assert len(image_posts) == 1
+    assert client.post.await_args_list[-1].kwargs["json"]["type"] == "text"

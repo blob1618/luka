@@ -110,6 +110,27 @@ class PendingCompensation:
 
 
 @dataclass
+class PendingMovementChart:
+    """Chart request waiting for an unambiguous period or currency."""
+
+    sender_phone: str
+    movement_type: str = "egreso"
+    chart_type: str = "bar"
+    ranking: str = "highest"
+    date_from: str | None = None
+    date_to: str | None = None
+    chart_currency: str | None = None
+    available_currencies: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PendingMovementChart":
+        return cls(**dict(d))
+
+
+@dataclass
 class LastCreatedLimit:
     """
     Datos del último límite creado, para permitir editarlo sin diálogo previo
@@ -172,6 +193,7 @@ class ConversationState:
     pending_limit: PendingLimit | None = None
     pending_limit_delete: PendingLimitDelete | None = None
     pending_compensation: PendingCompensation | None = None
+    pending_movement_chart: PendingMovementChart | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -181,6 +203,10 @@ class ConversationState:
             "pending_limit": self.pending_limit.to_dict() if self.pending_limit else None,
             "pending_limit_delete": self.pending_limit_delete.to_dict() if self.pending_limit_delete else None,
             "pending_compensation": self.pending_compensation.to_dict() if self.pending_compensation else None,
+            "pending_movement_chart": (
+                self.pending_movement_chart.to_dict()
+                if self.pending_movement_chart else None
+            ),
         }
 
     @classmethod
@@ -200,6 +226,9 @@ class ConversationState:
         pc = None
         if d.get("pending_compensation"):
             pc = PendingCompensation.from_dict(d["pending_compensation"])
+        pmc = None
+        if d.get("pending_movement_chart"):
+            pmc = PendingMovementChart.from_dict(d["pending_movement_chart"])
         return cls(
             step=d.get("step", "none"),
             pending_movement=pm,
@@ -207,6 +236,7 @@ class ConversationState:
             pending_limit=pl,
             pending_limit_delete=pld,
             pending_compensation=pc,
+            pending_movement_chart=pmc,
         )
 
     @classmethod
@@ -218,6 +248,7 @@ class ConversationState:
             pending_limit=None,
             pending_limit_delete=None,
             pending_compensation=None,
+            pending_movement_chart=None,
         )
 
 
@@ -926,6 +957,35 @@ class ConversationService:
         """Obtiene la propuesta de compensación pendiente si existe."""
         state = await cls.get_state(whatsapp_id)
         return state.pending_compensation
+
+    # ------------------------------------------------------------------
+    # Grafico de movimientos pendiente
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def set_pending_movement_chart(
+        cls,
+        whatsapp_id: str,
+        pending: PendingMovementChart,
+    ) -> None:
+        state = ConversationState(
+            step="awaiting_movement_chart_details",
+            pending_movement_chart=pending,
+        )
+        await cls.set_state(whatsapp_id, state)
+
+    @classmethod
+    async def is_awaiting_movement_chart_details(cls, whatsapp_id: str) -> bool:
+        state = await cls.get_state(whatsapp_id)
+        return state.step == "awaiting_movement_chart_details"
+
+    @classmethod
+    async def get_pending_movement_chart(
+        cls,
+        whatsapp_id: str,
+    ) -> PendingMovementChart | None:
+        state = await cls.get_state(whatsapp_id)
+        return state.pending_movement_chart
 
     # ------------------------------------------------------------------
     # Último límite creado (para editarlo sin diálogo previo)

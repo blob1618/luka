@@ -10,7 +10,7 @@ import contextlib
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
@@ -21,6 +21,7 @@ from sqlalchemy.sql import func
 
 from app.api.whatsapp import (
     OutboundWhatsAppMessage,
+    WhatsAppImage,
     WhatsAppReplyButton,
     WhatsAppReplyButtons,
     WhatsAppText,
@@ -39,6 +40,7 @@ from app.services.conversation import (
     LastRegisteredMovement,
     PendingLimit,
     PendingLimitDelete,
+    PendingMovementChart,
     PendingMovement,
     PendingReminder,
     PendingSelection,
@@ -61,11 +63,13 @@ from app.services.finance import (
 from app.services.intent_routing import (
     normalize_limit_intent,
     normalize_movement_query_intent,
+    normalize_movement_chart_intent,
     normalize_movement_action,
     references_recent_limit,
 )
 from app.services.limit import LimitService
 from app.services.llm import LLMService
+from app.services.movement_chart import MovementChartService
 from app.services.llm_contract import resolve_relative_date
 from app.services.onboarding import OnboardingDecision, OnboardingService
 from app.services.reminder import ReminderListResult, ReminderResult, ReminderService
@@ -2091,6 +2095,188 @@ async def _handle_query_movements(sender_phone: str, extracted_data: dict) -> st
     )
 
 
+def _current_month_period(today: date) -> tuple[date, date]:
+    start = today.replace(day=1)
+    if start.month == 12:
+        next_month = start.replace(year=start.year + 1, month=1)
+    else:
+        next_month = start.replace(month=start.month + 1)
+    return start, next_month - timedelta(days=1)
+
+
+def _parse_chart_date(raw: Any) -> date | None:
+    if raw is None:
+        return None
+    try:
+        return date.fromisoformat(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _chart_currency_from_text(text: str) -> str | None:
+    normalized = normalize_text(text)
+    if re.search(r"\b(?:ars|pesos?(?: argentinos?)?)\b", normalized):
+        return "ARS"
+    if re.search(r"\b(?:usd|dolares?)\b", normalized):
+        return "USD"
+    if re.search(r"\b(?:eur|euros?)\b", normalized):
+        return "EUR"
+    code = re.fullmatch(r"\s*([A-Za-z]{3})\s*", text)
+    return code.group(1).upper() if code else None
+
+
+async def _handle_movement_chart(
+    sender_phone: str,
+    extracted_data: dict,
+) -> DispatchResult:
+    movement_type = (
+        "ingreso" if extracted_data.get("movement_type") == "ingreso" else "egreso"
+    )
+    chart_type = "pie" if extracted_data.get("chart_type") == "pie" else "bar"
+    ranking = "lowest" if extracted_data.get("chart_ranking") == "lowest" else "highest"
+    chart_currency = extracted_data.get("chart_currency")
+    if chart_currency is not None:
+        chart_currency = str(chart_currency).strip().upper() or None
+
+    raw_start = extracted_data.get("date_from")
+    raw_end = extracted_data.get("date_to")
+    start_date = _parse_chart_date(raw_start)
+    end_date = _parse_chart_date(raw_end)
+    if (
+        raw_start is None
+        and raw_end is None
+        and not extracted_data.get("_chart_period_pending")
+    ):
+        start_date, end_date = _current_month_period(
+            datetime.now(ARGENTINA_TZ).date()
+        )
+
+    pending = PendingMovementChart(
+        sender_phone=sender_phone,
+        movement_type=movement_type,
+        chart_type=chart_type,
+        ranking=ranking,
+        date_from=start_date.isoformat() if start_date else None,
+        date_to=end_date.isoformat() if end_date else None,
+        chart_currency=chart_currency,
+    )
+    if start_date is None or end_date is None or start_date > end_date:
+        await ConversationService.set_pending_movement_chart(sender_phone, pending)
+        return DispatchResult(
+            reply_text=(
+                "No pude determinar el período completo. "
+                "Decime desde qué fecha y hasta qué fecha querés el gráfico."
+            ),
+            service_invoked="conversation",
+            intent="movement_chart",
+        )
+
+    user_id = await asyncio.to_thread(_user_id_by_phone, sender_phone)
+    if user_id is None:
+        return DispatchResult(
+            reply_text="No encontré una cuenta vinculada a este WhatsApp.",
+            service_invoked="finance",
+            intent="movement_chart",
+        )
+
+    try:
+        with track_phase("db"):
+            query_result = await asyncio.to_thread(
+                FinanceService.aggregate_movements_by_category,
+                user_id,
+                movement_type=movement_type,
+                currency=chart_currency,
+                start_date=start_date,
+                end_date=end_date,
+            )
+    except Exception as exc:
+        logger.warning("movement_chart_query_failed error=%s", type(exc).__name__)
+        await ConversationService.clear_state(sender_phone)
+        return DispatchResult(
+            reply_text=(
+                "No pude consultar los datos para el gráfico. "
+                "Podés volver a intentarlo en unos minutos."
+            ),
+            service_invoked="finance",
+            intent="movement_chart",
+        )
+    if query_result.status == "needs_currency":
+        pending.available_currencies = query_result.available_currencies
+        await ConversationService.set_pending_movement_chart(sender_phone, pending)
+        choices = ", ".join(query_result.available_currencies)
+        return DispatchResult(
+            reply_text=(
+                f"En ese período tenés movimientos en {choices}. "
+                "¿De qué moneda querés el gráfico?"
+            ),
+            service_invoked="conversation",
+            intent="movement_chart",
+        )
+    if query_result.status != "ok":
+        await ConversationService.clear_state(sender_phone)
+        return DispatchResult(
+            reply_text=(
+                "No pude consultar los datos para el gráfico. "
+                "Podés volver a intentarlo en unos minutos."
+            ),
+            service_invoked="finance",
+            intent="movement_chart",
+        )
+    if not query_result.categories or query_result.currency is None:
+        await ConversationService.clear_state(sender_phone)
+        kind = "ingresos" if movement_type == "ingreso" else "gastos"
+        return DispatchResult(
+            reply_text=(
+                f"No encontré {kind} para ese período"
+                + (f" en {chart_currency}" if chart_currency else "")
+                + "."
+            ),
+            service_invoked="finance",
+            intent="movement_chart",
+        )
+
+    spec = MovementChartService.prepare(
+        query_result.categories,
+        movement_type=movement_type,
+        currency=query_result.currency,
+        start_date=start_date,
+        end_date=end_date,
+        chart_type=chart_type,
+        ranking=ranking,
+    )
+    try:
+        png = await asyncio.wait_for(
+            asyncio.to_thread(MovementChartService.render_png, spec),
+            timeout=8,
+        )
+    except Exception as exc:
+        logger.warning("movement_chart_render_failed error=%s", type(exc).__name__)
+        await ConversationService.clear_state(sender_phone)
+        return DispatchResult(
+            reply_text=(
+                "No pude generar el gráfico en este momento. "
+                "Podés volver a pedírmelo en unos minutos."
+            ),
+            service_invoked="movement_chart",
+            intent="movement_chart",
+        )
+
+    await ConversationService.clear_state(sender_phone)
+    kind = "Ingresos" if movement_type == "ingreso" else "Gastos"
+    ranking_text = "menores" if ranking == "lowest" else "mayores"
+    caption = (
+        f"{kind} por categoría ({ranking_text}) | "
+        f"{start_date:%d/%m/%Y} - {end_date:%d/%m/%Y} | "
+        f"Total: {_format_amount(spec.total)} {spec.currency}"
+    )
+    return DispatchResult(
+        reply_text=caption,
+        reply_message=WhatsAppImage(content=png, caption=caption),
+        service_invoked="movement_chart",
+        intent="movement_chart",
+    )
+
+
 async def _handle_delete_limit(sender_phone: str, extracted_data: dict) -> str:
     category_name = extracted_data.get("limit_category")
     month = extracted_data.get("limit_month")
@@ -2394,6 +2580,80 @@ async def _dispatch_incoming_message(
                     history=conversation_history,
                 )
         return llm_result_cache
+
+    # ----------------------------------------------------------
+    # Multi-turn: completar período o moneda de un gráfico
+    # ----------------------------------------------------------
+    if await ConversationService.is_awaiting_movement_chart_details(sender_phone):
+        pending_chart = await ConversationService.get_pending_movement_chart(sender_phone)
+        if pending_chart is None:
+            await ConversationService.clear_state(sender_phone)
+            return DispatchResult(
+                reply_text=(
+                    "Se perdió el contexto del gráfico. "
+                    "Podés volver a pedírmelo indicando el período."
+                ),
+                service_invoked="conversation",
+                intent="movement_chart",
+            )
+        if _is_cancel_request(text_body):
+            await ConversationService.clear_state(sender_phone)
+            return DispatchResult(
+                reply_text="Listo, cancelé el gráfico.",
+                service_invoked="conversation",
+                intent="movement_chart",
+            )
+
+        followup_data = await extract_message_once()
+        followup_data = normalize_movement_chart_intent(text_body, followup_data)
+        currency = (
+            _chart_currency_from_text(text_body)
+            or followup_data.get("chart_currency")
+            or pending_chart.chart_currency
+        )
+        if (
+            pending_chart.available_currencies
+            and currency not in pending_chart.available_currencies
+        ):
+            choices = ", ".join(pending_chart.available_currencies)
+            return DispatchResult(
+                reply_text=f"Elegí una de estas monedas: {choices}.",
+                service_invoked="conversation",
+                intent="movement_chart",
+            )
+
+        merged_chart = {
+            "intent": "movement_chart",
+            "movement_type": (
+                followup_data.get("movement_type")
+                if followup_data.get("chart_explicit")
+                else pending_chart.movement_type
+            ),
+            "chart_type": (
+                followup_data.get("chart_type")
+                if followup_data.get("chart_explicit")
+                else pending_chart.chart_type
+            ),
+            "chart_ranking": (
+                followup_data.get("chart_ranking")
+                if followup_data.get("chart_explicit")
+                else pending_chart.ranking
+            ),
+            "date_from": followup_data.get("date_from") or pending_chart.date_from,
+            "date_to": followup_data.get("date_to") or pending_chart.date_to,
+            "chart_currency": currency,
+            "_chart_period_pending": True,
+        }
+        supplied_detail = bool(
+            currency
+            or followup_data.get("date_from")
+            or followup_data.get("date_to")
+            or followup_data.get("chart_explicit")
+        )
+        if supplied_detail:
+            return await _handle_movement_chart(sender_phone, merged_chart)
+
+        await ConversationService.clear_state(sender_phone)
 
     # ----------------------------------------------------------
     # Multi-turn: renombrar recordatorio por título duplicado
@@ -2840,6 +3100,10 @@ async def _dispatch_incoming_message(
         today=datetime.now(ARGENTINA_TZ).date(),
     )
     extracted_data = normalize_movement_action(text_body, extracted_data)
+    extracted_data = normalize_movement_chart_intent(
+        text_body,
+        extracted_data,
+    )
     extracted_data = normalize_movement_query_intent(
         text_body,
         extracted_data,
@@ -2877,6 +3141,16 @@ async def _dispatch_incoming_message(
     elif intent == "query_movements":
         reply_text = await _handle_query_movements(sender_phone, extracted_data)
         service_invoked = "finance"
+
+    elif intent == "movement_chart" and extracted_data.get("chart_explicit"):
+        return await _handle_movement_chart(sender_phone, extracted_data)
+
+    elif intent == "movement_chart":
+        reply_text = (
+            "Para enviarte un gráfico, pedímelo explícitamente e indicame "
+            "si querés ver gastos o ingresos."
+        )
+        service_invoked = "movement_chart"
 
     elif intent == "financial_education":
         education_reply = FinancialEducationService.answer(

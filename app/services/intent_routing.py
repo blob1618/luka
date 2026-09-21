@@ -156,6 +156,51 @@ def normalize_movement_query_intent(
     return data
 
 
+_CHART_TERMS = re.compile(
+    r"\b(?:grafico|grafica|diagrama|barras?|torta|pastel|circular)\b"
+)
+_CHART_FINANCE_TERMS = re.compile(
+    r"\b(?:gast\w*|egres\w*|ingres\w*|categor\w*|movimientos?)\b"
+)
+
+
+def normalize_movement_chart_intent(text: str, extracted_data: dict) -> dict:
+    """Recognize only explicit requests for a financial chart."""
+    data = dict(extracted_data)
+    normalized = _normalize(text)
+    if not (
+        _CHART_TERMS.search(normalized)
+        and _CHART_FINANCE_TERMS.search(normalized)
+    ):
+        return data
+    if re.search(r"\b(?:dashboard|panel|web|link|enlace)\b", normalized):
+        return data
+
+    data["intent"] = "movement_chart"
+    data["chart_explicit"] = True
+    data["reply_text"] = "Generando tu grafico."
+    data["movement_type"] = (
+        "ingreso" if re.search(r"\bingresos?\b", normalized) else "egreso"
+    )
+    data["chart_type"] = (
+        "pie"
+        if re.search(r"\b(?:torta|pastel|circular)\b", normalized)
+        else "bar"
+    )
+    data["chart_ranking"] = (
+        "lowest"
+        if re.search(r"\b(?:menor|menores|menos|mas bajos?)\b", normalized)
+        else "highest"
+    )
+    if re.search(r"\b(?:ars|pesos?(?: argentinos?)?)\b", normalized):
+        data["chart_currency"] = "ARS"
+    elif re.search(r"\b(?:usd|dolares?)\b", normalized):
+        data["chart_currency"] = "USD"
+    elif re.search(r"\b(?:eur|euros?)\b", normalized):
+        data["chart_currency"] = "EUR"
+    return data
+
+
 _AMOUNT_CORRECTION = re.compile(
     r"^(?:era|fue|eran|fueron|en realidad|me equivoque|mejor)\b"
     r".*?\b(?:por|de|a|eran|fueron)\s*\$?\s*(\d[\d.,]*)\b"

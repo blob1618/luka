@@ -131,7 +131,7 @@ Puntos clave del flujo:
 - El LLM solo puede devolver intents del registro cerrado de `LLMService`. Un intent
   desconocido se convierte en `out_of_scope`.
 - No se persisten como movimientos los intents `greeting`, `out_of_scope`, `reminder`,
-  `budget_query`, `expense_summary`, `query_movements`, `create_reminder`,
+  `budget_query`, `expense_summary`, `query_movements`, `movement_chart`, `create_reminder`,
   `list_reminders`, `update_reminder`, `pause_reminder`, `activate_reminder`,
   `delete_reminder`, `enable_proactive_reminders`, `disable_proactive_reminders`,
   `confirm_category`, `reject_category`, `delete_category`, `list_categories`,
@@ -156,6 +156,12 @@ Puntos clave del flujo:
 
 ## Estado conversacional en Redis
 
+Los pedidos de gráficos pueden quedar en `awaiting_movement_chart_details` cuando el
+período está incompleto o existen varias monedas. Redis conserva el tipo de movimiento,
+formato, ranking y filtros ya resueltos; la siguiente respuesta completa la solicitud o
+la cancela. El estado se elimina después de generar la imagen, responder sin datos o
+informar un fallo recuperable.
+
 - `ConversationService` crea su propio cliente Redis por event loop (separado del
   cliente global del webhook). El estado se cachea por corrutina/ContextVar con
   copy-on-write y se persiste con TTL. Si Redis no está disponible, loguea y devuelve
@@ -164,8 +170,8 @@ Puntos clave del flujo:
 - Estados multi-turno: confirmación de categoría, datos faltantes de recordatorio,
   renombrado de recordatorio por título duplicado, confirmación de año y de categoría
   de un límite, datos faltantes de límite, selección de mes a eliminar, categoría a
-  eliminar y confirmación de compensación de presupuesto
-  (`awaiting_compensation_confirmation`).
+  eliminar, confirmación de compensación de presupuesto y aclaración de gráficos
+  (`awaiting_compensation_confirmation`, `awaiting_movement_chart_details`).
 - Contexto acotado por usuario: último movimiento registrado, último límite creado,
   elementos recientemente mostrados y selección pendiente. Los TTL son 30 minutos para
   el estado de conversación y el flujo administrable, y 60 minutos para último

@@ -130,6 +130,24 @@ procesa en silencio para no repetir una confirmación ya enviada.
 - `/link` genera (o reutiliza) un enlace mágico de acceso al dashboard para usuarios ya
   vinculados, con vencimiento corto y un solo uso.
 
+## Gráficos de movimientos en WhatsApp
+
+- Un pedido explícito de gráfico o diagrama por categoría usa `movement_chart` y devuelve
+  una imagen PNG en el mismo chat. Los pedidos genéricos de resumen siguen siendo texto y
+  `/link` continúa reservado para abrir el dashboard.
+- El formato predeterminado es barras; torta/pastel/circular selecciona el formato de
+  pastel. El alcance predeterminado son egresos; los ingresos se grafican solo si el
+  usuario los pide expresamente.
+- Si no se indica período se usa el mes actual en `America/Argentina/Buenos_Aires`. Un
+  rango parcial se aclara antes de consultar. Si el período contiene más de una moneda,
+  el usuario debe elegir una y nunca se suman monedas diferentes.
+- Se muestran como máximo seis elementos: cinco categorías relevantes y `Otros`. El
+  usuario puede pedir las categorías de mayor o menor importe; `Otros` conserva la suma
+  exacta de las categorías restantes.
+- La imagen se genera completamente en memoria, sin archivos persistentes. Solo incluye
+  movimientos propios, activos y dentro del rango solicitado. Si no hay datos se responde
+  con texto y no se envía una imagen vacía.
+
 ## Educación financiera
 
 - Luka explica en chat presupuesto, gastos fijos y variables, ahorro, interés simple y

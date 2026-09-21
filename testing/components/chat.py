@@ -29,7 +29,18 @@ def bot_avatar() -> bytes:
 
 def export_as_json(messages: list[dict]) -> str:
     """Export chat history as JSON string."""
-    return json.dumps(messages, ensure_ascii=False, indent=2)
+    return json.dumps(_exportable_messages(messages), ensure_ascii=False, indent=2)
+
+
+def _exportable_messages(messages: list[dict]) -> list[dict]:
+    """Exclude in-memory image bytes while retaining that a preview existed."""
+    exported = []
+    for message in messages:
+        copy = {key: value for key, value in message.items() if key != "image_png"}
+        if isinstance(message.get("image_png"), (bytes, bytearray)):
+            copy["has_image_preview"] = True
+        exported.append(copy)
+    return exported
 
 
 def export_as_text(messages: list[dict], include_debug: bool = False) -> str:
@@ -53,7 +64,7 @@ def export_sessions_as_json(sessions: list[ChatSession]) -> str:
             "label": session.label,
             "phone": session.phone,
             "user_registered": session.user_registered,
-            "messages": session.messages,
+            "messages": _exportable_messages(session.messages),
         }
         for session in sessions
     ]
@@ -130,6 +141,15 @@ def render_assistant_text(text: str) -> None:
     st.markdown(whatsapp_to_markdown(text))
 
 
+def render_chart_preview(image_png: bytes) -> None:
+    """Render an in-memory chart produced by the dispatcher."""
+    st.image(
+        image_png,
+        caption="Vista previa del gráfico que recibiría el usuario",
+        use_container_width=True,
+    )
+
+
 def _get_prompt_path(config: TestingConfig) -> str:
     """Resolve prompt path from config."""
     if config.prompt_path == "prompt.md" or config.prompt_path.startswith("prompts/"):
@@ -137,11 +157,15 @@ def _get_prompt_path(config: TestingConfig) -> str:
     return f"testing/prompts/{config.prompt_path}"
 
 
-async def _process_message(text: str, config: TestingConfig, phone: str) -> tuple[str, dict]:
+async def _process_message(
+    text: str,
+    config: TestingConfig,
+    phone: str,
+) -> tuple[str, dict, bytes | None]:
     """
     Procesa el mensaje a través del flujo completo del dispatcher (webhook).
 
-    Returns (reply_text, debug_data).
+    Returns (reply_text, debug_data, image_png).
     """
     service = WebhookModeService()
     result = await service.send_message(
@@ -162,7 +186,10 @@ async def _process_message(text: str, config: TestingConfig, phone: str) -> tupl
         "memory": result.memory,
         "memory_ttl_seconds": result.memory_ttl_seconds,
     }
-    return result.reply_text, debug_data
+    image_png = getattr(result, "image_png", None)
+    if not isinstance(image_png, (bytes, bytearray)):
+        image_png = None
+    return result.reply_text, debug_data, bytes(image_png) if image_png else None
 
 
 def render_chat(config: TestingConfig) -> None:
@@ -178,6 +205,9 @@ def render_chat(config: TestingConfig) -> None:
         if msg["role"] == "assistant":
             with st.chat_message("assistant", avatar=bot_avatar()):
                 render_assistant_text(msg["content"])
+                image_png = msg.get("image_png")
+                if isinstance(image_png, (bytes, bytearray)):
+                    render_chart_preview(bytes(image_png))
                 if msg.get("debug"):
                     flags = {
                         "json": config.debug_json,
@@ -204,7 +234,7 @@ def render_chat(config: TestingConfig) -> None:
         # Process and add assistant response
         with st.chat_message("assistant", avatar=bot_avatar()):
             with st.spinner("Procesando..."):
-                reply_text, debug_data = asyncio.run(
+                reply_text, debug_data, image_png = asyncio.run(
                     _process_message(prompt, config, session.phone)
                 )
 
@@ -213,6 +243,8 @@ def render_chat(config: TestingConfig) -> None:
                 st.error(reply_text or "Error del LLM")
             else:
                 render_assistant_text(reply_text or "Sin respuesta")
+                if image_png is not None:
+                    render_chart_preview(image_png)
 
             flags = {
                 "json": config.debug_json,
@@ -222,11 +254,14 @@ def render_chat(config: TestingConfig) -> None:
             }
             render_debug(debug_data, flags)
 
-        session.messages.append({
+        assistant_message = {
             "role": "assistant",
             "content": reply_text or "Sin respuesta",
             "debug": debug_data,
-        })
+        }
+        if image_png is not None:
+            assistant_message["image_png"] = image_png
+        session.messages.append(assistant_message)
 
     # Export buttons in sidebar
     with st.sidebar:
