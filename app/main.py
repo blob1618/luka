@@ -27,6 +27,7 @@ from app.api.whatsapp import (  # noqa: E402
     parse_interactive_reply,
     send_whatsapp_message,
     send_whatsapp_reaction,
+    send_whatsapp_typing_indicator,
 )
 from app.scheduler import start_scheduler  # noqa: E402
 from app.services.telemetry import (  # noqa: E402
@@ -277,6 +278,32 @@ async def verify_webhook(request: Request):
     raise HTTPException(status_code=403, detail="Verification failed")
 
 
+async def _send_processing_signals(sender_phone: str, message_id: str) -> None:
+    """Señales best-effort antes de procesar: reacción ⏳ y typing indicator."""
+    with track_phase("reaction"):
+        try:
+            await send_whatsapp_reaction(
+                to_number=sender_phone,
+                message_id=message_id,
+                emoji="⏳",
+            )
+        except Exception as exc:
+            logger.warning(
+                "[BACKGROUND_MESSAGE] message_id=%s reaction_failed error=%s",
+                message_id,
+                type(exc).__name__,
+            )
+    with track_phase("typing"):
+        try:
+            await send_whatsapp_typing_indicator(message_id)
+        except Exception as exc:
+            logger.warning(
+                "[BACKGROUND_MESSAGE] message_id=%s typing_failed error=%s",
+                message_id,
+                type(exc).__name__,
+            )
+
+
 async def _process_inbound_message_background(message: dict, redis_instance) -> None:
     """Procesa un mensaje entrante en segundo plano conservando la idempotencia.
 
@@ -302,19 +329,7 @@ async def _process_inbound_message_background(message: dict, redis_instance) -> 
             sender_phone = message.get("from")
             text_body = message.get("text", {}).get("body", "")
             if sender_phone and whatsapp_message_id:
-                with track_phase("reaction"):
-                    try:
-                        await send_whatsapp_reaction(
-                            to_number=sender_phone,
-                            message_id=whatsapp_message_id,
-                            emoji="⏳",
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "[BACKGROUND_MESSAGE] message_id=%s reaction_failed error=%s",
-                            whatsapp_message_id,
-                            type(exc).__name__,
-                        )
+                await _send_processing_signals(sender_phone, whatsapp_message_id)
             status = await process_text_message_once(
                 redis_client=redis_instance,
                 sender_phone=sender_phone,
@@ -333,19 +348,10 @@ async def _process_inbound_message_background(message: dict, redis_instance) -> 
                 finish_message_telemetry(status="ignored_invalid_interactive")
                 return
             if interactive_reply.sender_phone and interactive_reply.message_id:
-                with track_phase("reaction"):
-                    try:
-                        await send_whatsapp_reaction(
-                            to_number=interactive_reply.sender_phone,
-                            message_id=interactive_reply.message_id,
-                            emoji="⏳",
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "[BACKGROUND_MESSAGE] message_id=%s reaction_failed error=%s",
-                            interactive_reply.message_id,
-                            type(exc).__name__,
-                        )
+                await _send_processing_signals(
+                    interactive_reply.sender_phone,
+                    interactive_reply.message_id,
+                )
             status = await process_interactive_message_once(
                 redis_client=redis_instance,
                 interactive_reply=interactive_reply,
