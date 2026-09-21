@@ -10,15 +10,28 @@ import contextlib
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import update
 from sqlalchemy.sql import func
 
-from app.api.whatsapp import OutboundWhatsAppMessage
-from app.models.database import Categoria, SessionLocal, Usuario
+from app.api.whatsapp import (
+    OutboundWhatsAppMessage,
+    WhatsAppReplyButton,
+    WhatsAppReplyButtons,
+    WhatsAppText,
+)
+from app.models.database import (
+    CandidatoGastoRecurrente,
+    Categoria,
+    SessionLocal,
+    Usuario,
+)
+from app.services.recurring_expense import RecurringExpenseService
 from app.services.conversation import (
     ConversationService,
     ConversationStateUnavailable,
@@ -78,6 +91,9 @@ class DispatchResult:
     event_variables: dict[str, Any] = field(default_factory=dict)
     reply_message: OutboundWhatsAppMessage | None = None
     clear_memory: bool = False
+    followup_messages: list[OutboundWhatsAppMessage] = field(default_factory=list)
+    proposal_candidate_id: str | None = None
+    proposal_delivery_mode: str | None = None  # "primary" or "followup"
 
 
 # ---------------------------------------------------------------------------
@@ -835,6 +851,64 @@ async def _handle_reset_context(sender_phone: str) -> DispatchResult:
     )
 
 
+def _check_pending_candidate_proposal(
+    user_id: UUID | str | None,
+    patron_hash: str | None,
+) -> dict | None:
+    if not user_id or not patron_hash:
+        return None
+    with track_phase("db"):
+        session = SessionLocal()
+        try:
+            u_id = UUID(str(user_id)) if not isinstance(user_id, UUID) else user_id
+            cand = (
+                session.query(CandidatoGastoRecurrente)
+                .join(Usuario, Usuario.id == CandidatoGastoRecurrente.usuario_id)
+                .filter(
+                    CandidatoGastoRecurrente.usuario_id == u_id,
+                    CandidatoGastoRecurrente.patron_hash == patron_hash,
+                    CandidatoGastoRecurrente.estado == "pendiente",
+                    Usuario.proactivo_habilitado.is_(True),
+                )
+                .first()
+            )
+            if cand and RecurringExpenseService.is_candidate_eligible_for_proposal(cand):
+                return {
+                    "id": str(cand.id),
+                    "concepto": cand.concepto or cand.descripcion_normalizada or "este gasto",
+                    "dia_estimado": cand.dia_estimado,
+                }
+            return None
+        except Exception as exc:
+            logger.debug("[RECURRING_PROPOSAL_CHECK_ERROR] %s: %s", type(exc).__name__, exc)
+            return None
+        finally:
+            session.close()
+
+
+def _record_proposal_sent(candidate_id: str | UUID) -> None:
+    with track_phase("db"):
+        session = SessionLocal()
+        try:
+            cand_uuid = UUID(str(candidate_id)) if not isinstance(candidate_id, UUID) else candidate_id
+            now_utc = datetime.now(timezone.utc)
+            session.execute(
+                update(CandidatoGastoRecurrente)
+                .where(CandidatoGastoRecurrente.id == cand_uuid)
+                .values(
+                    propuesta_en=now_utc,
+                    propuesta_conteo=CandidatoGastoRecurrente.propuesta_conteo + 1,
+                    actualizado_en=now_utc,
+                )
+            )
+            session.commit()
+        finally:
+            session.close()
+
+
+record_proposal_sent_sync = _record_proposal_sent
+
+
 async def _register_and_reply_with_hint(
     sender_phone: str,
     whatsapp_message_id: str | None,
@@ -953,6 +1027,16 @@ async def _register_single_with_hint(
         result.movement_id,
     )
     budget_feedback = _budget_feedback_reply(evaluation)
+    # STK-187: Verificar propuesta de candidato recurrente si el movimiento es egreso
+    if llm_result.get("movement_type", "egreso") == "egreso" and result.patron_hash and result.user_id:
+        pending_cand = await asyncio.to_thread(
+            _check_pending_candidate_proposal,
+            user_id=result.user_id,
+            patron_hash=result.patron_hash,
+        )
+        if pending_cand:
+            extracted_data["_pending_recurring_proposal"] = pending_cand
+
     parts = [reply]
     if budget_feedback:
         parts.append(budget_feedback)
@@ -1073,6 +1157,25 @@ async def _register_multiop(
             if auto_compensation:
                 reply = f"{reply}\n\n{auto_compensation}"
                 break
+
+        # STK-187: Verificar propuesta de candidato recurrente si el registro único es egreso
+        if (
+            len(movements) == 1
+            and results
+            and results[0].status == "registered"
+            and results[0].patron_hash
+            and results[0].user_id
+        ):
+            mov0 = movements[0]
+            mov0_type = mov0.get("movement_type") or extracted_data.get("movement_type", "egreso")
+            if mov0_type == "egreso":
+                pending_cand = await asyncio.to_thread(
+                    _check_pending_candidate_proposal,
+                    user_id=results[0].user_id,
+                    patron_hash=results[0].patron_hash,
+                )
+                if pending_cand:
+                    extracted_data["_pending_recurring_proposal"] = pending_cand
     return reply
 
 
@@ -2922,11 +3025,17 @@ async def _dispatch_incoming_message(
         reply_text = _safe_non_persisted_reply(extracted_data)
         service_invoked = "llm"
 
+    debug_info = {}
+    pending_cand = extracted_data.pop("_pending_recurring_proposal", None)
+    if pending_cand:
+        debug_info["pending_recurring_proposal"] = pending_cand
+
     return DispatchResult(
         reply_text=reply_text,
         raw_llm_response=extracted_data,
         service_invoked=service_invoked,
         intent=intent,
+        debug_info=debug_info,
         event_key=extracted_data.pop("_conversation_event_key", None),
         event_variables=extracted_data.pop(
             "_conversation_event_variables",
@@ -2957,7 +3066,230 @@ async def process_incoming_message(
         )
         if configured is not None:
             result.reply_message = configured
+
+    # STK-187: Adjuntar propuesta interactiva si el registro generó un candidato recurrente elegible
+    pending_proposal = result.debug_info.get("pending_recurring_proposal")
+    if pending_proposal:
+        cand_id = pending_proposal["id"]
+        cand_concept = pending_proposal["concepto"]
+        cand_day = pending_proposal["dia_estimado"]
+        proposal_text = (
+            f"💡 Noté que solés pagar *{cand_concept}* alrededor del día {cand_day}. "
+            "¿Querés que te avise 3 días antes de cada vencimiento?"
+        )
+        proposal_buttons = (
+            WhatsAppReplyButton(id=f"rec_cand:accept:{cand_id}", title="Sí, avisame"),
+            WhatsAppReplyButton(id=f"rec_cand:reject:{cand_id}", title="No, gracias"),
+        )
+        proposal_interactive = WhatsAppReplyButtons(
+            body=proposal_text,
+            buttons=proposal_buttons,
+        )
+
+        if result.reply_message is None:
+            candidate_full_reply = f"{result.reply_text}\n\n{proposal_text}"
+            if len(candidate_full_reply) <= 1024:
+                result.reply_text = candidate_full_reply
+                result.reply_message = WhatsAppReplyButtons(
+                    body=candidate_full_reply,
+                    buttons=proposal_buttons,
+                )
+                result.proposal_candidate_id = cand_id
+                result.proposal_delivery_mode = "primary"
+            else:
+                result.followup_messages.append(proposal_interactive)
+                result.proposal_candidate_id = cand_id
+                result.proposal_delivery_mode = "followup"
+        elif isinstance(result.reply_message, WhatsAppText):
+            candidate_full_reply = f"{result.reply_message.body}\n\n{proposal_text}"
+            if len(candidate_full_reply) <= 1024:
+                result.reply_text = candidate_full_reply
+                result.reply_message = WhatsAppReplyButtons(
+                    body=candidate_full_reply,
+                    buttons=proposal_buttons,
+                )
+                result.proposal_candidate_id = cand_id
+                result.proposal_delivery_mode = "primary"
+            else:
+                result.followup_messages.append(proposal_interactive)
+                result.proposal_candidate_id = cand_id
+                result.proposal_delivery_mode = "followup"
+        else:
+            # Respuesta interactiva preexistente (p.ej. de ConversationFlowRuntime o categoría):
+            # Preservar íntegramente la respuesta principal y despachar la propuesta vía follow-up
+            result.followup_messages.append(proposal_interactive)
+            result.proposal_candidate_id = cand_id
+            result.proposal_delivery_mode = "followup"
+
     return result
+
+
+async def _handle_candidate_interactive_reply(
+    sender_phone: str,
+    option_id: str,
+) -> DispatchResult:
+    return await asyncio.to_thread(
+        _process_candidate_interactive_reply_sync,
+        sender_phone=sender_phone,
+        option_id=option_id,
+    )
+
+
+def _process_candidate_interactive_reply_sync(
+    sender_phone: str,
+    option_id: str,
+) -> DispatchResult:
+    session = SessionLocal()
+    try:
+        user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
+        if not user:
+            return DispatchResult(
+                reply_text="No encontré una cuenta asociada a este número.",
+                service_invoked="recurring_expense",
+            )
+
+        if option_id.startswith("rec_cand:accept:"):
+            raw_id = option_id.replace("rec_cand:accept:", "").strip()
+            try:
+                candidate_id = UUID(raw_id)
+            except ValueError:
+                return DispatchResult(
+                    reply_text="Opción inválida.",
+                    service_invoked="recurring_expense",
+                )
+
+            cand = session.query(CandidatoGastoRecurrente).filter(CandidatoGastoRecurrente.id == candidate_id).first()
+            if not cand or cand.usuario_id != user.id:
+                return DispatchResult(
+                    reply_text="No encontré la sugerencia solicitada.",
+                    service_invoked="recurring_expense",
+                )
+
+            if cand.estado == "aceptado":
+                return DispatchResult(
+                    reply_text="Ya tenés este recordatorio activo en tu cuenta.",
+                    service_invoked="recurring_expense",
+                )
+
+            if RecurringExpenseService.is_proposal_expired(cand):
+                return DispatchResult(
+                    reply_text="Esta sugerencia ya venció. Si querés, podés crear un recordatorio manualmente escribiéndome.",
+                    service_invoked="recurring_expense",
+                )
+
+            status, reminder = RecurringExpenseService.convert_candidate_to_reminder(
+                session=session,
+                user_id=user.id,
+                candidate_id=candidate_id,
+            )
+            if status in ("converted", "already_converted"):
+                title = reminder.titulo if reminder else cand.concepto
+                day = reminder.dia_del_mes if reminder else cand.dia_estimado
+                return DispatchResult(
+                    reply_text=f"¡Listo! Agendé el recordatorio para *{title}* los días {day} de cada mes con aviso 3 días antes.",
+                    service_invoked="recurring_expense",
+                )
+            elif status == "already_rejected":
+                return DispatchResult(
+                    reply_text="Esta sugerencia ya había sido rechazada.",
+                    service_invoked="recurring_expense",
+                )
+            elif status == "expired":
+                return DispatchResult(
+                    reply_text="Esta sugerencia ya venció. Si querés, podés crear un recordatorio manualmente escribiéndome.",
+                    service_invoked="recurring_expense",
+                )
+            elif status == "conflict":
+                return DispatchResult(
+                    reply_text="No se pudo aplicar el cambio debido a un conflicto con el estado actual de la sugerencia.",
+                    service_invoked="recurring_expense",
+                )
+            elif status == "unavailable":
+                return DispatchResult(
+                    reply_text="Esta sugerencia ya no está disponible.",
+                    service_invoked="recurring_expense",
+                )
+            elif status == "not_found":
+                return DispatchResult(
+                    reply_text="No encontré la sugerencia solicitada.",
+                    service_invoked="recurring_expense",
+                )
+            else:
+                return DispatchResult(
+                    reply_text="No pude crear el recordatorio en este momento. Por favor intentá más tarde.",
+                    service_invoked="recurring_expense",
+                )
+
+        elif option_id.startswith("rec_cand:reject:"):
+            raw_id = option_id.replace("rec_cand:reject:", "").strip()
+            try:
+                candidate_id = UUID(raw_id)
+            except ValueError:
+                return DispatchResult(
+                    reply_text="Opción inválida.",
+                    service_invoked="recurring_expense",
+                )
+
+            cand = session.query(CandidatoGastoRecurrente).filter(CandidatoGastoRecurrente.id == candidate_id).first()
+            if not cand or cand.usuario_id != user.id:
+                return DispatchResult(
+                    reply_text="No encontré la sugerencia solicitada.",
+                    service_invoked="recurring_expense",
+                )
+
+            if RecurringExpenseService.is_proposal_expired(cand):
+                return DispatchResult(
+                    reply_text="Esta sugerencia ya había vencido.",
+                    service_invoked="recurring_expense",
+                )
+
+            status, _ = RecurringExpenseService.reject_candidate(
+                session=session,
+                user_id=user.id,
+                candidate_id=candidate_id,
+            )
+            if status == "rejected":
+                return DispatchResult(
+                    reply_text="Entendido, no volveré a sugerirte este recordatorio.",
+                    service_invoked="recurring_expense",
+                )
+            elif status == "already_rejected":
+                return DispatchResult(
+                    reply_text="Esta sugerencia ya había sido rechazada anteriormente.",
+                    service_invoked="recurring_expense",
+                )
+            elif status == "expired":
+                return DispatchResult(
+                    reply_text="Esta sugerencia ya había vencido.",
+                    service_invoked="recurring_expense",
+                )
+            elif status == "conflict":
+                return DispatchResult(
+                    reply_text="No se pudo rechazar la sugerencia porque ya tenés este recordatorio configurado.",
+                    service_invoked="recurring_expense",
+                )
+            elif status == "unavailable":
+                return DispatchResult(
+                    reply_text="Esta sugerencia ya no está disponible.",
+                    service_invoked="recurring_expense",
+                )
+            elif status == "not_found":
+                return DispatchResult(
+                    reply_text="No encontré la sugerencia solicitada.",
+                    service_invoked="recurring_expense",
+                )
+            else:
+                return DispatchResult(
+                    reply_text="No pude procesar el rechazo en este momento.",
+                    service_invoked="recurring_expense",
+                )
+
+        return DispatchResult(
+            reply_text="Opción no reconocida.",
+            service_invoked="recurring_expense",
+        )
+    finally:
+        session.close()
 
 
 async def process_incoming_interactive_reply(
@@ -2968,6 +3300,10 @@ async def process_incoming_interactive_reply(
     whatsapp_message_id: str | None = None,
 ):
     del whatsapp_message_id
+
+    # STK-187: Interceptar respuestas interactivas de candidatos a gastos recurrentes
+    if option_id.startswith("rec_cand:accept:") or option_id.startswith("rec_cand:reject:"):
+        return await _handle_candidate_interactive_reply(sender_phone, option_id)
 
     async def handle_action(action: str) -> DispatchResult:
         return await _handle_configured_action(sender_phone, action)

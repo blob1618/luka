@@ -7,7 +7,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.types import Uuid, JSON
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy.sql import func
 
 # Obtener DATABASE_URL del entorno, usando SQLite como fallback para desarrollo local
@@ -321,19 +321,31 @@ class Recordatorio(Base):
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     usuario_id = Column(Uuid(as_uuid=True), ForeignKey("usuario.id"), nullable=False)
+    candidato_id = Column(
+        Uuid(as_uuid=True),
+        ForeignKey("candidato_gasto_recurrente.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+    )
     titulo = Column(String, nullable=False)
     descripcion = Column(String)
     dia_del_mes = Column(Integer, nullable=False)
     monto = Column(Numeric)
     moneda = Column(String, default="ARS")
     estado = Column(String, nullable=False, default="activo")
+    dias_anticipacion = Column(Integer, nullable=False, default=1)
+    origen = Column(String, nullable=False, default="manual")
     ultimo_aviso_enviado = Column(Date)
     creado_en = Column(DateTime, default=datetime.utcnow)
+
+    candidato = relationship("CandidatoGastoRecurrente", back_populates="recordatorio")
 
     __table_args__ = (
         CheckConstraint("dia_del_mes BETWEEN 1 AND 31", name="recordatorio_dia_del_mes_check"),
         CheckConstraint("estado IN ('activo', 'pausado', 'eliminado')", name="recordatorio_estado_check"),
         CheckConstraint("monto IS NULL OR monto > 0", name="recordatorio_monto_check"),
+        CheckConstraint("dias_anticipacion BETWEEN 1 AND 30", name="recordatorio_dias_anticipacion_check"),
+        CheckConstraint("origen IN ('manual', 'recurrente_inteligente')", name="recordatorio_origen_check"),
     )
 
 class Evento(Base):
@@ -514,6 +526,10 @@ class CandidatoGastoRecurrente(Base):
         JSON().with_variant(JSONB, "postgresql"),
         nullable=False,
     )
+    propuesta_en = Column(DateTime(timezone=True), nullable=True)
+    propuesta_conteo = Column(Integer, nullable=False, default=0)
+    decision_en = Column(DateTime(timezone=True), nullable=True)
+    decision_origen = Column(String, nullable=True)
     creado_en = Column(DateTime(timezone=True), nullable=False, default=func.now())
     actualizado_en = Column(
         DateTime(timezone=True),
@@ -521,6 +537,8 @@ class CandidatoGastoRecurrente(Base):
         default=func.now(),
         onupdate=func.now(),
     )
+
+    recordatorio = relationship("Recordatorio", back_populates="candidato", uselist=False)
 
     __table_args__ = (
         UniqueConstraint(
@@ -541,8 +559,12 @@ class CandidatoGastoRecurrente(Base):
             name="candidato_gasto_recurrente_moneda_check",
         ),
         CheckConstraint(
-            "estado IN ('pendiente', 'descartado', 'convertido', 'invalidado')",
+            "estado IN ('pendiente', 'aceptado', 'rechazado', 'pausado', 'desactivado', 'invalidado')",
             name="candidato_gasto_recurrente_estado_check",
+        ),
+        CheckConstraint(
+            "propuesta_conteo >= 0",
+            name="candidato_gasto_recurrente_propuesta_conteo_check",
         ),
         CheckConstraint(
             "length(patron_hash) = 64",
@@ -566,3 +588,70 @@ class CandidatoGastoRecurrente(Base):
             "proxima_fecha_estimada",
         ),
     )
+
+
+class AvisoRecordatorio(Base):
+    __tablename__ = "aviso_recordatorio"
+
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    usuario_id = Column(
+        Uuid(as_uuid=True),
+        ForeignKey("usuario.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    patron_hash = Column(String(64), nullable=False)
+    periodo = Column(String(7), nullable=False)
+    recordatorio_id = Column(
+        Uuid(as_uuid=True),
+        ForeignKey("recordatorio.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    estado = Column(String, nullable=False, default="pendiente")
+    motivo_supresion = Column(String, nullable=True)
+    intentos = Column(Integer, nullable=False, default=0)
+    max_intentos = Column(Integer, nullable=False, default=3)
+    es_reintentable = Column(Boolean, nullable=False, default=False)
+    reintentar_en = Column(DateTime(timezone=True), nullable=True)
+    ultimo_intento_en = Column(DateTime(timezone=True), nullable=True)
+    enviado_en = Column(DateTime(timezone=True), nullable=True)
+    whatsapp_message_id = Column(String, nullable=True)
+    error_detalle = Column(String, nullable=True)
+    creado_en = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    actualizado_en = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "usuario_id",
+            "patron_hash",
+            "periodo",
+            name="aviso_recordatorio_usuario_patron_periodo_key",
+        ),
+        CheckConstraint(
+            "estado IN ('pendiente', 'sending', 'sent', 'failed', 'unknown', 'suprimido')",
+            name="aviso_recordatorio_estado_check",
+        ),
+        CheckConstraint(
+            "intentos >= 0 AND intentos <= max_intentos",
+            name="aviso_recordatorio_intentos_check",
+        ),
+        Index("aviso_recordatorio_usuario_id_idx", "usuario_id"),
+        Index("aviso_recordatorio_recordatorio_id_idx", "recordatorio_id"),
+        Index(
+            "aviso_recordatorio_cola_idx",
+            "estado",
+            "reintentar_en",
+        ),
+    )
+
+
+class CronJobClaim(Base):
+    __tablename__ = "cron_job_claim"
+
+    job_name = Column(String, primary_key=True)
+    fecha_ejecucion = Column(Date, primary_key=True)
+    ejecutado_en = Column(DateTime(timezone=True), nullable=False, default=func.now())
