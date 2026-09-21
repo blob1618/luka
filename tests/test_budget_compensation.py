@@ -888,3 +888,24 @@ def test_apply_rejects_inconsistent_donor_sum(db_context):
     assert result.status == "invalid_data"
     assert result.proposal is None
     assert_limits_unchanged(session, food_budget, donor_budget)
+
+
+@pytest.mark.parametrize("forged", ["target", "donor"])
+def test_apply_rejects_forged_before_limit_against_snapshot(db_context, forged):
+    session = db_context
+    user = create_user(session)
+    proposal, food_budget, donor_budget = build_standard_proposal(session, user)
+    payload = proposal.to_dict()
+
+    if forged == "target":
+        payload["target"]["before_limit"] = "900.00"
+        payload["target"]["after_limit"] = "1000.00"
+    else:
+        payload["donors"][0]["before_limit"] = "400.00"
+        payload["donors"][0]["after_limit"] = "300.00"
+
+    result = BudgetCompensationService.apply(payload)
+
+    assert result.status == "invalid_data"
+    assert result.proposal is None
+    assert_limits_unchanged(session, food_budget, donor_budget)

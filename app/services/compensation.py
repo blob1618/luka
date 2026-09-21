@@ -289,6 +289,15 @@ class BudgetCompensationService:
             return False
         if len(ids) != len(set(ids)):
             return False
+        for allocation in [proposal.target, *proposal.donors]:
+            expected = proposal.snapshot.get(allocation.limit_id)
+            if expected is None:
+                return False
+            try:
+                if Decimal(str(expected)) != Decimal(str(allocation.before_limit)):
+                    return False
+            except (InvalidOperation, ValueError):
+                return False
         if proposal.target.after_limit != (
             proposal.target.before_limit + proposal.amount
         ):
@@ -396,7 +405,10 @@ class BudgetCompensationService:
             target_row = by_id[proposal.target.limit_id]
             target_row.cantidad_max = target_row.cantidad_max + proposal.amount
             for donor in proposal.donors:
-                by_id[donor.limit_id].cantidad_max = Decimal(donor.after_limit)
+                donor_row = by_id[donor.limit_id]
+                donor_row.cantidad_max = donor_row.cantidad_max - (
+                    donor.before_limit - donor.after_limit
+                )
             session.commit()
             return CompensationApplyResult(
                 "applied", "compensation applied", proposal
