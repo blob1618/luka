@@ -224,6 +224,18 @@ class BudgetService:
         return [cls._build_status(row) for row in rows]
 
     @classmethod
+    def query_statuses(
+        cls,
+        session,
+        user_id: Any,
+        reference_date: date,
+        currency: str | None = None,
+        category_id: Any | None = None,
+    ) -> list[BudgetStatus]:
+        """Contrato público para servicios que ya administran su propia sesión."""
+        return cls._query_statuses(session, user_id, reference_date, currency, category_id)
+
+    @classmethod
     def get_status(
         cls,
         user_id: Any,
