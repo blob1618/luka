@@ -387,6 +387,89 @@ class TestCompensationConfirmation:
         mock_apply.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_llm_error_rejection_still_rejects_without_writes(self):
+        proposal = make_proposal()
+        pending = PendingCompensation(sender_phone="12345", proposal=proposal.to_dict())
+        with (
+            compensation_flow_patches(
+                awaiting_compensation=True,
+                pending_compensation=pending,
+                llm={
+                    "intent": "out_of_scope",
+                    "error": "ReadTimeout: ",
+                    "reply_text": "No he podido analizar tu mensaje en este momento.",
+                },
+            ) as mocks,
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.apply",
+            ) as mock_apply,
+        ):
+            result = await process_incoming_message("12345", "no, dejalo")
+
+        assert result.reply_text == "Listo, no cambié ningún límite."
+        mock_apply.assert_not_called()
+        mocks["clear_state"].assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_llm_error_confirmation_still_applies(self):
+        proposal = make_proposal()
+        pending = PendingCompensation(sender_phone="12345", proposal=proposal.to_dict())
+        with (
+            compensation_flow_patches(
+                awaiting_compensation=True,
+                pending_compensation=pending,
+                llm={
+                    "intent": "out_of_scope",
+                    "error": "ReadTimeout: ",
+                    "reply_text": "No he podido analizar tu mensaje en este momento.",
+                },
+            ) as mocks,
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.apply",
+                return_value=CompensationApplyResult(
+                    "applied", "compensation applied", proposal
+                ),
+            ) as mock_apply,
+        ):
+            result = await process_incoming_message("12345", "sí")
+
+        mock_apply.assert_called_once_with(proposal.to_dict())
+        mocks["clear_state"].assert_awaited_once()
+        assert "✅ Compensé *Comida*" in result.reply_text
+        assert "No se modificó ningún movimiento" in result.reply_text
+
+    @pytest.mark.asyncio
+    async def test_llm_error_unrelated_message_keeps_pending(self):
+        proposal = make_proposal()
+        pending = PendingCompensation(sender_phone="12345", proposal=proposal.to_dict())
+        with (
+            compensation_flow_patches(
+                awaiting_compensation=True,
+                pending_compensation=pending,
+                llm={
+                    "intent": "out_of_scope",
+                    "error": "ReadTimeout: ",
+                    "reply_text": "No he podido analizar tu mensaje en este momento.",
+                },
+            ) as mocks,
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.apply",
+            ) as mock_apply,
+        ):
+            result = await process_incoming_message(
+                "12345", "¿cómo viene el clima?"
+            )
+
+        assert result.reply_text == (
+            "No pude procesar tu respuesta. "
+            "Respondé *confirmar compensación* o *no por ahora*."
+        )
+        assert result.service_invoked == "llm"
+        assert result.intent == "out_of_scope"
+        mocks["clear_state"].assert_not_awaited()
+        mock_apply.assert_not_called()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "intent", ["confirm_compensation", "reject_compensation"]
     )

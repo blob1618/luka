@@ -2667,15 +2667,6 @@ async def _dispatch_incoming_message(
         extracted_data = await extract_message_once()
         if extracted_data.get("intent") == "reset_context":
             return await _handle_reset_context(sender_phone)
-        if extracted_data.get("error"):
-            return DispatchResult(
-                reply_text=extracted_data.get("reply_text") or (
-                    "No he podido analizar tu mensaje en este momento."
-                ),
-                raw_llm_response=extracted_data,
-                service_invoked="llm",
-                intent=extracted_data.get("intent", "out_of_scope"),
-            )
         intent = extracted_data.get("intent", "out_of_scope")
         if intent == "reject_compensation" or _is_cancel_request(text_body):
             await ConversationService.clear_state(sender_phone)
@@ -2693,6 +2684,18 @@ async def _dispatch_incoming_message(
             return DispatchResult(
                 reply_text=_compensation_apply_reply(apply_result),
                 service_invoked="compensation",
+            )
+        # Con error del LLM no se puede decidir la intención: conservar la
+        # propuesta pendiente para que el usuario pueda confirmar o rechazar.
+        if extracted_data.get("error"):
+            return DispatchResult(
+                reply_text=(
+                    "No pude procesar tu respuesta. "
+                    "Respondé *confirmar compensación* o *no por ahora*."
+                ),
+                raw_llm_response=extracted_data,
+                service_invoked="llm",
+                intent=intent,
             )
         # El mensaje no responde la confirmación: la propuesta quedó abandonada.
         # Limpiar el estado para que no secuestre los mensajes siguientes y
