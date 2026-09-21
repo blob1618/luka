@@ -37,6 +37,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.models.database import (
+    AvisoRecordatorio,
     Base,
     CandidatoGastoRecurrente,
     Categoria,
@@ -171,6 +172,11 @@ class TestPureFunctions:
 
         next_date_30 = calculate_next_occurrence(date(2026, 1, 30), target_day=30)
         assert next_date_30 == date(2026, 2, 28)
+
+    def test_calculate_next_occurrence_day_29_in_non_leap_year(self):
+        # Caso 6 Jira: ajuste de día 29 en febrero de año no bisiesto (2026)
+        next_date_29 = calculate_next_occurrence(date(2026, 1, 29), target_day=29)
+        assert next_date_29 == date(2026, 2, 28)
 
     def test_calculate_next_occurrence_advances_past_as_of_date(self):
         # Si la proyección inmediata ya pasó respecto a as_of_date, avanza los meses necesarios
@@ -756,3 +762,73 @@ class TestRecurringExpenseService:
         assert res.metrics.candidates_created == 2
         persisted = db_session.execute(select(CandidatoGastoRecurrente)).scalars().all()
         assert len(persisted) == 2
+
+    def test_rejects_movements_outside_three_days_tolerance(self, db_session):
+        # Caso 2 Jira: fechas fuera de tolerancia (diff 4 > 3 días) en 3 meses consecutivos
+        user = _create_user(db_session)
+        _create_movement(db_session, user.id, "15000", "Netflix", date(2026, 5, 10))
+        _create_movement(db_session, user.id, "15000", "Netflix", date(2026, 6, 10))
+        _create_movement(db_session, user.id, "15000", "Netflix", date(2026, 7, 14))
+
+        res = RecurringExpenseService.detect_candidates(
+            db_session,
+            as_of_date=date(2026, 7, 20),
+            tolerance_days=3,
+        )
+
+        assert res.metrics.candidates_created == 0
+        assert len(res.candidates) == 0
+        persisted = db_session.execute(select(CandidatoGastoRecurrente)).scalars().all()
+        assert len(persisted) == 0
+
+    def test_detector_preserves_accepted_state_when_updating_projection(self, db_session):
+        # Caso 7 Jira: candidato aceptado actualiza proyección sin mutar ni revertir estado
+        user = _create_user(db_session)
+        for m in (5, 6, 7):
+            _create_movement(db_session, user.id, "10000", "Streaming", date(2026, m, 10))
+
+        res1 = RecurringExpenseService.detect_candidates(
+            db_session,
+            as_of_date=date(2026, 7, 20),
+        )
+        assert res1.metrics.candidates_created == 1
+        cand = db_session.execute(select(CandidatoGastoRecurrente)).scalar_one()
+        assert cand.estado == "pendiente"
+
+        cand.estado = "aceptado"
+        cand.decision_en = datetime.now(timezone.utc)
+        cand.decision_origen = "interactivo"
+        db_session.commit()
+
+        m8 = _create_movement(db_session, user.id, "12000", "Streaming", date(2026, 8, 11))
+
+        res2 = RecurringExpenseService.detect_candidates(
+            db_session,
+            as_of_date=date(2026, 8, 20),
+        )
+        assert res2.metrics.candidates_created == 0
+        assert res2.metrics.candidates_updated == 1
+
+        db_session.refresh(cand)
+        assert cand.ultima_fecha_movimiento == date(2026, 8, 11)
+        assert cand.dia_estimado == 11
+        assert cand.proxima_fecha_estimada == date(2026, 9, 11)
+        assert cand.monto_estimado == Decimal("12000")
+        assert str(m8.id) in cand.evidencia_movimiento_ids
+        assert cand.estado == "aceptado"
+
+    def test_detection_does_not_create_avisos(self, db_session):
+        # Caso 8 Jira: detección determinista no inserta filas en AvisoRecordatorio
+        user = _create_user(db_session)
+        for m in (5, 6, 7):
+            _create_movement(db_session, user.id, "5000", "Seguro", date(2026, m, 10))
+
+        RecurringExpenseService.detect_candidates(
+            db_session,
+            as_of_date=date(2026, 7, 20),
+        )
+
+        avisos = db_session.execute(select(AvisoRecordatorio)).scalars().all()
+        assert len(avisos) == 0
+        reminders = db_session.execute(select(Recordatorio)).scalars().all()
+        assert len(reminders) == 0
