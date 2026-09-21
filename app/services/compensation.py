@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.exc import IntegrityError
 
-from app.models.database import LimiteCategoria, SessionLocal
+from app.models.database import LimiteCategoria, SessionLocal, Usuario
 from app.services.budget import ARGENTINA_TZ, BudgetService, BudgetStatus
 
 
@@ -357,6 +357,15 @@ class BudgetCompensationService:
 
         session = SessionLocal()
         try:
+            user_row = (
+                session.query(Usuario)
+                .filter(Usuario.id == parsed_user)
+                .with_for_update()
+                .first()
+            )
+            if user_row is None:
+                return CompensationApplyResult("stale", "limits changed since proposal")
+
             rows = (
                 session.query(LimiteCategoria)
                 .filter(
