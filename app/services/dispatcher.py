@@ -262,6 +262,7 @@ async def _movement_budget_after_change(sender_phone: str, *movements) -> str:
         return ""
     replies = []
     seen = set()
+    evaluated: list[BudgetStatus] = []
     for movement in movements:
         if movement is None or movement.tipo != "egreso" or not movement.categoria_nombre:
             continue
@@ -280,6 +281,44 @@ async def _movement_budget_after_change(sender_phone: str, *movements) -> str:
             continue
         if result.status == "ok" and result.budget is not None:
             replies.append(_budget_status_reply(result.budget))
+            evaluated.append(result.budget)
+
+    exceeded = [budget for budget in evaluated if budget.state == "exceeded"]
+    if not exceeded:
+        return "\n\n".join(replies)
+    try:
+        state = await ConversationService.get_state(sender_phone)
+    except Exception as exc:
+        logger.warning("movement_budget_state_failed error=%s", type(exc).__name__)
+        return "\n\n".join(replies)
+    if state.step != "none":
+        return "\n\n".join(replies)
+    proposal = None
+    for budget in exceeded:
+        try:
+            proposal_result = await asyncio.to_thread(
+                BudgetCompensationService.build_proposal,
+                user_id,
+                target_category=budget.category_name,
+                reference_date=budget.period_start,
+                currency=budget.currency,
+            )
+        except Exception as exc:
+            logger.warning("movement_budget_proposal_failed error=%s", type(exc).__name__)
+            continue
+        if proposal_result.status == "ok" and proposal_result.proposal is not None:
+            proposal = proposal_result.proposal
+            break
+    if proposal is None:
+        return "\n\n".join(replies)
+    try:
+        await ConversationService.set_pending_compensation(
+            sender_phone, proposal.to_dict()
+        )
+    except Exception as exc:
+        logger.warning("movement_budget_pending_failed error=%s", type(exc).__name__)
+        return "\n\n".join(replies)
+    replies.append(_compensation_reply(proposal, auto=True))
     return "\n\n".join(replies)
 
 

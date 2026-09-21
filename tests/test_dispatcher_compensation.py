@@ -3,19 +3,21 @@
 from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
 
+from app.services.budget import BudgetStatus, BudgetStatusResult
 from app.services.compensation import (
     CompensationAllocation,
     CompensationApplyResult,
     CompensationProposal,
     CompensationProposalResult,
 )
-from app.services.conversation import PendingCompensation
-from app.services.dispatcher import process_incoming_message
+from app.services.conversation import ConversationService, ConversationState, PendingCompensation
+from app.services.dispatcher import _movement_budget_after_change, process_incoming_message
 from app.services.onboarding import OnboardingDecision, OnboardingResult
 
 
@@ -54,6 +56,33 @@ def make_proposal():
         created_at="2026-09-20T10:00:00-03:00",
         expires_at="2099-09-20T10:30:00-03:00",
         snapshot={target.limit_id: "2000", donor.limit_id: "1000"},
+    )
+
+
+def budget_status(*, category="Comida", state="exceeded"):
+    return BudgetStatus(
+        limit_id=str(uuid4()),
+        user_id=str(uuid4()),
+        category_id=str(uuid4()),
+        category_name=category,
+        currency="ARS",
+        period_start=date(2026, 9, 1),
+        period_end=date(2026, 9, 30),
+        limit_amount=Decimal("2000"),
+        spent_amount=Decimal("2500"),
+        remaining_amount=Decimal("-500"),
+        exceeded_amount=Decimal("500"),
+        percentage=Decimal("125.0"),
+        state=state,
+    )
+
+
+def movement(*, tipo="egreso", category="Comida", currency="ARS"):
+    return SimpleNamespace(
+        tipo=tipo,
+        categoria_nombre=category,
+        fecha_movimiento=date(2026, 9, 20),
+        moneda=currency,
     )
 
 
@@ -338,3 +367,93 @@ class TestCompensationConfirmation:
         assert "arrancamos de cero" in result.reply_text
         mocks["clear_state"].assert_awaited_once()
         mock_apply.assert_not_called()
+
+
+class TestAutomaticCompensationProposal:
+    @pytest.mark.asyncio
+    async def test_exceeded_movement_auto_proposes_and_stores_pending(self):
+        proposal = make_proposal()
+        with (
+            patch(
+                "app.services.dispatcher._user_id_by_phone",
+                return_value=uuid4(),
+            ),
+            patch(
+                "app.services.dispatcher.BudgetService.get_status",
+                return_value=BudgetStatusResult("ok", "found", budget_status()),
+            ),
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.build_proposal",
+                return_value=CompensationProposalResult("ok", "created", proposal),
+            ) as mock_build,
+        ):
+            reply = await _movement_budget_after_change("12345", movement())
+
+        assert "Superaste el límite en $500,00 ARS." in reply
+        assert "Detecté que *Comida* superó su límite." in reply
+        assert "💡 Podés compensarlo moviendo $500 ARS:" in reply
+        assert "• Transporte: $1000 → $500 ARS" in reply
+        assert "• Comida: $2000 → $2500 ARS" in reply
+        assert "Respondé *confirmar compensación* o *no por ahora*." in reply
+        assert mock_build.call_count == 1
+        assert mock_build.call_args.kwargs == {
+            "target_category": "Comida",
+            "reference_date": date(2026, 9, 1),
+            "currency": "ARS",
+        }
+        pending = await ConversationService.get_pending_compensation("12345")
+        assert pending is not None
+        assert pending.proposal == proposal.to_dict()
+
+    @pytest.mark.asyncio
+    async def test_auto_proposal_skips_when_another_flow_pending(self):
+        await ConversationService.set_state(
+            "12345", ConversationState(step="awaiting_limit_data")
+        )
+        with (
+            patch(
+                "app.services.dispatcher._user_id_by_phone",
+                return_value=uuid4(),
+            ),
+            patch(
+                "app.services.dispatcher.BudgetService.get_status",
+                return_value=BudgetStatusResult("ok", "found", budget_status()),
+            ),
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.build_proposal",
+                return_value=CompensationProposalResult("ok", "created", make_proposal()),
+            ) as mock_build,
+        ):
+            reply = await _movement_budget_after_change("12345", movement())
+
+        assert "Superaste el límite en $500,00 ARS." in reply
+        assert "Detecté que" not in reply
+        mock_build.assert_not_called()
+        assert await ConversationService.get_pending_compensation("12345") is None
+        state = await ConversationService.get_state("12345")
+        assert state.step == "awaiting_limit_data"
+
+    @pytest.mark.asyncio
+    async def test_auto_proposal_ignores_ingresos_and_annulled(self):
+        with (
+            patch(
+                "app.services.dispatcher._user_id_by_phone",
+                return_value=uuid4(),
+            ),
+            patch(
+                "app.services.dispatcher.BudgetService.get_status",
+            ) as mock_status,
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.build_proposal",
+            ) as mock_build,
+        ):
+            reply = await _movement_budget_after_change(
+                "12345",
+                movement(tipo="ingreso", category="Sueldo"),
+                movement(category=None),
+                None,
+            )
+
+        assert reply == ""
+        mock_status.assert_not_called()
+        mock_build.assert_not_called()
