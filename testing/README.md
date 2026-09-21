@@ -119,4 +119,7 @@ Si Redis no responde, el test se saltea con `pytest.skip` en lugar de fallar.
 - Redis: el compose levanta `redis:7-alpine` y lo expone en el host como `localhost:6380` (mapea al puerto interno 6379). El estado multi-turno de la conversación (confirmación de categoría, recordatorios en pasos, etc.) vive ahí y se puede inspeccionar desde el panel de debug.
 - Mismo código de backend: la app importa `app/*` directamente. `WebhookModeService` ejecuta `process_incoming_message` del dispatcher con el teléfono simulado, sin HTTP y sin enviar mensajes a la API de WhatsApp; la confirmación de un registro ocurre recién después de la persistencia en base, igual que en producción.
 - Provider y prompt en caliente: cambiar provider o archivo de prompt en la sidebar resetea el `LLMService` y aplica el nuevo modelo/prompt en el siguiente mensaje.
+- Previsualización de gráficos: cuando el dispatcher devuelve un `WhatsAppImage`, el chat
+  muestra el PNG en memoria debajo del mensaje. Es una simulación visual: no carga medios
+  ni envía mensajes a Meta. Los bytes no se incluyen en las exportaciones de chat.
 - El entorno de testing tiene sus propios tests en `testing/tests/`. Están fuera de la suite por defecto (el `pytest.ini` de la raíz solo incluye `tests/`) y se corren dentro del entorno Docker, donde está instalado Streamlit: `python -m pytest -v testing/tests`.

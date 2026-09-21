@@ -441,6 +441,21 @@ class TestRenderDebug:
 
 
 class TestChatLogic:
+    def test_export_omits_preview_bytes_and_marks_chart(self):
+        from testing.components.chat import export_as_json
+
+        exported = export_as_json([
+            {
+                "role": "assistant",
+                "content": "Gastos por categoría",
+                "debug": {},
+                "image_png": b"\x89PNG\r\n\x1a\nchart",
+            }
+        ])
+
+        assert "image_png" not in exported
+        assert '"has_image_preview": true' in exported
+
     def test_get_prompt_path_default(self):
         from testing.components.chat import _get_prompt_path
 
@@ -481,11 +496,14 @@ class TestChatLogic:
                 prompt_path="prompt.md",
                 redis_state={"step": "none"},
             )
-            reply, debug = await _process_message("Gasté 5000", config, "5491187654321")
+            reply, debug, image_png = await _process_message(
+                "Gasté 5000", config, "5491187654321"
+            )
 
         assert reply == "✅ registrado"
         assert debug["service_log"] == "finance"
         assert debug["redis_state"]["step"] == "none"
+        assert image_png is None
         assert mock_send.await_args.kwargs["phone"] == "5491187654321"
 
     @pytest.mark.asyncio
@@ -510,9 +528,12 @@ class TestChatLogic:
                 prompt_path="prompt.md",
                 redis_state=None,
             )
-            reply, debug = await _process_message("test", config, "5491112345678")
+            reply, debug, image_png = await _process_message(
+                "test", config, "5491112345678"
+            )
 
         assert debug["service_log"] == "unknown"
+        assert image_png is None
 
     def test_bot_avatar_returns_bytes(self):
         from testing.components.chat import bot_avatar
@@ -559,6 +580,28 @@ class TestChatLogic:
 
         assert chat_st.chat_message.call_count == 2
 
+    def test_render_chat_existing_chart_renders_preview(self, mock_st):
+        from testing.components.chat import render_chat
+
+        chat_st = mock_st["chat"]
+        config = make_config(
+            make_session(messages=[
+                {
+                    "role": "assistant",
+                    "content": "Gastos por categoría",
+                    "debug": {},
+                    "image_png": b"\x89PNG\r\n\x1a\nchart",
+                }
+            ])
+        )
+        chat_st.chat_input.return_value = None
+        chat_st.chat_message.return_value.__enter__ = MagicMock(return_value=None)
+        chat_st.chat_message.return_value.__exit__ = MagicMock(return_value=False)
+
+        render_chat(config)
+
+        chat_st.image.assert_called_once()
+
 
 class TestRenderChat:
     def test_render_chat_sin_sesion_activa_avisa(self, mock_st):
@@ -600,7 +643,7 @@ class TestRenderChat:
             patch(
                 "testing.components.chat._process_message",
                 new_callable=AsyncMock,
-                return_value=("respuesta", {"latency_ms": 1.0}),
+                return_value=("respuesta", {"latency_ms": 1.0}, None),
             ),
         ):
             render_chat(config)
@@ -626,7 +669,7 @@ class TestRenderChat:
             patch(
                 "testing.components.chat._process_message",
                 new_callable=AsyncMock,
-                return_value=("respuesta", {"latency_ms": 1.0}),
+                return_value=("respuesta", {"latency_ms": 1.0}, None),
             ) as mock_process,
         ):
             render_chat(config)
@@ -672,7 +715,7 @@ class TestRenderChat:
             patch(
                 "testing.components.chat._process_message",
                 new_callable=AsyncMock,
-                return_value=("", {"latency_ms": 1.0}),
+                return_value=("", {"latency_ms": 1.0}, None),
             ),
         ):
             render_chat(config)
@@ -697,6 +740,7 @@ class TestRenderChat:
                 return_value=(
                     "No he podido analizar tu mensaje en este momento.",
                     {"raw_json": {"intent": "out_of_scope", "error": "RuntimeError: API timeout"}},
+                    None,
                 ),
             ),
         ):
@@ -738,7 +782,7 @@ class TestRenderChat:
             patch(
                 "testing.components.chat._process_message",
                 new_callable=AsyncMock,
-                return_value=("l1\nl2", {"latency_ms": 1.0}),
+                return_value=("l1\nl2", {"latency_ms": 1.0}, None),
             ),
         ):
             render_chat(config)

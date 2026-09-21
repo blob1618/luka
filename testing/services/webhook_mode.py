@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import redis.asyncio as redis
 
 from app.services.dispatcher import process_incoming_message
+from app.api.whatsapp import WhatsAppImage
 from app.services.llm import LLMService
 from app.services.conversation import (
     ConversationHistoryService,
@@ -31,6 +32,7 @@ class WebhookModeResult:
     model: str = ""
     memory: list[dict[str, str]] | None = None
     memory_ttl_seconds: int | None = None
+    image_png: bytes | None = None
 
 
 class WebhookModeService:
@@ -137,6 +139,11 @@ class WebhookModeService:
                 model=model,
                 memory=memory,
                 memory_ttl_seconds=memory_ttl_seconds,
+                image_png=(
+                    dispatch_result.reply_message.content
+                    if isinstance(dispatch_result.reply_message, WhatsAppImage)
+                    else None
+                ),
             )
         except Exception as exc:
             latency_ms = (time.perf_counter() - start) * 1000
@@ -152,6 +159,7 @@ class WebhookModeService:
                 model=model,
                 memory=None,
                 memory_ttl_seconds=None,
+                image_png=None,
             )
         finally:
             if redis_client is not None:
