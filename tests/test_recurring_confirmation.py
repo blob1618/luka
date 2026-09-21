@@ -1334,6 +1334,207 @@ class TestSchedulerIntelligentReminders:
         assert aviso.intentos == 1
         assert aviso.whatsapp_message_id == "wamid.worker_1"
 
+    @pytest.mark.asyncio
+    async def test_check_period_expense_registered_ignores_annulled_movements(self, monkeypatch):
+        # Caso 3 Jira: gasto del período con anulado_en IS NOT NULL no debe suprimir el aviso
+        session_factory = _make_db()
+        session = session_factory()
+        phone = "5491100001111"
+        user = _create_user(session, phone=phone)
+        cand = _create_candidate(session, user.id, concepto="Internet Fibertel", dia_estimado=15)
+        status, rec = RecurringExpenseService.convert_candidate_to_reminder(session, user.id, cand.id)
+        assert status == "converted"
+
+        # Movimiento en el período pero anulado
+        mov = MovimientoFinanciero(
+            id=uuid.uuid4(),
+            usuario_id=user.id,
+            tipo="egreso",
+            cantidad=Decimal("15000"),
+            moneda="ARS",
+            descripcion="Internet Fibertel",
+            fecha_movimiento=date(2026, 3, 5),
+            anulado_en=datetime.now(timezone.utc),
+        )
+        session.add(mov)
+        session.commit()
+
+        # check_period_expense_registered debe retornar False
+        is_registered = RecurringExpenseService.check_period_expense_registered(
+            session=session,
+            user_id=user.id,
+            patron_hash=cand.patron_hash,
+            reference_date=date(2026, 3, 15),
+        )
+        assert is_registered is False
+
+        # En scheduler, el aviso no se suprime y se envía normalmente
+        async def mock_send_detailed(*args, **kwargs):
+            return WhatsAppSendResult(
+                status=WhatsAppDeliveryStatus.SUCCESS,
+                message_id="wamid.annulled_test",
+            )
+
+        monkeypatch.setattr("app.scheduler.SessionLocal", session_factory)
+        monkeypatch.setattr("app.scheduler.send_whatsapp_message_detailed", mock_send_detailed)
+        monkeypatch.setattr("app.scheduler._window_open", lambda *args: True)
+
+        now_dt = datetime(2026, 3, 12, 10, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"))
+        await check_reminders(_now=now_dt)
+
+        aviso = session.query(AvisoRecordatorio).filter(
+            AvisoRecordatorio.usuario_id == user.id,
+            AvisoRecordatorio.periodo == "2026-03",
+        ).first()
+
+        assert aviso is not None
+        assert aviso.estado == "sent"
+        assert aviso.motivo_supresion is None
+
+    @pytest.mark.asyncio
+    async def test_pending_candidate_never_triggers_scheduler_reminders(self, monkeypatch):
+        # Caso 9 Jira: candidato en pendiente nunca emite avisos ni ejecuta envíos en check_reminders
+        session_factory = _make_db()
+        session = session_factory()
+        phone = "5491100001111"
+        user = _create_user(session, phone=phone)
+        cand = _create_candidate(
+            session,
+            user.id,
+            concepto="Abono Gimnasio",
+            dia_estimado=15,
+            estado="pendiente",
+        )
+
+        meta_send_calls = []
+
+        async def mock_send_detailed(*args, **kwargs):
+            meta_send_calls.append((args, kwargs))
+            return WhatsAppSendResult(status=WhatsAppDeliveryStatus.SUCCESS, message_id="wamid.pending_cand")
+
+        monkeypatch.setattr("app.scheduler.SessionLocal", session_factory)
+        monkeypatch.setattr("app.scheduler.send_whatsapp_message_detailed", mock_send_detailed)
+        monkeypatch.setattr("app.scheduler._window_open", lambda *args: True)
+
+        now_dt = datetime(2026, 3, 12, 10, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"))
+        await check_reminders(_now=now_dt)
+
+        assert len(meta_send_calls) == 0
+        avisos = session.query(AvisoRecordatorio).all()
+        assert len(avisos) == 0
+        session.refresh(cand)
+        assert cand.estado == "pendiente"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("inactive_state", ["pausado", "rechazado"])
+    async def test_scheduler_suppression_when_candidate_is_inactive(self, monkeypatch, inactive_state):
+        # Caso 10 Jira: supresión con motivo candidato_no_activo si el candidato está pausado o rechazado
+        session_factory = _make_db()
+        session = session_factory()
+        phone = "5491100001111"
+        user = _create_user(session, phone=phone)
+        cand = _create_candidate(session, user.id, concepto="Seguro Auto", dia_estimado=15)
+        status, rec = RecurringExpenseService.convert_candidate_to_reminder(session, user.id, cand.id)
+        assert status == "converted"
+
+        cand.estado = inactive_state
+        session.commit()
+
+        send_mock = AsyncMock()
+        monkeypatch.setattr("app.scheduler.SessionLocal", session_factory)
+        monkeypatch.setattr("app.scheduler.send_whatsapp_message_detailed", send_mock)
+        monkeypatch.setattr("app.scheduler._window_open", lambda *args: True)
+
+        now_dt = datetime(2026, 3, 12, 10, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"))
+        await check_reminders(_now=now_dt)
+
+        aviso = session.query(AvisoRecordatorio).filter(
+            AvisoRecordatorio.usuario_id == user.id,
+            AvisoRecordatorio.periodo == "2026-03",
+        ).first()
+
+        assert aviso is not None
+        assert aviso.estado == "suprimido"
+        assert aviso.motivo_supresion == "candidato_no_activo"
+        assert send_mock.await_count == 0
+        session.refresh(rec)
+        assert rec.ultimo_aviso_enviado is None
+
+    @pytest.mark.asyncio
+    async def test_retryable_failure_succeeds_on_next_run_after_backoff(self, monkeypatch):
+        # Caso 11 Jira: reintento exitoso tras error transitorio con reloj controlado
+        session_factory = _make_db()
+        session = session_factory()
+        phone = "5491100001111"
+        user = _create_user(session, phone=phone)
+        cand = _create_candidate(session, user.id, concepto="Gas Fenosa", dia_estimado=15)
+        status, rec = RecurringExpenseService.convert_candidate_to_reminder(session, user.id, cand.id)
+
+        # Control del reloj del scheduler en UTC
+        current_virtual_time = datetime(2026, 3, 12, 13, 0, 0, tzinfo=timezone.utc)
+
+        class MockDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz is not None:
+                    return current_virtual_time.astimezone(tz)
+                return current_virtual_time
+
+        monkeypatch.setattr("app.scheduler.datetime", MockDateTime)
+
+        # Intento 1: falla reintentable (503)
+        mock_send_fail = AsyncMock(return_value=WhatsAppSendResult(
+            status=WhatsAppDeliveryStatus.RETRYABLE,
+            status_code=503,
+            error_message="Service unavailable",
+        ))
+
+        monkeypatch.setattr("app.scheduler.SessionLocal", session_factory)
+        monkeypatch.setattr("app.scheduler.send_whatsapp_message_detailed", mock_send_fail)
+        monkeypatch.setattr("app.scheduler._window_open", lambda *args: True)
+
+        await check_reminders(_now=current_virtual_time)
+
+        aviso = session.query(AvisoRecordatorio).filter(
+            AvisoRecordatorio.usuario_id == user.id,
+            AvisoRecordatorio.periodo == "2026-03",
+        ).first()
+
+        assert aviso is not None
+        assert aviso.estado == "failed"
+        assert aviso.intentos == 1
+        assert aviso.es_reintentable is True
+        assert aviso.reintentar_en is not None
+        retry_time = aviso.reintentar_en
+        if retry_time.tzinfo is None:
+            retry_time = retry_time.replace(tzinfo=timezone.utc)
+
+        # Intento intermedio: reloj antes de reintentar_en -> no reintenta
+        current_virtual_time = retry_time - timedelta(seconds=10)
+        send_early_mock = AsyncMock()
+        monkeypatch.setattr("app.scheduler.send_whatsapp_message_detailed", send_early_mock)
+        await check_reminders(_now=current_virtual_time)
+        assert send_early_mock.await_count == 0
+        session.refresh(aviso)
+        assert aviso.estado == "failed"
+        assert aviso.intentos == 1
+
+        # Intento posterior: reloj después de reintentar_en -> reintento exitoso
+        current_virtual_time = retry_time + timedelta(seconds=1)
+        mock_send_success = AsyncMock(return_value=WhatsAppSendResult(
+            status=WhatsAppDeliveryStatus.SUCCESS,
+            message_id="wamid.retry_success_test",
+        ))
+        monkeypatch.setattr("app.scheduler.send_whatsapp_message_detailed", mock_send_success)
+        await check_reminders(_now=current_virtual_time)
+
+        session.refresh(aviso)
+        assert aviso.estado == "sent"
+        assert aviso.intentos == 2
+        assert aviso.whatsapp_message_id == "wamid.retry_success_test"
+        session.refresh(rec)
+        assert rec.ultimo_aviso_enviado == date(2026, 3, 12)
+
 
 # ===========================================================================
 # 6. Detección en background con coalescencia

@@ -414,6 +414,8 @@ async def check_reminders(_now: datetime | None = None):
                     if aviso.estado in ("sent", "suprimido", "unknown", "sending"):
                         continue
                     if aviso.estado == "failed":
+                        if aviso.reintentar_en is not None:
+                            aviso.reintentar_en = _to_aware_utc(aviso.reintentar_en)
                         if not aviso.es_reintentable or (aviso.reintentar_en and aviso.reintentar_en > now_utc) or (aviso.intentos >= aviso.max_intentos):
                             continue
 
