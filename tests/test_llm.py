@@ -956,3 +956,88 @@ class TestCreateReminderIntent:
 
         assert result["intent"] == "create_reminder"
         assert result["reminder_day"] is None
+
+
+class TestCompensationIntents:
+    """Tests for budget compensation intents in LLMService.process_message()."""
+
+    @pytest.mark.asyncio
+    async def test_compensate_budget_normalizes_fields(self):
+        mock_response = {
+            "intent": "compensate_budget",
+            "compensation_target": " comida ",
+            "compensation_source": "transporte",
+            "compensation_amount": "1500",
+            "reply_text": "Evaluando tu presupuesto.",
+        }
+        result = await _process_message_with_mock_response(mock_response)
+
+        assert result["intent"] == "compensate_budget"
+        assert result["compensation_target"] == "comida"
+        assert result["compensation_source"] == "transporte"
+        assert result["compensation_amount"] == 1500.0
+
+    @pytest.mark.asyncio
+    async def test_compensate_budget_null_fields_are_none(self):
+        mock_response = {
+            "intent": "compensate_budget",
+            "compensation_target": None,
+            "compensation_source": None,
+            "compensation_amount": None,
+            "reply_text": "Evaluando tu presupuesto.",
+        }
+        result = await _process_message_with_mock_response(mock_response)
+
+        assert result["intent"] == "compensate_budget"
+        assert result["compensation_target"] is None
+        assert result["compensation_source"] is None
+        assert result["compensation_amount"] is None
+
+    @pytest.mark.asyncio
+    async def test_compensate_budget_invalid_amount_becomes_none(self):
+        mock_response = {
+            "intent": "compensate_budget",
+            "compensation_amount": "mil",
+            "reply_text": "Evaluando tu presupuesto.",
+        }
+        result = await _process_message_with_mock_response(mock_response)
+
+        assert result["intent"] == "compensate_budget"
+        assert result["compensation_amount"] is None
+
+    @pytest.mark.asyncio
+    async def test_compensate_budget_blank_categories_become_none(self):
+        mock_response = {
+            "intent": "compensate_budget",
+            "compensation_target": "   ",
+            "compensation_source": "",
+            "reply_text": "Evaluando tu presupuesto.",
+        }
+        result = await _process_message_with_mock_response(mock_response)
+
+        assert result["intent"] == "compensate_budget"
+        assert result["compensation_target"] is None
+        assert result["compensation_source"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "intent",
+        ["confirm_compensation", "reject_compensation"],
+    )
+    async def test_compensation_confirmation_intents_accepted(self, intent):
+        result = await _process_message_with_mock_response(
+            {"intent": intent, "reply_text": "ok"}
+        )
+
+        assert result["intent"] == intent
+
+    @pytest.mark.asyncio
+    async def test_unknown_intent_with_compensation_fields_falls_back(self):
+        mock_response = {
+            "intent": "merge_budgets",
+            "compensation_target": "comida",
+            "reply_text": "ok",
+        }
+        result = await _process_message_with_mock_response(mock_response)
+
+        assert result["intent"] == "out_of_scope"
