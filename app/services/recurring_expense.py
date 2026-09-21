@@ -16,15 +16,19 @@ import time
 from typing import Any
 import unicodedata
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.database import (
     CandidatoGastoRecurrente,
     MovimientoFinanciero,
+    Recordatorio,
 )
+
+ARGENTINA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
 NON_INFORMATIVE_TERMS = frozenset({
     "gasto", "gastos",
@@ -307,7 +311,7 @@ class RecurringExpenseService:
             raise ValueError("batch_size debe ser mayor o igual a 1")
 
         start_time = time.perf_counter()
-        reference_date = as_of_date or date.today()
+        reference_date = as_of_date or datetime.now(ARGENTINA_TZ).date()
         start_date = _calculate_start_date(reference_date, lookback_months=lookback_months)
 
         metrics = RecurringDetectionMetrics()
@@ -549,3 +553,278 @@ class RecurringExpenseService:
             metrics=metrics,
             candidates=result_candidates,
         )
+
+    @classmethod
+    def convert_candidate_to_reminder(
+        cls,
+        session: Session,
+        user_id: UUID,
+        candidate_id: UUID,
+    ) -> tuple[str, Recordatorio | None]:
+        """Convierte atómicamente un candidato a recordatorio con anticipación de 3 días.
+
+        Garantiza idempotencia y seguridad concurrente:
+        1. Validación estricta de candidate_id y user_id.
+        2. Validación de expiración de la propuesta (ventana de 7 días o vencimiento).
+        3. Detección de estados previos (aceptado, rechazado, pausado, desactivado, invalidado).
+        4. Transición atómica condicional sobre estado='pendiente'.
+        5. Inserción de Recordatorio protegido por UNIQUE(candidato_id).
+        6. Recuperación segura ante IntegrityError concurrente.
+        """
+        cand_any = session.execute(
+            select(CandidatoGastoRecurrente).where(CandidatoGastoRecurrente.id == candidate_id)
+        ).scalar_one_or_none()
+        if cand_any is None:
+            return "not_found", None
+        if cand_any.usuario_id != user_id:
+            return "not_found", None
+
+        candidate = cand_any
+        if candidate.estado == "aceptado":
+            existing_rec = session.execute(
+                select(Recordatorio).where(Recordatorio.candidato_id == candidate.id)
+            ).scalar_one_or_none()
+            return "already_converted", existing_rec
+
+        if candidate.estado == "rechazado":
+            return "already_rejected", None
+
+        if candidate.estado in ("pausado", "desactivado", "invalidado"):
+            return "unavailable", None
+
+        if candidate.estado != "pendiente":
+            return "unavailable", None
+
+        if cls.is_proposal_expired(candidate):
+            return "expired", None
+
+        now_utc = datetime.now(timezone.utc)
+        title = (candidate.concepto or candidate.descripcion_normalizada or "Gasto recurrente")[:100]
+
+        # Transición atómica condicional a 'aceptado'
+        claim_stmt = (
+            update(CandidatoGastoRecurrente)
+            .where(
+                CandidatoGastoRecurrente.id == candidate_id,
+                CandidatoGastoRecurrente.usuario_id == user_id,
+                CandidatoGastoRecurrente.estado == "pendiente",
+            )
+            .values(
+                estado="aceptado",
+                decision_en=now_utc,
+                decision_origen="interactivo",
+                actualizado_en=now_utc,
+            )
+        )
+        res = session.execute(claim_stmt)
+        if res.rowcount != 1:
+            session.expire_all()
+            reloaded = session.execute(
+                select(CandidatoGastoRecurrente).where(CandidatoGastoRecurrente.id == candidate_id)
+            ).scalar_one_or_none()
+            if not reloaded:
+                return "not_found", None
+            if reloaded.estado == "aceptado":
+                existing_rec = session.execute(
+                    select(Recordatorio).where(Recordatorio.candidato_id == candidate.id)
+                ).scalar_one_or_none()
+                return "already_converted", existing_rec
+            if reloaded.estado == "rechazado":
+                return "already_rejected", None
+            return "conflict", None
+
+        recordatorio = Recordatorio(
+            usuario_id=user_id,
+            candidato_id=candidate.id,
+            titulo=title,
+            dia_del_mes=candidate.dia_estimado,
+            monto=candidate.monto_estimado,
+            moneda=candidate.moneda or "ARS",
+            estado="activo",
+            dias_anticipacion=3,
+            origen="recurrente_inteligente",
+        )
+
+        try:
+            with session.begin_nested():
+                session.add(recordatorio)
+                session.flush()
+            session.commit()
+            return "converted", recordatorio
+        except IntegrityError:
+            session.rollback()
+            existing_rec = session.execute(
+                select(Recordatorio).where(Recordatorio.candidato_id == candidate.id)
+            ).scalar_one_or_none()
+            return "already_converted", existing_rec
+
+    @classmethod
+    def reject_candidate(
+        cls,
+        session: Session,
+        user_id: UUID,
+        candidate_id: UUID,
+    ) -> tuple[str, CandidatoGastoRecurrente | None]:
+        """Marca un candidato como rechazado por decisión explícita del usuario."""
+        cand_any = session.execute(
+            select(CandidatoGastoRecurrente).where(CandidatoGastoRecurrente.id == candidate_id)
+        ).scalar_one_or_none()
+        if cand_any is None:
+            return "not_found", None
+        if cand_any.usuario_id != user_id:
+            return "not_found", None
+
+        candidate = cand_any
+        if candidate.estado == "rechazado":
+            return "already_rejected", candidate
+
+        if candidate.estado in ("aceptado", "pausado", "desactivado", "invalidado"):
+            return "conflict", candidate
+
+        if candidate.estado != "pendiente":
+            return "unavailable", None
+
+        if cls.is_proposal_expired(candidate):
+            return "expired", None
+
+        now_utc = datetime.now(timezone.utc)
+        stmt = (
+            update(CandidatoGastoRecurrente)
+            .where(
+                CandidatoGastoRecurrente.id == candidate_id,
+                CandidatoGastoRecurrente.usuario_id == user_id,
+                CandidatoGastoRecurrente.estado == "pendiente",
+            )
+            .values(
+                estado="rechazado",
+                decision_en=now_utc,
+                decision_origen="interactivo",
+                actualizado_en=now_utc,
+            )
+        )
+        res = session.execute(stmt)
+        if res.rowcount != 1:
+            session.expire_all()
+            reloaded = session.execute(
+                select(CandidatoGastoRecurrente).where(CandidatoGastoRecurrente.id == candidate_id)
+            ).scalar_one_or_none()
+            if not reloaded:
+                return "not_found", None
+            if reloaded.estado == "rechazado":
+                return "already_rejected", reloaded
+            return "conflict", reloaded
+
+        session.commit()
+        session.refresh(candidate)
+        return "rejected", candidate
+
+    @staticmethod
+    def is_candidate_eligible_for_proposal(
+        candidate: CandidatoGastoRecurrente,
+        as_of: datetime | None = None,
+    ) -> bool:
+        """Evalúa si un candidato califica para ser propuesto al usuario.
+
+        Reglas:
+        - Estado debe ser 'pendiente'.
+        - Cooldown: si propuesta_en no es None, deben haber transcurrido al menos 30 días (en UTC).
+        - La próxima fecha estimada no debe haber vencido contra la fecha calendario en Argentina.
+        """
+        if candidate.estado != "pendiente":
+            return False
+
+        now_utc = as_of or datetime.now(timezone.utc)
+        if now_utc.tzinfo is None:
+            now_utc = now_utc.replace(tzinfo=timezone.utc)
+        else:
+            now_utc = now_utc.astimezone(timezone.utc)
+
+        if candidate.propuesta_en is not None:
+            prop_en = candidate.propuesta_en
+            if prop_en.tzinfo is None:
+                prop_en = prop_en.replace(tzinfo=timezone.utc)
+            else:
+                prop_en = prop_en.astimezone(timezone.utc)
+            if (now_utc - prop_en).total_seconds() < 30 * 86400:
+                return False
+
+        local_today = now_utc.astimezone(ARGENTINA_TZ).date()
+        if candidate.proxima_fecha_estimada < local_today:
+            return False
+
+        return True
+
+    @staticmethod
+    def is_proposal_expired(
+        candidate: CandidatoGastoRecurrente,
+        as_of: datetime | None = None,
+    ) -> bool:
+        """Verifica si la propuesta interactiva ha expirado (7 días en UTC o fecha estimada pasada en Argentina)."""
+        now_utc = as_of or datetime.now(timezone.utc)
+        if now_utc.tzinfo is None:
+            now_utc = now_utc.replace(tzinfo=timezone.utc)
+        else:
+            now_utc = now_utc.astimezone(timezone.utc)
+
+        if candidate.propuesta_en is not None:
+            prop_en = candidate.propuesta_en
+            if prop_en.tzinfo is None:
+                prop_en = prop_en.replace(tzinfo=timezone.utc)
+            else:
+                prop_en = prop_en.astimezone(timezone.utc)
+            if (now_utc - prop_en).total_seconds() > 7 * 86400:
+                return True
+
+        local_today = now_utc.astimezone(ARGENTINA_TZ).date()
+        if candidate.proxima_fecha_estimada and candidate.proxima_fecha_estimada < local_today:
+            return True
+
+        return False
+
+    @classmethod
+    def check_period_expense_registered(
+        cls,
+        session: Session,
+        user_id: UUID,
+        patron_hash: str,
+        reference_date: date,
+    ) -> bool:
+        """Verifica si existe un egreso registrado y no anulado en el mes calendario de reference_date.
+
+        Retorna True si al menos un movimiento del usuario coincide con patron_hash.
+        """
+        start_date = date(reference_date.year, reference_date.month, 1)
+        last_day = calendar.monthrange(reference_date.year, reference_date.month)[1]
+        end_date = date(reference_date.year, reference_date.month, last_day)
+
+        query = (
+            select(MovimientoFinanciero)
+            .where(
+                MovimientoFinanciero.usuario_id == user_id,
+                MovimientoFinanciero.tipo == "egreso",
+                MovimientoFinanciero.anulado_en.is_(None),
+                MovimientoFinanciero.fecha_movimiento >= start_date,
+                MovimientoFinanciero.fecha_movimiento <= end_date,
+                MovimientoFinanciero.descripcion.isnot(None),
+            )
+        )
+        movements = session.execute(query).scalars().all()
+        for mov in movements:
+            norm = normalize_description(mov.descripcion)
+            if norm is None:
+                continue
+            curr = (mov.moneda or "ARS").upper().strip()
+            if calculate_pattern_hash(norm, mov.categoria_id, curr) == patron_hash:
+                return True
+
+        return False
+
+    @classmethod
+    def run_daily_detection(
+        cls,
+        session: Session,
+        as_of_date: date | None = None,
+    ) -> RecurringDetectionResult:
+        """Ejecuta la detección batch diaria de candidatos para todos los usuarios."""
+        effective_date = as_of_date or datetime.now(ARGENTINA_TZ).date()
+        return cls.detect_candidates(session=session, as_of_date=effective_date)

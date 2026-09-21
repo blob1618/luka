@@ -50,3 +50,21 @@ def test_recurring_expense_candidates_migration_contains_schema_guards():
     assert "MOVIMIENTOS_FINANCIEROS_EGRESOS_ACTIVOS_FECHA_IDX" in sql
     assert "ALTER TABLE PUBLIC.CANDIDATO_GASTO_RECURRENTE ENABLE ROW LEVEL SECURITY" in sql
     assert "REVOKE ALL ON TABLE PUBLIC.CANDIDATO_GASTO_RECURRENTE FROM ANON, AUTHENTICATED" in sql
+
+
+def test_recurring_confirmation_delivery_migration_contains_schema_guards():
+    migration = next(MIGRATIONS_DIR.glob("*_recurring_confirmation_delivery.sql"))
+    sql = migration.read_text(encoding="utf-8").upper()
+
+    assert "CREATE TABLE IF NOT EXISTS PUBLIC.AVISO_RECORDATORIO" in sql
+    assert "AVISO_RECORDATORIO_USUARIO_PATRON_PERIODO_KEY" in sql
+    assert "AVISO_RECORDATORIO_ESTADO_CHECK" in sql
+    assert "RECORDATORIO_CANDIDATO_ID_KEY UNIQUE (CANDIDATO_ID)" in sql
+    assert "RECORDATORIO_CANDIDATO_ID_FKEY" in sql
+    assert "RECORDATORIO_DIAS_ANTICIPACION_CHECK" in sql
+    assert "RECORDATORIO_ORIGEN_CHECK" in sql
+    assert "CREATE TABLE IF NOT EXISTS PUBLIC.CRON_JOB_CLAIM" in sql
+    assert "ALTER TABLE PUBLIC.AVISO_RECORDATORIO ENABLE ROW LEVEL SECURITY" in sql
+    assert "REVOKE ALL ON TABLE PUBLIC.AVISO_RECORDATORIO FROM ANON, AUTHENTICATED" in sql
+    assert "ALTER TABLE PUBLIC.CRON_JOB_CLAIM ENABLE ROW LEVEL SECURITY" in sql
+    assert "REVOKE ALL ON TABLE PUBLIC.CRON_JOB_CLAIM FROM ANON, AUTHENTICATED" in sql

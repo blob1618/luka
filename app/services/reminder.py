@@ -3,7 +3,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
 
-from app.models.database import Recordatorio, SessionLocal, Usuario
+from app.models.database import CandidatoGastoRecurrente, Recordatorio, SessionLocal, Usuario
 
 
 @dataclass
@@ -349,6 +349,13 @@ class ReminderService:
                 return cls._result("invalid_data", "reminder state does not allow this operation")
 
             reminder.estado = target_state
+            if reminder.candidato_id:
+                candidato = session.get(CandidatoGastoRecurrente, reminder.candidato_id)
+                if candidato is not None:
+                    if target_state == "pausado":
+                        candidato.estado = "pausado"
+                    elif target_state == "activo":
+                        candidato.estado = "aceptado"
             session.commit()
             return cls._result(success_status, success_message, reminder_id=str(reminder.id))
 
@@ -402,6 +409,10 @@ class ReminderService:
                 return error or cls._result("not_found", "reminder not found")
 
             reminder.estado = "eliminado"
+            if reminder.candidato_id:
+                candidato = session.get(CandidatoGastoRecurrente, reminder.candidato_id)
+                if candidato is not None:
+                    candidato.estado = "desactivado"
             session.commit()
             return cls._result("deleted", "reminder deleted", reminder_id=str(reminder.id))
 

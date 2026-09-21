@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.models.database import Base, Recordatorio, Usuario
+from app.models.database import Base, CandidatoGastoRecurrente, Recordatorio, Usuario
 from app.services.reminder import ReminderService
 
 
@@ -748,3 +748,143 @@ class TestConceptValidation:
         )
         assert result is not None
         assert len(result.split()) <= 6
+
+
+class TestReminderCandidateSynchronization:
+    def test_pause_reminder_synchronizes_candidate(self, monkeypatch):
+        from datetime import date
+        from sqlalchemy.pool import StaticPool
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+        Base.metadata.create_all(engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+        monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
+
+        session = TestSession()
+        user = _seed_user(session, "5491100001111")
+        cand = CandidatoGastoRecurrente(
+            usuario_id=user.id,
+            patron_hash="a" * 64,
+            descripcion_normalizada="internet",
+            moneda="ARS",
+            concepto="Internet",
+            dia_estimado=10,
+            proxima_fecha_estimada=date(2026, 10, 10),
+            estado="aceptado",
+            ultima_fecha_movimiento=date(2026, 9, 10),
+            evidencia_movimiento_ids=[],
+        )
+        session.add(cand)
+        session.commit()
+
+        rec = Recordatorio(
+            usuario_id=user.id,
+            candidato_id=cand.id,
+            titulo="Internet",
+            dia_del_mes=10,
+            estado="activo",
+            dias_anticipacion=3,
+            origen="recurrente_inteligente",
+        )
+        session.add(rec)
+        session.commit()
+
+        res = ReminderService.pause_reminder(user.whatsapp_id, str(rec.id))
+        assert res.status == "paused"
+
+        check_session = TestSession()
+        rec_updated = check_session.query(Recordatorio).filter(Recordatorio.id == rec.id).first()
+        cand_updated = check_session.query(CandidatoGastoRecurrente).filter(CandidatoGastoRecurrente.id == cand.id).first()
+        assert rec_updated.estado == "pausado"
+        assert cand_updated.estado == "pausado"
+
+    def test_activate_reminder_synchronizes_candidate(self, monkeypatch):
+        from datetime import date
+        from sqlalchemy.pool import StaticPool
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+        Base.metadata.create_all(engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+        monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
+
+        session = TestSession()
+        user = _seed_user(session, "5491100002222")
+        cand = CandidatoGastoRecurrente(
+            usuario_id=user.id,
+            patron_hash="b" * 64,
+            descripcion_normalizada="luz",
+            moneda="ARS",
+            concepto="Luz",
+            dia_estimado=15,
+            proxima_fecha_estimada=date(2026, 10, 15),
+            estado="pausado",
+            ultima_fecha_movimiento=date(2026, 9, 15),
+            evidencia_movimiento_ids=[],
+        )
+        session.add(cand)
+        session.commit()
+
+        rec = Recordatorio(
+            usuario_id=user.id,
+            candidato_id=cand.id,
+            titulo="Luz",
+            dia_del_mes=15,
+            estado="pausado",
+            dias_anticipacion=3,
+            origen="recurrente_inteligente",
+        )
+        session.add(rec)
+        session.commit()
+
+        res = ReminderService.activate_reminder(user.whatsapp_id, str(rec.id))
+        assert res.status == "activated"
+
+        check_session = TestSession()
+        rec_updated = check_session.query(Recordatorio).filter(Recordatorio.id == rec.id).first()
+        cand_updated = check_session.query(CandidatoGastoRecurrente).filter(CandidatoGastoRecurrente.id == cand.id).first()
+        assert rec_updated.estado == "activo"
+        assert cand_updated.estado == "aceptado"
+
+    def test_delete_reminder_synchronizes_candidate(self, monkeypatch):
+        from datetime import date
+        from sqlalchemy.pool import StaticPool
+        engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+        Base.metadata.create_all(engine)
+        TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+        monkeypatch.setattr("app.services.reminder.SessionLocal", TestSession)
+
+        session = TestSession()
+        user = _seed_user(session, "5491100003333")
+        cand = CandidatoGastoRecurrente(
+            usuario_id=user.id,
+            patron_hash="c" * 64,
+            descripcion_normalizada="gym",
+            moneda="ARS",
+            concepto="Gym",
+            dia_estimado=20,
+            proxima_fecha_estimada=date(2026, 10, 20),
+            estado="aceptado",
+            ultima_fecha_movimiento=date(2026, 9, 20),
+            evidencia_movimiento_ids=[],
+        )
+        session.add(cand)
+        session.commit()
+
+        rec = Recordatorio(
+            usuario_id=user.id,
+            candidato_id=cand.id,
+            titulo="Gym",
+            dia_del_mes=20,
+            estado="activo",
+            dias_anticipacion=3,
+            origen="recurrente_inteligente",
+        )
+        session.add(rec)
+        session.commit()
+
+        res = ReminderService.delete_reminder(user.whatsapp_id, str(rec.id))
+        assert res.status == "deleted"
+
+        check_session = TestSession()
+        rec_updated = check_session.query(Recordatorio).filter(Recordatorio.id == rec.id).first()
+        cand_updated = check_session.query(CandidatoGastoRecurrente).filter(CandidatoGastoRecurrente.id == cand.id).first()
+        assert rec_updated.estado == "eliminado"
+        assert cand_updated.estado == "desactivado"

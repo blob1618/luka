@@ -14,7 +14,9 @@ from app.api.whatsapp import (
     close_whatsapp_client,
     get_whatsapp_client,
     parse_interactive_reply,
+    WhatsAppDeliveryStatus,
     send_whatsapp_message,
+    send_whatsapp_message_detailed,
     send_whatsapp_reaction,
     whatsapp_graph_api_version,
 )
@@ -552,3 +554,104 @@ async def test_send_typing_indicator_error_timeout_and_network_tolerance(monkeyp
     client_network.post = AsyncMock(side_effect=httpx.NetworkError("refused"))
     monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client_network))
     assert await send_whatsapp_typing_indicator("wamid.1") is False
+
+
+@pytest.mark.asyncio
+async def test_send_detailed_success_extracts_wamid(monkeypatch):
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id")
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
+
+    mock_resp = Mock(status_code=200)
+    mock_resp.json = Mock(return_value={"messages": [{"id": "wamid.HBgL12345"}]})
+    client = Mock()
+    client.is_closed = False
+    client.post = AsyncMock(return_value=mock_resp)
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client))
+
+    result = await send_whatsapp_message_detailed("541123456789", "Hola")
+    assert result.status == WhatsAppDeliveryStatus.SUCCESS
+    assert result.is_success is True
+    assert result.message_id == "wamid.HBgL12345"
+    assert result.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_send_detailed_pre_connect_error_is_retryable(monkeypatch):
+    import httpx
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id")
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
+
+    client = Mock()
+    client.is_closed = False
+    client.post = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client))
+
+    result = await send_whatsapp_message_detailed("541123456789", "Hola")
+    assert result.status == WhatsAppDeliveryStatus.RETRYABLE
+    assert result.is_retryable is True
+    assert result.error_code == "connect_error"
+
+
+@pytest.mark.asyncio
+async def test_send_detailed_ambiguous_timeout_is_unknown(monkeypatch):
+    import httpx
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id")
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
+
+    client = Mock()
+    client.is_closed = False
+    client.post = AsyncMock(side_effect=httpx.ReadTimeout("Read timed out"))
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client))
+
+    result = await send_whatsapp_message_detailed("541123456789", "Hola")
+    assert result.status == WhatsAppDeliveryStatus.UNKNOWN
+    assert result.is_unknown is True
+    assert result.error_code == "ambiguous_timeout"
+
+
+@pytest.mark.asyncio
+async def test_send_detailed_http_errors_classified(monkeypatch):
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id")
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
+
+    # 429 Rate limited -> Retryable
+    resp_429 = Mock(status_code=429, text="Rate limit reached")
+    client = Mock()
+    client.is_closed = False
+    client.post = AsyncMock(return_value=resp_429)
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client))
+
+    res_429 = await send_whatsapp_message_detailed("541123456789", "Hola")
+    assert res_429.status == WhatsAppDeliveryStatus.RETRYABLE
+    assert res_429.status_code == 429
+
+    # 503 Service Unavailable -> Retryable
+    await close_whatsapp_client()
+    resp_503 = Mock(status_code=503, text="Service Unavailable")
+    client.post = AsyncMock(return_value=resp_503)
+    res_503 = await send_whatsapp_message_detailed("541123456789", "Hola")
+    assert res_503.status == WhatsAppDeliveryStatus.RETRYABLE
+    assert res_503.status_code == 503
+
+    # 400 Bad Request -> Permanent
+    await close_whatsapp_client()
+    resp_400 = Mock(status_code=400, text="Bad Request")
+    client.post = AsyncMock(return_value=resp_400)
+    res_400 = await send_whatsapp_message_detailed("541123456789", "Hola")
+    assert res_400.status == WhatsAppDeliveryStatus.PERMANENT
+    assert res_400.status_code == 400
+    assert res_400.is_permanent is True
+
+
+@pytest.mark.asyncio
+async def test_send_detailed_missing_config_is_permanent(monkeypatch):
+    monkeypatch.delenv("WHATSAPP_API_TOKEN", raising=False)
+    monkeypatch.delenv("WHATSAPP_PHONE_ID", raising=False)
+
+    result = await send_whatsapp_message_detailed("541123456789", "Hola")
+    assert result.status == WhatsAppDeliveryStatus.PERMANENT
+    assert result.error_code == "missing_credentials"

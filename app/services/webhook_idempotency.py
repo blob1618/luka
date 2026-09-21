@@ -1,6 +1,8 @@
 """Atomic idempotency for inbound WhatsApp messages."""
 
+import asyncio
 import hashlib
+import logging
 import secrets
 from dataclasses import dataclass
 from typing import Any
@@ -8,6 +10,8 @@ from typing import Any
 from app.api.whatsapp import WhatsAppList, WhatsAppReplyButtons, WhatsAppText
 from app.services.conversation import ConversationHistoryService
 from app.services.telemetry import track_phase
+
+logger = logging.getLogger(__name__)
 
 
 PROCESSING_TTL_SECONDS = 15 * 60
@@ -103,10 +107,7 @@ class WebhookIdempotencyService:
         return bool(result)
 
 
-def _visible_reply_text(result: Any) -> str | None:
-    reply = getattr(result, "reply_message", None)
-    if reply is None:
-        reply = getattr(result, "reply_text", None)
+def _format_single_message_text(reply: Any) -> str | None:
     if isinstance(reply, str):
         return reply
     if isinstance(reply, WhatsAppText):
@@ -122,6 +123,27 @@ def _visible_reply_text(result: Any) -> str | None:
         )
         return f"{reply.body}\nOpciones: {options}"
     return None
+
+
+def _visible_reply_text(result: Any) -> str | None:
+    reply = getattr(result, "reply_message", None)
+    if reply is None:
+        reply = getattr(result, "reply_text", None)
+    primary_text = _format_single_message_text(reply)
+
+    # Conservar únicamente los mensajes follow-up efectivamente enviados
+    sent_followups = getattr(result, "sent_followup_messages", None)
+    if sent_followups is None:
+        sent_followups = getattr(result, "followup_messages", None) or []
+
+    if not sent_followups:
+        return primary_text
+    parts = [primary_text] if primary_text else []
+    for f in sent_followups:
+        ft = _format_single_message_text(f)
+        if ft:
+            parts.append(ft)
+    return "\n\n".join(parts) if parts else None
 
 
 async def process_inbound_message_once(
@@ -159,6 +181,44 @@ async def process_inbound_message_once(
             send_succeeded = send_result is not False
             if send_result is False:
                 raise RuntimeError("WhatsApp reply could not be sent")
+
+        # Telemetría de propuesta de candidato recurrente enviada en el mensaje principal
+        cand_id = getattr(result, "proposal_candidate_id", None)
+        delivery_mode = getattr(result, "proposal_delivery_mode", None)
+        if cand_id and delivery_mode == "primary" and send_succeeded:
+            from app.services.dispatcher import record_proposal_sent_sync
+            await asyncio.to_thread(record_proposal_sent_sync, cand_id)
+
+        # Enviar mensajes follow-up (p.ej. propuesta interactiva cuando la respuesta principal ya era interactiva)
+        followup_messages = getattr(result, "followup_messages", None) or []
+        sent_followups = []
+        if result is not None:
+            result.sent_followup_messages = sent_followups
+
+        for idx, followup in enumerate(followup_messages):
+            try:
+                with track_phase("reply"):
+                    followup_sent = await send_message(sender_phone, followup)
+                if followup_sent:
+                    sent_followups.append(followup)
+                    if cand_id and delivery_mode == "followup":
+                        from app.services.dispatcher import record_proposal_sent_sync
+                        await asyncio.to_thread(record_proposal_sent_sync, cand_id)
+                else:
+                    logger.warning(
+                        "[FOLLOWUP_SEND_FAILED] message_id=%s followup_index=%d",
+                        whatsapp_message_id,
+                        idx,
+                    )
+            except Exception as exc:
+                # El fallo del follow-up no invalida el registro del movimiento ni el mensaje principal.
+                # Log sin contenido financiero ni PII.
+                logger.warning(
+                    "[FOLLOWUP_SEND_ERROR] message_id=%s followup_index=%d error=%s",
+                    whatsapp_message_id,
+                    idx,
+                    type(exc).__name__,
+                )
 
         await WebhookIdempotencyService.complete(redis_client, claim)
         print(

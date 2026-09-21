@@ -2,12 +2,45 @@ import inspect
 import os
 import re
 from dataclasses import dataclass
+from enum import Enum
 from typing import TypeAlias
 
 import httpx
 
 
 DEFAULT_WHATSAPP_GRAPH_API_VERSION = "v26.0"
+
+
+class WhatsAppDeliveryStatus(str, Enum):
+    SUCCESS = "success"
+    RETRYABLE = "retryable"
+    PERMANENT = "permanent"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class WhatsAppSendResult:
+    status: WhatsAppDeliveryStatus
+    message_id: str | None = None
+    error_code: str | None = None
+    status_code: int | None = None
+    error_message: str | None = None
+
+    @property
+    def is_success(self) -> bool:
+        return self.status == WhatsAppDeliveryStatus.SUCCESS
+
+    @property
+    def is_retryable(self) -> bool:
+        return self.status == WhatsAppDeliveryStatus.RETRYABLE
+
+    @property
+    def is_permanent(self) -> bool:
+        return self.status == WhatsAppDeliveryStatus.PERMANENT
+
+    @property
+    def is_unknown(self) -> bool:
+        return self.status == WhatsAppDeliveryStatus.UNKNOWN
 
 
 @dataclass(frozen=True)
@@ -309,23 +342,31 @@ async def close_whatsapp_client() -> None:
                     await res
 
 
-async def send_whatsapp_message(
+async def send_whatsapp_message_detailed(
     to_number: str,
     message_text: str | OutboundWhatsAppMessage | None = None,
     *,
     template_name: str | None = None,
     template_parameters: list[str] | None = None,
-):
-    """Send a text, interactive message or approved template through Meta."""
+) -> WhatsAppSendResult:
+    """Send a text, interactive message or approved template through Meta returning a detailed result."""
     api_token = os.getenv("WHATSAPP_API_TOKEN")
     phone_id = os.getenv("WHATSAPP_PHONE_ID")
     api_version = whatsapp_graph_api_version()
     if not api_token or not phone_id:
         print("Falta WHATSAPP_API_TOKEN o WHATSAPP_PHONE_ID. No se puede enviar el mensaje.")
-        return False
+        return WhatsAppSendResult(
+            status=WhatsAppDeliveryStatus.PERMANENT,
+            error_code="missing_credentials",
+            error_message="Falta WHATSAPP_API_TOKEN o WHATSAPP_PHONE_ID.",
+        )
     if api_version is None:
         print("WHATSAPP_GRAPH_API_VERSION tiene un formato invalido.")
-        return False
+        return WhatsAppSendResult(
+            status=WhatsAppDeliveryStatus.PERMANENT,
+            error_code="invalid_graph_version",
+            error_message="WHATSAPP_GRAPH_API_VERSION tiene un formato invalido.",
+        )
 
     try:
         payload = build_whatsapp_payload(
@@ -336,7 +377,11 @@ async def send_whatsapp_message(
         )
     except (TypeError, ValueError) as exc:
         print(f"Mensaje saliente de WhatsApp invalido: {exc}")
-        return False
+        return WhatsAppSendResult(
+            status=WhatsAppDeliveryStatus.PERMANENT,
+            error_code="invalid_payload",
+            error_message=str(exc),
+        )
 
     url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
     headers = {
@@ -347,15 +392,77 @@ async def send_whatsapp_message(
     client = get_whatsapp_client()
     try:
         response = await client.post(url, headers=headers, json=payload)
-        if response.status_code != 200:
-            print(f"Error al enviar el mensaje: {response.text}")
-            return False
-
-        print(f"Mensaje enviado a {payload['to']}")
-        return True
+    except (httpx.ConnectTimeout, httpx.ConnectError) as exc:
+        print(f"Error de conexión al enviar mensaje de WhatsApp: {type(exc).__name__}: {exc}")
+        return WhatsAppSendResult(
+            status=WhatsAppDeliveryStatus.RETRYABLE,
+            error_code="connect_error",
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
+    except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
+        print(f"Timeout ambiguo al enviar mensaje de WhatsApp: {type(exc).__name__}: {exc}")
+        return WhatsAppSendResult(
+            status=WhatsAppDeliveryStatus.UNKNOWN,
+            error_code="ambiguous_timeout",
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
     except Exception as exc:
-        print(f"Excepción al enviar el mensaje de WhatsApp: {type(exc).__name__}")
-        return False
+        print(f"Excepción inesperada de red al enviar mensaje de WhatsApp: {type(exc).__name__}: {exc}")
+        return WhatsAppSendResult(
+            status=WhatsAppDeliveryStatus.UNKNOWN,
+            error_code="unexpected_network_error",
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
+
+    if response.status_code == 200:
+        wamid = None
+        try:
+            data = response.json()
+            messages = data.get("messages", [])
+            if messages and isinstance(messages[0], dict):
+                wamid = messages[0].get("id")
+        except Exception:
+            wamid = None
+        print(f"Mensaje enviado a {payload['to']}")
+        return WhatsAppSendResult(
+            status=WhatsAppDeliveryStatus.SUCCESS,
+            message_id=wamid,
+            status_code=200,
+        )
+
+    if response.status_code in {429, 500, 502, 503, 504}:
+        print(f"Error reintentable al enviar el mensaje: {response.status_code} {response.text}")
+        return WhatsAppSendResult(
+            status=WhatsAppDeliveryStatus.RETRYABLE,
+            status_code=response.status_code,
+            error_code=f"http_{response.status_code}",
+            error_message=response.text[:500],
+        )
+
+    print(f"Error permanente al enviar el mensaje: {response.status_code} {response.text}")
+    return WhatsAppSendResult(
+        status=WhatsAppDeliveryStatus.PERMANENT,
+        status_code=response.status_code,
+        error_code=f"http_{response.status_code}",
+        error_message=response.text[:500],
+    )
+
+
+async def send_whatsapp_message(
+    to_number: str,
+    message_text: str | OutboundWhatsAppMessage | None = None,
+    *,
+    template_name: str | None = None,
+    template_parameters: list[str] | None = None,
+) -> bool:
+    """Send a text, interactive message or approved template through Meta."""
+    result = await send_whatsapp_message_detailed(
+        to_number,
+        message_text,
+        template_name=template_name,
+        template_parameters=template_parameters,
+    )
+    return result.is_success
 
 
 async def send_whatsapp_reaction(

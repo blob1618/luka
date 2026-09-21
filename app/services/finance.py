@@ -27,6 +27,7 @@ class MovementRegistrationResult:
     user_id: str | None = None
     duplicate: bool = False
     category_name: str | None = None
+    patron_hash: str | None = None
 
 
 @dataclass
@@ -328,6 +329,7 @@ class FinanceService:
         user_id: str | None = None,
         duplicate: bool = False,
         category_name: str | None = None,
+        patron_hash: str | None = None,
     ) -> MovementRegistrationResult:
         return MovementRegistrationResult(
             status=status,
@@ -336,6 +338,7 @@ class FinanceService:
             user_id=user_id,
             duplicate=duplicate,
             category_name=category_name,
+            patron_hash=patron_hash,
         )
 
     @staticmethod
@@ -503,12 +506,28 @@ class FinanceService:
             session.add(movement)
             session.commit()
 
+            patron_hash = None
+            if movement_type == "egreso":
+                from app.services.recurring_expense import (
+                    calculate_pattern_hash,
+                    normalize_description,
+                )
+                norm_desc = normalize_description(description)
+                if norm_desc:
+                    patron_hash = calculate_pattern_hash(
+                        norm_desc,
+                        movement.categoria_id,
+                        movement.moneda,
+                    )
+
             return cls._result(
                 "registered",
                 "movement registered",
                 movement_id=str(movement.id),
                 user_id=user_id,
                 duplicate=False,
+                category_name=category.nombre if category else None,
+                patron_hash=patron_hash,
             )
 
         except IntegrityError as exc:
@@ -863,12 +882,28 @@ class FinanceService:
             session.add(movement)
             session.commit()
 
+            patron_hash = None
+            if movement_type == "egreso":
+                from app.services.recurring_expense import (
+                    calculate_pattern_hash,
+                    normalize_description,
+                )
+                norm_desc = normalize_description(description)
+                if norm_desc:
+                    patron_hash = calculate_pattern_hash(
+                        norm_desc,
+                        movement.categoria_id,
+                        movement.moneda,
+                    )
+
             return cls._result(
                 "registered",
                 "movement registered",
                 movement_id=str(movement.id),
                 user_id=user_id,
                 duplicate=False,
+                category_name=category_name,
+                patron_hash=patron_hash,
             )
 
         except IntegrityError as exc:
