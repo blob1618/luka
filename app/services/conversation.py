@@ -297,7 +297,7 @@ local existing = redis.call('LRANGE', key, -max_turns, -1)
 if message_id ~= '' then
   for _, entry in ipairs(existing) do
     local ok, decoded = pcall(cjson.decode, entry)
-    if ok and decoded['user'] and decoded['user']['id'] == message_id then
+if type(decoded) == 'table' and type(decoded['user']) == 'table' and decoded['user']['id'] == message_id then
       return 0
     end
   end
@@ -690,6 +690,15 @@ class ConversationService:
         except Exception as exc:
             print(f"[ConversationService] get_recent_items error: {type(exc).__name__}: {exc}")
             return None
+
+    @classmethod
+    async def clear_recent_items(cls, whatsapp_id: str) -> None:
+        try:
+            client = await cls._get_client()
+            with track_phase("redis"):
+                await client.delete(_recent_items_key(whatsapp_id))
+        except Exception as exc:
+            print(f"[ConversationService] clear_recent_items error: {type(exc).__name__}: {exc}")
 
     @classmethod
     async def set_pending_selection(cls, whatsapp_id: str, pending: PendingSelection) -> None:

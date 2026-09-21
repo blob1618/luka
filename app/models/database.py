@@ -383,6 +383,13 @@ class MovimientoFinanciero(Base):
             postgresql_where=(tipo == "egreso") & categoria_id.isnot(None),
             sqlite_where=(tipo == "egreso") & categoria_id.isnot(None),
         ),
+        Index(
+            "movimientos_financieros_egresos_activos_fecha_idx",
+            "fecha_movimiento",
+            "usuario_id",
+            postgresql_where=(tipo == "egreso") & anulado_en.is_(None),
+            sqlite_where=(tipo == "egreso") & anulado_en.is_(None),
+        ),
     )
 
 
@@ -476,5 +483,86 @@ class ConversationFlowVersion(Base):
             "conversation_flow_version_flow_status_idx",
             "flow_id",
             "status",
+        ),
+    )
+
+
+class CandidatoGastoRecurrente(Base):
+    __tablename__ = "candidato_gasto_recurrente"
+
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    usuario_id = Column(
+        Uuid(as_uuid=True),
+        ForeignKey("usuario.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    patron_hash = Column(String(64), nullable=False)
+    descripcion_normalizada = Column(String, nullable=False)
+    categoria_id = Column(
+        Uuid(as_uuid=True),
+        ForeignKey("categorias.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    moneda = Column(String(3), nullable=False, default="ARS")
+    concepto = Column(String, nullable=False)
+    monto_estimado = Column(Numeric(18, 2), nullable=True)
+    dia_estimado = Column(Integer, nullable=False)
+    proxima_fecha_estimada = Column(Date, nullable=False)
+    estado = Column(String, nullable=False, default="pendiente")
+    ultima_fecha_movimiento = Column(Date, nullable=False)
+    evidencia_movimiento_ids = Column(
+        JSON().with_variant(JSONB, "postgresql"),
+        nullable=False,
+    )
+    creado_en = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    actualizado_en = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "usuario_id",
+            "patron_hash",
+            name="candidato_gasto_recurrente_usuario_patron_key",
+        ),
+        CheckConstraint(
+            "dia_estimado BETWEEN 1 AND 31",
+            name="candidato_gasto_recurrente_dia_check",
+        ),
+        CheckConstraint(
+            "monto_estimado IS NULL OR monto_estimado > 0",
+            name="candidato_gasto_recurrente_monto_check",
+        ),
+        CheckConstraint(
+            "length(moneda) = 3 AND moneda = upper(moneda)",
+            name="candidato_gasto_recurrente_moneda_check",
+        ),
+        CheckConstraint(
+            "estado IN ('pendiente', 'descartado', 'convertido', 'invalidado')",
+            name="candidato_gasto_recurrente_estado_check",
+        ),
+        CheckConstraint(
+            "length(patron_hash) = 64",
+            name="candidato_gasto_recurrente_patron_hash_len_check",
+        ),
+        CheckConstraint(
+            "trim(descripcion_normalizada) <> ''",
+            name="candidato_gasto_recurrente_desc_no_vacio_check",
+        ),
+        CheckConstraint(
+            "trim(concepto) <> ''",
+            name="candidato_gasto_recurrente_concepto_no_vacio_check",
+        ),
+        Index(
+            "candidato_gasto_recurrente_usuario_estado_idx",
+            "usuario_id",
+            "estado",
+        ),
+        Index(
+            "candidato_gasto_recurrente_proxima_fecha_idx",
+            "proxima_fecha_estimada",
         ),
     )

@@ -759,6 +759,9 @@ async def _handle_reset_context(sender_phone: str) -> DispatchResult:
     """Borra el estado multi-turno y la memoria conversacional del usuario."""
     await ConversationService.clear_state(sender_phone)
     await ConversationService.clear_pending_selection(sender_phone)
+    await ConversationService.clear_last_limit(sender_phone)
+    await ConversationService.clear_last_movement(sender_phone)
+    await ConversationService.clear_recent_items(sender_phone)
     with contextlib.suppress(ConversationStateUnavailable):
         await ConversationService.clear_pending_conversation_flow(sender_phone)
     return DispatchResult(
