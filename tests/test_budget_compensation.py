@@ -817,3 +817,74 @@ def test_apply_invalid_proposal_dict_returns_invalid_data(db_context):
 
     assert result.status == "invalid_data"
     assert result.proposal is None
+
+
+def assert_limits_unchanged(session, food_budget, donor_budget):
+    session.expire_all()
+    assert (
+        session.get(LimiteCategoria, food_budget.id).cantidad_max
+        == Decimal("1000.00")
+    )
+    assert (
+        session.get(LimiteCategoria, donor_budget.id).cantidad_max
+        == Decimal("500.00")
+    )
+
+
+def test_apply_rejects_empty_donors(db_context):
+    session = db_context
+    user = create_user(session)
+    proposal, food_budget, donor_budget = build_standard_proposal(session, user)
+    payload = proposal.to_dict()
+    payload["donors"] = []
+
+    result = BudgetCompensationService.apply(payload)
+
+    assert result.status == "invalid_data"
+    assert result.proposal is None
+    assert_limits_unchanged(session, food_budget, donor_budget)
+
+
+def test_apply_rejects_duplicate_donor_limit_id(db_context):
+    session = db_context
+    user = create_user(session)
+    proposal, food_budget, donor_budget = build_standard_proposal(session, user)
+    payload = proposal.to_dict()
+    payload["donors"] = [payload["donors"][0], payload["donors"][0]]
+
+    result = BudgetCompensationService.apply(payload)
+
+    assert result.status == "invalid_data"
+    assert result.proposal is None
+    assert_limits_unchanged(session, food_budget, donor_budget)
+
+
+def test_apply_rejects_negative_amount(db_context):
+    session = db_context
+    user = create_user(session)
+    proposal, food_budget, donor_budget = build_standard_proposal(session, user)
+    payload = proposal.to_dict()
+    payload["amount"] = "-100.00"
+    payload["target"]["after_limit"] = "900.00"
+    payload["donors"][0]["after_limit"] = "600.00"
+
+    result = BudgetCompensationService.apply(payload)
+
+    assert result.status == "invalid_data"
+    assert result.proposal is None
+    assert_limits_unchanged(session, food_budget, donor_budget)
+
+
+def test_apply_rejects_inconsistent_donor_sum(db_context):
+    session = db_context
+    user = create_user(session)
+    proposal, food_budget, donor_budget = build_standard_proposal(session, user)
+    payload = proposal.to_dict()
+    payload["amount"] = "50.00"
+    payload["target"]["after_limit"] = "1050.00"
+
+    result = BudgetCompensationService.apply(payload)
+
+    assert result.status == "invalid_data"
+    assert result.proposal is None
+    assert_limits_unchanged(session, food_budget, donor_budget)

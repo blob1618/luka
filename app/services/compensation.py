@@ -284,6 +284,26 @@ class BudgetCompensationService:
             session.close()
 
     @staticmethod
+    def _is_consistent(proposal: CompensationProposal, ids: list[UUID]) -> bool:
+        if proposal.amount <= 0 or not proposal.donors:
+            return False
+        if len(ids) != len(set(ids)):
+            return False
+        if proposal.target.after_limit != (
+            proposal.target.before_limit + proposal.amount
+        ):
+            return False
+        if proposal.target.after_limit < 0:
+            return False
+        planned = Decimal("0")
+        for donor in proposal.donors:
+            delta = donor.before_limit - donor.after_limit
+            if delta <= 0 or donor.after_limit < 0:
+                return False
+            planned += delta
+        return planned == proposal.amount
+
+    @staticmethod
     def _snapshot_matches(row: LimiteCategoria, expected: str | None) -> bool:
         if expected is None:
             return False
@@ -322,6 +342,9 @@ class BudgetCompensationService:
             ]
         except (TypeError, ValueError, AttributeError):
             return CompensationApplyResult("invalid_data", "invalid limit reference")
+
+        if not cls._is_consistent(proposal, ids):
+            return CompensationApplyResult("invalid_data", "inconsistent proposal")
 
         session = SessionLocal()
         try:
