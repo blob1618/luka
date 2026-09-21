@@ -43,8 +43,8 @@ decisiones de cada capa. El comportamiento visible para el usuario se describe e
 - `app/services/onboarding.py`: invitaciones de vinculación para WhatsApp desconocidos.
 - `app/services/dashboard_link.py`: enlaces mágicos de acceso al dashboard para
   usuarios ya vinculados (comando `/link`).
-- `app/services/conversation.py`: estado multi-turno, contexto acotado e historial
-  reciente en Redis.
+- `app/services/conversation.py`: estado multi-turno, contexto acotado y memoria
+  conversacional en Redis.
 - `app/services/conversation_flow.py`, `conversation_flow_contract.py` y
   `conversation_flow_runtime.py`: flujos de presentación administrables, su validación,
   versionado, resolución y render.
@@ -84,7 +84,7 @@ sequenceDiagram
     alt mensaje ya reclamado o completado
         R-->>B: sin claim → duplicado, sin respuesta visible
     else claim propio
-        B->>R: historial reciente (últimos 5 mensajes)
+        B->>R: memoria conversacional (últimos 4 turnos)
         B->>D: process_incoming_message
         D->>L: interpreta con contexto (fecha, categorías, último límite, ítems mostrados)
         L-->>D: intent, movement_type y datos
@@ -92,7 +92,7 @@ sequenceDiagram
         S-->>D: resultado real (recién tras commit)
         D-->>B: respuesta segura o presentación configurada
         B->>M: envía respuesta
-        B->>R: complete (TTL 48h) + historial
+        B->>R: complete (TTL 48h) + memoria conversacional
         B->>B: [METRICS]
     end
 ```
@@ -136,7 +136,10 @@ Puntos clave del flujo:
   `delete_reminder`, `enable_proactive_reminders`, `disable_proactive_reminders`,
   `confirm_category`, `reject_category`, `delete_category`, `list_categories`,
   `create_limit`, `change_limit`, `list_limits`, `delete_limit`, `confirm_limit`,
-  `reject_limit`, `update_movement` y `delete_movement`.
+  `reject_limit`, `update_movement`, `delete_movement` y `reset_context`.
+- `reset_context` ejecuta el reset en el backend: limpia la memoria conversacional del
+  usuario y el estado multi-turno pendiente, y responde con un texto fijo («Listo,
+  arrancamos de cero. Olvidé lo anterior.»). El LLM solo detecta el pedido explícito.
 - Si el JSON no valida, `LLMService` reintenta una vez con una instrucción de formato y
   vuelve a normalizar. Ante error del proveedor devuelve `out_of_scope` con un mensaje
   seguro.
@@ -160,9 +163,14 @@ Puntos clave del flujo:
   elementos recientemente mostrados y selección pendiente. Los TTL son 30 minutos para
   el estado de conversación y el flujo administrable, y 60 minutos para último
   movimiento y último límite.
-- `ConversationHistoryService` guarda los últimos cinco mensajes visibles usando el
-  cliente Redis del webhook, con enlaces y tokens redactados, y se los entrega al LLM
-  como historial. Si Redis falla, el historial se trata como vacío.
+- La memoria conversacional guarda los últimos 4 turnos completos por usuario en la
+  clave `conversation_memory:whatsapp:{whatsapp_id}`, con TTL de 24 horas desde la última
+  actividad. El append y el recorte de la ventana se hacen de forma atómica en un solo
+  `EVAL`, con deduplicación por id de mensaje. Los mensajes se sanean (enlaces y tokens)
+  antes de guardarse y su contenido nunca se registra en logs. Si Redis falla, la
+  memoria se trata como vacía y el webhook sigue funcionando.
+- El intent `reset_context` limpia en el backend la memoria conversacional del usuario y
+  el estado multi-turno pendiente.
 
 ## Scheduler
 
@@ -203,7 +211,8 @@ usa `gunicorn -w 1`).
 - El LLM se llama antes de la deduplicación financiera por `whatsapp_message_id` y de
   la revalidación de usuario que hace `FinanceService` al persistir.
 - Redis es opcional en local pero obligatorio para los flujos multi-turno; su caída
-  degrada en silencio y las referencias ambiguas no se pueden resolver.
+  degrada en silencio, la memoria conversacional se trata como vacía sin bloquear el
+  webhook y las referencias ambiguas no se pueden resolver.
 - El reclamo del recordatorio proactivo ocurre antes del envío: un crash entre ambos
   pierde el aviso de ese día.
 - Queda verificar en Supabase los índices productivos, incluido el índice único parcial

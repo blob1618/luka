@@ -13,6 +13,8 @@ class TestFormatDebugForExport:
             "redis_state": {"step": "none"},
             "provider": "gemini",
             "prompt_used": "prompt.md",
+            "memory": [{"role": "user", "content": "hola"}],
+            "memory_ttl_seconds": 3600,
         }
         exported = format_debug_for_export(debug_data)
 
@@ -21,6 +23,8 @@ class TestFormatDebugForExport:
         assert exported["service_log"] == "FinanceService.register_movement_with_category"
         assert exported["redis_state"]["step"] == "none"
         assert exported["provider"] == "gemini"
+        assert exported["memory"] == [{"role": "user", "content": "hola"}]
+        assert exported["memory_ttl_seconds"] == 3600
 
     def test_handles_missing_fields(self):
         debug_data = {"latency_ms": 100.0}
@@ -29,6 +33,8 @@ class TestFormatDebugForExport:
         assert exported["latency_ms"] == 100.0
         assert exported.get("raw_json") is None
         assert exported.get("redis_state") is None
+        assert exported.get("memory") is None
+        assert exported.get("memory_ttl_seconds") is None
 
     def test_handles_empty_dict(self):
         exported = format_debug_for_export({})

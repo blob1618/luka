@@ -1,6 +1,7 @@
 """Global test fixtures and isolation."""
 
 from datetime import timedelta
+import json
 import sys
 from typing import Any
 import pytest
@@ -55,11 +56,17 @@ class FakeRedis:
 
     def __init__(self):
         self._storage: dict[str, str] = {}
+        self._lists: dict[str, list[str]] = {}
+        self._expirations: dict[str, int] = {}
+        self.eval_calls = 0
+        self.get_calls = 0
+        self.lrange_calls = 0
 
     async def ping(self) -> bool:
         return True
 
     async def get(self, key: str) -> str | None:
+        self.get_calls += 1
         return self._storage.get(str(key))
 
     async def set(
@@ -96,9 +103,84 @@ class FakeRedis:
     async def delete(self, *keys: str) -> int:
         count = 0
         for k in keys:
-            if self._storage.pop(str(k), None) is not None:
+            key_str = str(k)
+            removed = self._storage.pop(key_str, None) is not None
+            removed = self._lists.pop(key_str, None) is not None or removed
+            self._expirations.pop(key_str, None)
+            if removed:
                 count += 1
         return count
+
+    async def rpush(self, key: str, *values: Any) -> int:
+        items = self._lists.setdefault(str(key), [])
+        items.extend(
+            str(value) if not isinstance(value, str) else value for value in values
+        )
+        return len(items)
+
+    async def lrange(self, key: str, start: int, stop: int) -> list[str]:
+        self.lrange_calls += 1
+        items = self._lists.get(str(key), [])
+        start, stop = self._bounds(len(items), start, stop)
+        if start > stop:
+            return []
+        return list(items[start : stop + 1])
+
+    async def ltrim(self, key: str, start: int, stop: int) -> bool:
+        key_str = str(key)
+        items = self._lists.get(key_str)
+        if items is None:
+            return True
+        start, stop = self._bounds(len(items), start, stop)
+        kept = items[start : stop + 1] if start <= stop else []
+        if kept:
+            self._lists[key_str] = kept
+        else:
+            self._lists.pop(key_str, None)
+        return True
+
+    async def expire(self, key: str, seconds: int) -> bool:
+        key_str = str(key)
+        if key_str not in self._storage and key_str not in self._lists:
+            return False
+        self._expirations[key_str] = int(seconds)
+        return True
+
+    @staticmethod
+    def _bounds(length: int, start: int, stop: int) -> tuple[int, int]:
+        if start < 0:
+            start += length
+        if stop < 0:
+            stop += length
+        return max(start, 0), min(stop, length - 1)
+
+    @staticmethod
+    def _memory_entry_user_id(entry: str) -> str | None:
+        try:
+            decoded = json.loads(entry)
+        except (TypeError, ValueError):
+            return None
+        user = decoded.get("user") if isinstance(decoded, dict) else None
+        if not isinstance(user, dict):
+            return None
+        return user.get("id")
+
+    async def _eval_memory_append(self, key: str, args: tuple) -> int:
+        message_id = str(args[0]) if len(args) > 0 else ""
+        payload = str(args[1]) if len(args) > 1 else ""
+        max_turns = int(args[2]) if len(args) > 2 else 4
+        ttl_seconds = int(args[3]) if len(args) > 3 else 0
+        items = self._lists.setdefault(key, [])
+        existing = items[-max_turns:]
+        if message_id and any(
+            self._memory_entry_user_id(entry) == message_id for entry in existing
+        ):
+            return 0
+        items.append(payload)
+        keep = max_turns if max_turns > 0 else len(items)
+        del items[: max(0, len(items) - keep)]
+        await self.expire(key, ttl_seconds)
+        return 1
 
     async def eval(
         self,
@@ -107,9 +189,12 @@ class FakeRedis:
         *keys_and_args: Any,
     ) -> int:
         del numkeys
+        self.eval_calls += 1
         if not keys_and_args:
             return 0
         key = str(keys_and_args[0])
+        if "LRANGE" in script and "RPUSH" in script:
+            return await self._eval_memory_append(key, keys_and_args[1:])
         expected = str(keys_and_args[1]) if len(keys_and_args) > 1 else ""
         current = self._storage.get(key)
         if current != expected:

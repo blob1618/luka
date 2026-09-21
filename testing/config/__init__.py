@@ -1,3 +1,3 @@
-from .settings import TestingConfig, ChatMessage
+from .settings import TestingConfig
 
-__all__ = ["TestingConfig", "ChatMessage"]
+__all__ = ["TestingConfig"]

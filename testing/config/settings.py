@@ -1,22 +1,66 @@
 """Configuration for the Streamlit testing environment."""
 
 import os
+import re
 from dataclasses import dataclass, field
+from uuid import uuid4
+
+
+@dataclass
+class ChatSession:
+    """An independent simulated user session: own phone and own chat."""
+    id: str
+    label: str
+    phone: str
+    user_name: str
+    user_registered: bool
+    messages: list[dict] = field(default_factory=list)
 
 
 @dataclass
 class TestingConfig:
     """Holds all sidebar configuration state."""
     provider: str = "gemini"                  # LLM provider name
-    prompt_path: str = "prompt.md"            # path to prompt file
+    prompt_path: str = "prompts/core_prompt.md"  # path to prompt file
     model: str = ""                           # modelo seleccionado ("" = primer item de la lista)
-    user_registered: bool = True              # simulate registered user
-    phone: str = "5491112345678"              # simulated phone number
-    user_name: str = "Test User"              # simulated user name
     debug_json: bool = True                   # show raw LLM JSON
     debug_latency: bool = True                # show latency metrics
     debug_redis: bool = True                  # show Redis state
     debug_logs: bool = True                   # show dispatcher logs
+    sessions: list[ChatSession] = field(default_factory=list)
+    active_session_id: str = ""
+
+    def active_session(self) -> ChatSession | None:
+        for session in self.sessions:
+            if session.id == self.active_session_id:
+                return session
+        return None
+
+
+def next_session_label(sessions: list[ChatSession]) -> str:
+    """Label por defecto para la próxima sesión."""
+    numbers = []
+    for session in sessions:
+        match = re.fullmatch(r"Sesión (\d+)", session.label)
+        if match:
+            numbers.append(int(match.group(1)))
+    return f"Sesión {max(numbers, default=0) + 1}"
+
+
+def phone_in_use(sessions: list[ChatSession], phone: str) -> bool:
+    """True si alguna sesión ya usa ese teléfono."""
+    return any(session.phone == phone for session in sessions)
+
+
+def new_session(label: str, phone: str, user_name: str, user_registered: bool) -> ChatSession:
+    """Crea una ChatSession con id único."""
+    return ChatSession(
+        id=uuid4().hex,
+        label=label,
+        phone=phone,
+        user_name=user_name,
+        user_registered=user_registered,
+    )
 
 
 MODEL_ENV_BY_PROVIDER = {
@@ -66,11 +110,3 @@ def set_model_env(provider: str, model: str) -> None:
     env_name = MODEL_ENV_BY_PROVIDER.get(provider)
     if env_name and model:
         os.environ[env_name] = model
-
-
-@dataclass
-class ChatMessage:
-    """A single message in the chat history."""
-    role: str                                 # "user" | "assistant"
-    content: str                              # visible text
-    debug: dict = field(default_factory=dict) # debug metadata (assistant only)

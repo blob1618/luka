@@ -1,9 +1,10 @@
 """Tests for FakeRedis and test isolation fixtures."""
 
+import json
 import socket
 import pytest
 
-from app.services.conversation import ConversationService
+from app.services.conversation import ConversationService, _MEMORY_APPEND_SCRIPT
 from tests.conftest import FakeRedis
 
 pytestmark = pytest.mark.unit
@@ -40,6 +41,60 @@ async def test_fake_redis_setex():
     fake = FakeRedis()
     assert await fake.setex("key1", 60, "val1") is True
     assert await fake.get("key1") == "val1"
+
+
+@pytest.mark.asyncio
+async def test_fake_redis_list_operations():
+    fake = FakeRedis()
+    assert await fake.lrange("list", 0, -1) == []
+    assert await fake.rpush("list", "a", "b", "c") == 3
+    assert await fake.lrange("list", 0, -1) == ["a", "b", "c"]
+    assert await fake.lrange("list", -2, -1) == ["b", "c"]
+    assert await fake.lrange("list", 1, 1) == ["b"]
+    assert await fake.ltrim("list", -2, -1) is True
+    assert await fake.lrange("list", 0, -1) == ["b", "c"]
+
+    assert await fake.ltrim("list", 5, 10) is True
+    assert await fake.lrange("list", 0, -1) == []
+
+
+@pytest.mark.asyncio
+async def test_fake_redis_expire():
+    fake = FakeRedis()
+    assert await fake.expire("missing", 60) is False
+
+    await fake.set("key1", "val1")
+    assert await fake.expire("key1", 60) is True
+    assert fake._expirations["key1"] == 60
+
+    await fake.delete("key1")
+    assert "key1" not in fake._expirations
+
+
+@pytest.mark.asyncio
+async def test_fake_redis_eval_conversation_memory_dedup_and_trim():
+    fake = FakeRedis()
+    key = "conversation_memory:whatsapp:5491100000001"
+    script = _MEMORY_APPEND_SCRIPT
+    payload1 = json.dumps(
+        {"user": {"id": "wamid-1", "content": "hola"}, "assistant": {"content": "buenas"}}
+    )
+    payload2 = json.dumps(
+        {"user": {"id": "wamid-2", "content": "chau"}, "assistant": {"content": ""}}
+    )
+    payload3 = json.dumps(
+        {"user": {"id": None, "content": "sin id"}, "assistant": {"content": ""}}
+    )
+
+    assert await fake.eval(script, 1, key, "wamid-1", payload1, 4, 86400) == 1
+    assert await fake.eval(script, 1, key, "wamid-2", payload2, 4, 86400) == 1
+    assert await fake.eval(script, 1, key, "wamid-1", payload1, 4, 86400) == 0
+    assert await fake.lrange(key, 0, -1) == [payload1, payload2]
+    assert fake._expirations[key] == 86400
+
+    assert await fake.eval(script, 1, key, "", payload3, 1, 60) == 1
+    assert await fake.lrange(key, 0, -1) == [payload3]
+    assert fake._expirations[key] == 60
 
 
 @pytest.mark.asyncio

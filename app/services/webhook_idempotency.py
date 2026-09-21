@@ -214,12 +214,16 @@ async def process_text_message_once(
         send_message=send_message,
     )
     if status == "completed" and processed_result is not None:
-        await ConversationHistoryService.append_exchange(
-            redis_client,
-            sender_phone,
-            text_body,
-            _visible_reply_text(processed_result),
-        )
+        if getattr(processed_result, "clear_memory", False):
+            await ConversationHistoryService.clear(redis_client, sender_phone)
+        else:
+            await ConversationHistoryService.append_exchange(
+                redis_client,
+                sender_phone,
+                text_body,
+                _visible_reply_text(processed_result),
+                message_id=whatsapp_message_id,
+            )
     return status
 
 
@@ -250,10 +254,17 @@ async def process_interactive_message_once(
         send_message=send_message,
     )
     if status == "completed" and processed_result is not None:
-        await ConversationHistoryService.append_exchange(
-            redis_client,
-            interactive_reply.sender_phone,
-            interactive_reply.title or "",
-            _visible_reply_text(processed_result),
-        )
+        if getattr(processed_result, "clear_memory", False):
+            await ConversationHistoryService.clear(
+                redis_client,
+                interactive_reply.sender_phone,
+            )
+        else:
+            await ConversationHistoryService.append_exchange(
+                redis_client,
+                interactive_reply.sender_phone,
+                interactive_reply.title or "",
+                _visible_reply_text(processed_result),
+                message_id=interactive_reply.message_id,
+            )
     return status

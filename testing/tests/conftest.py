@@ -1,6 +1,8 @@
 """Shared fixtures for testing environment tests."""
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -8,14 +10,18 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+# Aislar el engine de app.models.database antes de importarlo: sin esto apunta
+# al luka.db local y un ensure_testing_schema sin mockear podría recrearlo.
+os.environ["DATABASE_URL"] = f"sqlite:///{tempfile.mkdtemp()}/testing_conftest.db"
+
 # Ensure project root is in path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from app.models.database import Base, Usuario
-import app.models.database as database_module
-import app.services.finance as finance_module
-import app.services.onboarding as onboarding_module
-import app.services.reminder as reminder_module
+from app.models.database import Base, Usuario  # noqa: E402
+import app.models.database as database_module  # noqa: E402
+import app.services.finance as finance_module  # noqa: E402
+import app.services.onboarding as onboarding_module  # noqa: E402
+import app.services.reminder as reminder_module  # noqa: E402
 
 
 @pytest.fixture()

@@ -55,6 +55,9 @@ Copiar `.env.example` a `.env` y completar solo lo necesario. Nunca subir `.env`
 | `MISTRAL_MODEL` | Opcional | Default `mistral-small-latest`. |
 | `DATABASE_URL` | Opcional en local, requerida en producción | Local: `sqlite:///./luka.db`. Compartido/producción: PostgreSQL/Supabase. |
 | `REDIS_URL` | Opcional en local, recomendada en producción | Default `redis://localhost:6379`. La app loguea el fallo y sigue arrancando si no responde. |
+| `CONVERSATION_MEMORY_TURNS` | Opcional | Turnos completos conservados en la memoria conversacional. Default `4`. |
+| `CONVERSATION_MEMORY_TTL_HOURS` | Opcional | Horas de vigencia de la memoria desde la última actividad. Default `24`. |
+| `CONVERSATION_MEMORY_MAX_CHARS` | Opcional | Máximo de caracteres por mensaje saneado antes de guardarlo en la memoria. Default `1200`. |
 | `ONBOARDING_REGISTRATION_URL` | Para onboarding y dashboard | URL base de registro; también define el host del login del dashboard. |
 | `ONBOARDING_INVITATION_TTL_MINUTES` | Opcional | Default del ejemplo: `30`. |
 | `ONBOARDING_RESEND_COOLDOWN_SECONDS` | Opcional | Default del ejemplo: `60`. |

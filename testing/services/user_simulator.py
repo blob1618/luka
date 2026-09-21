@@ -12,6 +12,15 @@ def _test_email(phone: str) -> str:
     return f"test-{phone}@luka.test"
 
 
+def sync_test_user(session_factory, *, phone: str, name: str, registered: bool) -> None:
+    """Vincula o desvincula el usuario de test para ese teléfono."""
+    simulator = UserSimulator(session_factory)
+    if registered:
+        simulator.create_test_user(phone, name)
+    else:
+        simulator.delete_test_user(phone)
+
+
 class UserSimulator:
     """CRUD operations for test users in the database."""
 
@@ -26,6 +35,10 @@ class UserSimulator:
                 Usuario.whatsapp_id == phone
             ).first()
             if existing:
+                if existing.nombre != name:
+                    existing.nombre = name
+                    session.commit()
+                    session.refresh(existing)
                 return existing
 
             user = Usuario(
