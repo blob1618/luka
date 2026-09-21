@@ -24,6 +24,11 @@ class SessionState(dict):
 
 def _import_app(session_state=None, config=None):
     """Importa testing/streamlit_app.py con streamlit y dependencias mockeadas."""
+    # Los targets de patch deben estar importados aun cuando este archivo se
+    # ejecute de forma aislada, sin depender del orden de otros tests.
+    importlib.import_module("testing.components.chat")
+    importlib.import_module("testing.components.sidebar")
+
     fake_st = MagicMock()
     fake_st.session_state = SessionState()
     if config is None:
@@ -133,3 +138,10 @@ class TestStreamlitAppEntrypoint:
 
         assert os.environ["DATABASE_URL"] == "postgresql://prod/db"
         mock_user_sim.create_test_user.assert_called_once()
+
+    def test_allows_managed_testing_database_location(self, monkeypatch):
+        monkeypatch.setenv("TESTING_DATABASE_URL", "sqlite:////data/testing_luka.db")
+
+        _, _, _, _, module = _import_app()
+
+        assert module.testing_database_url == "sqlite:////data/testing_luka.db"

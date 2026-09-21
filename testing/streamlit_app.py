@@ -14,8 +14,13 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-# Testing environment always uses its isolated SQLite database.
-os.environ["DATABASE_URL"] = "sqlite:///./testing_luka.db"
+# Testing environment always uses an isolated SQLite database.  Containers may
+# place it in a managed volume so Windows bind-mount permissions cannot make it
+# read-only.
+testing_database_url = os.getenv(
+    "TESTING_DATABASE_URL", "sqlite:///./testing_luka.db"
+)
+os.environ["DATABASE_URL"] = testing_database_url
 
 from app.models.database import SessionLocal, engine  # noqa: E402
 from testing.services.schema import ensure_testing_schema  # noqa: E402

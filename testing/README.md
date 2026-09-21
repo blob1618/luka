@@ -25,7 +25,7 @@ El entorno vive dentro de `testing/` y se levanta únicamente con Docker o Podma
   - Servicio invocado / logs del dispatcher.
 - Reset de base de datos: borra movimientos, categorías y recordatorios del usuario de la sesión activa (el usuario se conserva).
 - Exportar la conversación de la sesión activa como JSON o texto plano, y copiarla al portapapeles con o sin datos de debug. También se pueden exportar todas las sesiones (JSON y texto, más copiar con debug) para comparar el aislamiento de la memoria Redis entre números.
-- Base de datos SQLite aislada (`testing_luka.db`): no toca la base local (`luka.db`) ni Supabase.
+- Base de datos SQLite aislada en un volumen del entorno (`testing_data`): no toca la base local (`luka.db`) ni Supabase.
 
 > Las sesiones viven en el estado de la app de Streamlit: un refresh las pierde (la app vuelve a crear "Sesión 1"), aunque los usuarios y movimientos quedan en SQLite y la memoria conversacional en Redis. El flujo de usuario no registrado se prueba hasta el link de registro: la respuesta arma la URL con `ONBOARDING_REGISTRATION_URL`, pero `/registro` no existe en este repositorio, así que no hay pantalla de alta detrás del link.
 
@@ -50,7 +50,7 @@ El entorno vive dentro de `testing/` y se levanta únicamente con Docker o Podma
    - `LLM_PROVIDER=gemini` (default): setear `GEMINI_API_KEY`.
    - `LLM_PROVIDER=mistral`: setear `MISTRAL_API_KEY` y cambiar `LLM_PROVIDER=mistral`.
 
-El `docker-compose.yml` usa `env_file: ../.env`, así que sin el `.env` en la raíz el compose falla. `DATABASE_URL` y `REDIS_URL` se sobreescriben en el propio compose, por lo que no hace falta tocarlas.
+El `docker-compose.yml` usa `env_file: ../.env`, así que sin el `.env` en la raíz el compose falla. `TESTING_DATABASE_URL` y `REDIS_URL` se definen en el propio compose, por lo que no hace falta tocarlas.
 
 ## Configuración y uso
 
@@ -114,7 +114,7 @@ Si Redis no responde, el test se saltea con `pytest.skip` en lugar de fallar.
 
 ## Características
 
-- Base de datos aislada: la app fuerza `DATABASE_URL=sqlite:///./testing_luka.db` (además de la que define el compose). Dentro del contenedor el working directory es `/app` y el volumen `..:/app` monta la raíz del repo, así que el archivo `testing_luka.db` se crea en la raíz del repositorio (no dentro de `testing/`). Es independiente de `luka.db` y de Supabase.
+- Base de datos aislada: la app configura `DATABASE_URL` desde `TESTING_DATABASE_URL`; fuera del contenedor su valor por defecto es `sqlite:///./testing_luka.db`. El compose lo dirige a `/data/testing_luka.db`, dentro del volumen administrado `testing_data`, para evitar conflictos de permisos con el montaje del repositorio. Es independiente de `luka.db` y de Supabase.
 - Volumen en vivo: el compose monta todo el repositorio en `/app`, por lo que los cambios de código se reflejan sin reconstruir la imagen. El `COPY . /app/` del Dockerfile queda cubierto por el volumen en runtime.
 - Redis: el compose levanta `redis:7-alpine` y lo expone en el host como `localhost:6380` (mapea al puerto interno 6379). El estado multi-turno de la conversación (confirmación de categoría, recordatorios en pasos, etc.) vive ahí y se puede inspeccionar desde el panel de debug.
 - Mismo código de backend: la app importa `app/*` directamente. `WebhookModeService` ejecuta `process_incoming_message` del dispatcher con el teléfono simulado, sin HTTP y sin enviar mensajes a la API de WhatsApp; la confirmación de un registro ocurre recién después de la persistencia en base, igual que en producción.

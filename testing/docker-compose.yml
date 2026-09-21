@@ -8,11 +8,12 @@ services:
       - "8501:8501"
     volumes:
       - ..:/app
+      - testing_data:/data
     env_file:
       - ../.env
     environment:
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=sqlite:///./testing_luka.db
+      - TESTING_DATABASE_URL=sqlite:////data/testing_luka.db
     depends_on:
       - redis
     restart: unless-stopped
@@ -22,3 +23,6 @@ services:
     ports:
       - "6380:6379"
     restart: unless-stopped
+
+volumes:
+  testing_data:
