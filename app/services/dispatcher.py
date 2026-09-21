@@ -329,8 +329,14 @@ async def _auto_compensation_reply(
         await ConversationService.set_pending_compensation(
             sender_phone, result.proposal.to_dict()
         )
+        stored = await ConversationService.get_pending_compensation(sender_phone)
     except Exception as exc:
         logger.warning("movement_budget_pending_failed error=%s", type(exc).__name__)
+        return ""
+    if (
+        stored is None
+        or stored.proposal.get("proposal_id") != result.proposal.proposal_id
+    ):
         return ""
     return _compensation_reply(result.proposal, auto=True)
 

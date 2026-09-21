@@ -412,6 +412,37 @@ class TestAutomaticCompensationProposal:
         assert pending.proposal == proposal.to_dict()
 
     @pytest.mark.asyncio
+    async def test_auto_proposal_not_offered_when_storage_fails(self):
+        with (
+            patch(
+                "app.services.dispatcher._user_id_by_phone",
+                return_value=uuid4(),
+            ),
+            patch(
+                "app.services.dispatcher.BudgetService.get_status",
+                return_value=BudgetStatusResult("ok", "found", budget_status()),
+            ),
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.build_proposal",
+                return_value=CompensationProposalResult("ok", "created", make_proposal()),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.set_pending_compensation",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.get_pending_compensation",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            reply = await _movement_budget_after_change("12345", movement())
+
+        assert "Superaste el límite en $500,00 ARS." in reply
+        assert "Detecté que" not in reply
+        assert "confirmar compensación" not in reply
+
+    @pytest.mark.asyncio
     async def test_auto_proposal_skips_when_another_flow_pending(self):
         await ConversationService.set_state(
             "12345", ConversationState(step="awaiting_limit_data")
