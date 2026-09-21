@@ -33,6 +33,7 @@ from app.services.conversation import (
 )
 from app.services.conversation_flow_runtime import ConversationFlowRuntime
 from app.services.budget import BudgetEvaluation, BudgetService, BudgetStatus
+from app.services.compensation import BudgetCompensationService, CompensationProposal
 from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkService
 from app.services.finance import (
     FinanceService,
@@ -1049,6 +1050,62 @@ def _budget_status_reply(status: BudgetStatus) -> str:
     )
 
 
+def _compensation_allocation_line(allocation, currency: str) -> str:
+    return (
+        f"{allocation.category_name}: "
+        f"${_format_amount(allocation.before_limit)} → "
+        f"${_format_amount(allocation.after_limit)} {currency}"
+    )
+
+
+def _compensation_summary(proposal: CompensationProposal) -> str:
+    return (
+        f"Compensación de ${_format_amount(proposal.amount)} {proposal.currency} "
+        f"para {proposal.target.category_name}"
+    )
+
+
+def _compensation_reply(proposal: CompensationProposal, *, auto: bool = False) -> str:
+    currency = proposal.currency
+    allocations = "".join(
+        f"• {_compensation_allocation_line(allocation, currency)}\n"
+        for allocation in (*proposal.donors, proposal.target)
+    )
+    if auto:
+        return (
+            f"Detecté que *{proposal.target.category_name}* superó su límite.\n\n"
+            f"💡 Podés compensarlo moviendo ${_format_amount(proposal.amount)} "
+            f"{currency}:\n"
+            f"{allocations}"
+            "El total se mantiene. Vence en 30 minutos.\n"
+            "Respondé *confirmar compensación* o *no por ahora*."
+        )
+    return (
+        "💡 *Compensación de presupuesto*\n\n"
+        f"Muevo ${_format_amount(proposal.amount)} {currency} de otras categorías "
+        f"a *{proposal.target.category_name}*.\n\n"
+        f"Donantes:\n{allocations}\n"
+        f"*{_compensation_allocation_line(proposal.target, currency)}*\n\n"
+        "El total de tus límites se mantiene: no se modifica ningún movimiento.\n"
+        "La propuesta vence en 30 minutos.\n"
+        "Respondé *confirmar compensación* o *no por ahora*."
+    )
+
+
+def _compensation_applied_reply(proposal: CompensationProposal) -> str:
+    currency = proposal.currency
+    allocations = "\n".join(
+        f"• {_compensation_allocation_line(allocation, currency)}"
+        for allocation in (proposal.target, *proposal.donors)
+    )
+    return (
+        f"✅ Compensé *{proposal.target.category_name}* con "
+        f"${_format_amount(proposal.amount)} {currency}.\n\n"
+        f"{allocations}\n\n"
+        "No se modificó ningún movimiento."
+    )
+
+
 def _budget_feedback_reply(evaluation: BudgetEvaluation) -> str:
     """Devuelve el estado de un límite aplicable, haya exceso o no."""
     budget = evaluation.budget
@@ -1618,6 +1675,39 @@ async def _handle_budget_query(sender_phone: str, extracted_data: dict) -> str:
         label = _limit_month_label(reference_date.month, reference_date.year)
         return f"No tenés presupuestos definidos para {label} en {currency}."
     return "\n\n".join(_budget_status_reply(status) for status in result.budgets)
+
+
+async def _handle_budget_compensation(sender_phone: str, extracted_data: dict) -> str:
+    user_id = await asyncio.to_thread(_user_id_by_phone, sender_phone)
+    if user_id is None:
+        return "No encontré tu cuenta."
+    raw_amount = extracted_data.get("compensation_amount")
+    requested_amount = Decimal(str(raw_amount)) if raw_amount is not None else None
+    result = await asyncio.to_thread(
+        BudgetCompensationService.build_proposal,
+        user_id,
+        target_category=extracted_data.get("compensation_target"),
+        source_category=extracted_data.get("compensation_source"),
+        requested_amount=requested_amount,
+        currency=extracted_data.get("limit_currency"),
+    )
+    if result.status == "ok" and result.proposal is not None:
+        await ConversationService.set_pending_compensation(
+            sender_phone, result.proposal.to_dict()
+        )
+        extracted_data["_conversation_event_key"] = "budget.compensation_proposed"
+        extracted_data["_conversation_event_variables"] = {
+            "summary": _compensation_summary(result.proposal)
+        }
+        return _compensation_reply(result.proposal)
+    if result.status == "no_excess":
+        return "No veo categorías excedidas en el período actual."
+    if result.status == "no_funds":
+        return (
+            "No hay otras categorías con saldo disponible para compensar. "
+            "Podés ajustar el límite de la categoría excedida para darle más margen."
+        )
+    return "No pude calcular la compensación. Intentá nuevamente."
 
 
 def _format_query_movements_reply(
@@ -2443,6 +2533,71 @@ async def _dispatch_incoming_message(
                 )
         return DispatchResult(reply_text=reply_text, service_invoked="conversation")
 
+    # ----------------------------------------------------------
+    # Multi-turn: confirmar una compensación de presupuesto
+    # ----------------------------------------------------------
+    is_awaiting_compensation = (
+        await ConversationService.is_awaiting_compensation_confirmation(sender_phone)
+    )
+
+    if is_awaiting_compensation:
+        pending = await ConversationService.get_pending_compensation(sender_phone)
+        if pending is None:
+            await ConversationService.clear_state(sender_phone)
+            return DispatchResult(
+                reply_text=(
+                    "Se perdió el contexto. Podés pedirme una nueva compensación."
+                ),
+                service_invoked="conversation",
+            )
+        extracted_data = await extract_message_once()
+        if extracted_data.get("intent") == "reset_context":
+            return await _handle_reset_context(sender_phone)
+        if extracted_data.get("error"):
+            return DispatchResult(
+                reply_text=extracted_data.get("reply_text") or (
+                    "No he podido analizar tu mensaje en este momento."
+                ),
+                raw_llm_response=extracted_data,
+                service_invoked="llm",
+                intent=extracted_data.get("intent", "out_of_scope"),
+            )
+        intent = extracted_data.get("intent", "out_of_scope")
+        if intent == "reject_compensation" or _is_cancel_request(text_body):
+            await ConversationService.clear_state(sender_phone)
+            return DispatchResult(
+                reply_text="Listo, no cambié ningún límite.",
+                service_invoked="conversation",
+            )
+        if intent == "confirm_compensation" or (
+            intent in ("out_of_scope", "greeting") and _is_confirm_request(text_body)
+        ):
+            apply_result = await asyncio.to_thread(
+                BudgetCompensationService.apply, pending.proposal
+            )
+            await ConversationService.clear_state(sender_phone)
+            if apply_result.status == "applied" and apply_result.proposal is not None:
+                reply_text = _compensation_applied_reply(apply_result.proposal)
+            elif apply_result.status == "stale":
+                reply_text = (
+                    "Los saldos cambiaron desde que armé la propuesta. "
+                    "Pedime un nuevo cálculo."
+                )
+            elif apply_result.status == "expired":
+                reply_text = "La propuesta venció. Pedime un nuevo cálculo."
+            else:
+                reply_text = (
+                    "No pude aplicar la compensación. No se modificó ningún límite."
+                )
+            return DispatchResult(
+                reply_text=reply_text,
+                service_invoked="compensation",
+            )
+        # El mensaje no responde la confirmación: la propuesta quedó abandonada.
+        # Limpiar el estado para que no secuestre los mensajes siguientes y
+        # procesar el mensaje normalmente (fall-through).
+        await ConversationService.clear_state(sender_phone)
+
     # Procesar mensaje con LLM (fecha + categorías del usuario como contexto)
     extracted_data = await extract_message_once()
     if extracted_data.get("intent") == "reset_context":
@@ -2492,6 +2647,10 @@ async def _dispatch_incoming_message(
     elif intent == "budget_query":
         reply_text = await _handle_budget_query(sender_phone, extracted_data)
         service_invoked = "budget"
+
+    elif intent == "compensate_budget":
+        reply_text = await _handle_budget_compensation(sender_phone, extracted_data)
+        service_invoked = "compensation"
 
     elif intent == "query_movements":
         reply_text = await _handle_query_movements(sender_phone, extracted_data)

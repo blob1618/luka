@@ -32,6 +32,7 @@ def no_pending_limit_flows(monkeypatch):
         "is_awaiting_limit_data",
         "is_awaiting_limit_delete_category",
         "is_awaiting_limit_month_selection",
+        "is_awaiting_compensation_confirmation",
     ):
         monkeypatch.setattr(
             f"app.services.dispatcher.ConversationService.{method}",
