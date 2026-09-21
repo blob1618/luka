@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import threading
+import hashlib
+import textwrap
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -17,6 +19,31 @@ from app.services.finance import CategoryMovementTotal
 MAX_NAMED_CATEGORIES = 5
 MAX_PNG_BYTES = 5 * 1024 * 1024
 _RENDER_SLOTS = threading.BoundedSemaphore(value=2)
+PALETTE = ("#3066BE", "#087F8C", "#7A5195", "#BB5A24", "#A33757", "#58752D")
+INK = "#172B4D"
+
+
+def category_color(name: str) -> str:
+    if name == "Otros":
+        return "#7B8798"
+    index = int(hashlib.sha256(name.casefold().encode()).hexdigest()[:8], 16)
+    return PALETTE[index % len(PALETTE)]
+
+
+def wrapped_label(name: str, width: int = 32) -> str:
+    return "\n".join(textwrap.wrap(name, width=width) or [name])
+
+
+def category_colors(labels: list[str]) -> list[str]:
+    assigned = {}
+    used = set()
+    for label in sorted(set(labels), key=str.casefold):
+        color = category_color(label)
+        if label != "Otros" and color in used:
+            color = next((candidate for candidate in PALETTE if candidate not in used), color)
+        assigned[label] = color
+        used.add(color)
+    return [assigned[label] for label in labels]
 
 
 @dataclass(frozen=True)
@@ -75,64 +102,9 @@ class MovementChartService:
             raise ValueError("A chart needs at least one positive category")
 
         with _RENDER_SLOTS:
-            labels = [item.category_name for item in spec.categories]
-            values = [float(item.amount) for item in spec.categories]
-            title_kind = "Ingresos" if spec.movement_type == "ingreso" else "Gastos"
-            period = f"{spec.start_date:%d/%m/%Y} - {spec.end_date:%d/%m/%Y}"
-            title = f"{title_kind} por categoría\n{period} | {spec.currency}"
-
-            figure = Figure(figsize=(8, 6), dpi=120, constrained_layout=True)
+            figure = MovementChartService.build_figure(spec)
             try:
                 canvas = FigureCanvasAgg(figure)
-                axis = figure.add_subplot(1, 1, 1)
-
-                if spec.chart_type == "pie":
-                    wedges, _, _ = axis.pie(
-                        values,
-                        autopct="%1.1f%%",
-                        startangle=90,
-                        pctdistance=0.72,
-                        textprops={"fontsize": 9},
-                    )
-                    legend_labels = [
-                        f"{label}: {MovementChartService._amount(value)}"
-                        for label, value in zip(labels, values)
-                    ]
-                    axis.legend(
-                        wedges,
-                        legend_labels,
-                        loc="lower center",
-                        bbox_to_anchor=(0.5, -0.18),
-                        ncol=2,
-                        frameon=False,
-                        fontsize=9,
-                    )
-                    axis.axis("equal")
-                else:
-                    positions = list(range(len(labels)))
-                    bars = axis.barh(positions, values, color="#6C63FF")
-                    axis.set_yticks(positions, labels=labels)
-                    axis.invert_yaxis()
-                    axis.set_xlabel(spec.currency)
-                    axis.grid(axis="x", alpha=0.2)
-                    axis.bar_label(
-                        bars,
-                        labels=[MovementChartService._amount(value) for value in values],
-                        padding=4,
-                        fontsize=9,
-                    )
-                    axis.spines[["top", "right", "left"]].set_visible(False)
-
-                figure.suptitle(title, fontsize=15, fontweight="bold")
-                figure.text(
-                    0.5,
-                    0.015,
-                    f"Total: {MovementChartService._amount(spec.total)} {spec.currency}",
-                    ha="center",
-                    fontsize=11,
-                    fontweight="bold",
-                )
-
                 buffer = io.BytesIO()
                 canvas.print_png(buffer)
                 png = buffer.getvalue()
@@ -143,7 +115,60 @@ class MovementChartService:
         return png
 
     @staticmethod
+    def build_figure(spec: MovementChartSpec) -> Figure:
+        """Use dedicated rows, not floating footers, to keep mobile labels clear."""
+        labels = [item.category_name for item in spec.categories]
+        values = [float(item.amount) for item in spec.categories]
+        colors = category_colors(labels)
+        line_counts = [len(wrapped_label(label).splitlines()) for label in labels]
+        row_heights = [0.95 + 0.55 * (count - 1) for count in line_counts]
+        is_pie = spec.chart_type == "pie"
+        heights = [1.65] + ([3.8] if is_pie else []) + row_heights + [0.3]
+        figure = Figure(figsize=(6.8, sum(heights)), dpi=160, facecolor="#FFFFFF")
+        grid = figure.add_gridspec(
+            len(heights), 1, height_ratios=heights,
+            left=0.07, right=0.93, bottom=0.025, top=0.975, hspace=0.12,
+        )
+        header = figure.add_subplot(grid[0])
+        header.set_axis_off()
+        kind = "Ingresos" if spec.movement_type == "ingreso" else "Gastos"
+        ranking = "Menores importes primero" if spec.ranking == "lowest" else "Mayores importes primero"
+        header.text(0, 0.96, f"{kind} por categoría", va="top", fontsize=22, weight="bold", color=INK)
+        header.text(0, 0.69, f"{spec.start_date:%d/%m/%Y} – {spec.end_date:%d/%m/%Y} · {spec.currency}", va="top", fontsize=13, color="#526078")
+        header.text(0, 0.40, f"Total  {MovementChartService._amount(spec.total)} {spec.currency}", va="top", fontsize=19, weight="bold", color=INK)
+        header.text(0, 0.12, ranking, va="top", fontsize=12, color="#526078")
+        offset = 1
+        if is_pie:
+            pie = figure.add_subplot(grid[1])
+            pie.pie(values, colors=colors, startangle=90, counterclock=False,
+                    wedgeprops={"linewidth": 2, "edgecolor": "white"})
+            pie.set_aspect("equal")
+            offset = 2
+        maximum = max(values)
+        for index, (label, item, value, color) in enumerate(zip(labels, spec.categories, values, colors)):
+            row = figure.add_subplot(grid[index + offset])
+            row.set_axis_off()
+            percentage = item.amount / spec.total * 100
+            row.text(0, 0.95, wrapped_label(label), transform=row.transAxes,
+                     va="top", fontsize=17, weight="bold", color=INK)
+            amount = MovementChartService._amount(item.amount)
+            percent_text = f"{percentage:.1f}".replace(".", ",")
+            detail = f"{amount}  ·  {percent_text}%"
+            row.text(1, 0.08 if is_pie else 0.27, detail, transform=row.transAxes,
+                     va="bottom", ha="right", fontsize=16, color=INK)
+            if is_pie:
+                row.plot([0, 0.1], [0.20, 0.20], transform=row.transAxes,
+                         linewidth=7, color=color, solid_capstyle="round")
+            else:
+                row.set_xlim(0, maximum)
+                row.set_ylim(0, 1)
+                row.barh(0.10, maximum, height=0.15, color="#EEF2F7")
+                row.barh(0.10, value, height=0.15, color=color)
+        return figure
+
+    @staticmethod
     def _amount(value: Decimal | float) -> str:
         numeric = Decimal(str(value)).quantize(Decimal("0.01"))
         rendered = f"{numeric:,.2f}"
-        return rendered.replace(",", "_").replace(".", ",").replace("_", ".")
+        localized = rendered.replace(",", "_").replace(".", ",").replace("_", ".")
+        return localized.removesuffix(",00")

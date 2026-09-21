@@ -6,6 +6,9 @@ El entorno vive dentro de `testing/` y se levanta únicamente con Docker o Podma
 
 ## Funcionalidades
 
+- Galería de gráficos: página lateral con muestras reproducibles, vista de 360 px
+  y descarga PNG; funciona sin llamadas a LLM ni consultas a la base.
+
 - Chat que simula WhatsApp: entrada de mensajes, historial de conversación, avatar de Luka y respuesta procesada por el flujo completo del dispatcher (modo webhook). No se envía ningún mensaje real por WhatsApp.
 - Configuración desde la sidebar:
   - Provider LLM (Gemini o Mistral, según los providers registrados en el factory).
