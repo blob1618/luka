@@ -9,7 +9,7 @@ from app.services.webhook_idempotency import (
     process_interactive_message_once,
     process_text_message_once,
 )
-from app.api.whatsapp import InboundInteractiveReply, WhatsAppText
+from app.api.whatsapp import InboundInteractiveReply, WhatsAppImage, WhatsAppText
 from app.services.conversation import ConversationHistoryService
 
 from tests.conftest import FakeRedis
@@ -64,6 +64,43 @@ async def test_concurrent_duplicate_is_processed_and_sent_once():
     assert duplicate == "duplicate"
     assert await first == "completed"
     send_message.assert_awaited_once_with("5491111111111", "hola")
+
+
+@pytest.mark.asyncio
+async def test_duplicate_chart_webhook_sends_one_logical_image():
+    redis = FakeRedis()
+    image = WhatsAppImage(
+        content=b"\x89PNG\r\n\x1a\nchart",
+        caption="Gastos por categoria",
+    )
+    process_message = AsyncMock(
+        return_value=SimpleNamespace(
+            reply_text=image.caption,
+            reply_message=image,
+        )
+    )
+    send_message = AsyncMock(return_value=True)
+
+    first = await process_text_message_once(
+        redis_client=redis,
+        sender_phone="5491111111111",
+        text_body="grafico de gastos",
+        whatsapp_message_id="wamid.chart-once",
+        process_message=process_message,
+        send_message=send_message,
+    )
+    duplicate = await process_text_message_once(
+        redis_client=redis,
+        sender_phone="5491111111111",
+        text_body="grafico de gastos",
+        whatsapp_message_id="wamid.chart-once",
+        process_message=process_message,
+        send_message=send_message,
+    )
+
+    assert first == "completed"
+    assert duplicate == "duplicate"
+    send_message.assert_awaited_once_with("5491111111111", image)
 
 
 @pytest.mark.asyncio

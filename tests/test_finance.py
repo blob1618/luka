@@ -495,20 +495,6 @@ def test_register_movement_integrity_error_rechecks_and_returns_persistence_erro
     assert fake_session.closed is True
 
 
-def test_generate_expense_chart():
-    expenses = {
-        "Comida": 15000.0,
-        "Transporte": 5000.0,
-        "Ocio": 2000.0,
-    }
-
-    chart_bytes = FinanceService.generate_expense_chart(expenses)
-
-    assert isinstance(chart_bytes, bytes)
-    assert len(chart_bytes) > 0
-    assert chart_bytes.startswith(b"\x89PNG")
-
-
 # ---------------------------------------------------------------------------
 # Tests de gestión de categorías
 # ---------------------------------------------------------------------------

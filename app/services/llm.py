@@ -190,6 +190,7 @@ class LLMService:
             allowed_intents = {
                 "expense", "budget_query", "reminder",
                 "expense_summary", "query_movements", "greeting", "out_of_scope",
+                "movement_chart",
                 "create_reminder",
                 "list_reminders", "update_reminder",
                 "pause_reminder", "activate_reminder",
@@ -224,6 +225,20 @@ class LLMService:
                 query_limit = int(query_limit) if query_limit is not None else None
             except (TypeError, ValueError):
                 query_limit = None
+
+            chart_type = str(parsed.get("chart_type") or "").strip().lower()
+            if chart_type not in {"bar", "pie"}:
+                chart_type = None
+            chart_ranking = str(parsed.get("chart_ranking") or "").strip().lower()
+            if chart_ranking not in {"highest", "lowest"}:
+                chart_ranking = None
+            chart_currency = parsed.get("chart_currency")
+            if chart_currency is not None:
+                chart_currency = str(chart_currency).strip().upper() or None
+                if chart_currency is not None and (
+                    len(chart_currency) != 3 or not chart_currency.isalpha()
+                ):
+                    chart_currency = None
 
             # Normalizar campos de create_reminder
             reminder_day = parsed.get("reminder_day")
@@ -327,6 +342,9 @@ class LLMService:
                 "date_from": date_from,
                 "date_to": date_to,
                 "limit": query_limit,
+                "chart_type": chart_type,
+                "chart_ranking": chart_ranking,
+                "chart_currency": chart_currency,
                 "reminder_title": parsed.get("reminder_title"),
                 "reminder_date": parsed.get("reminder_date"),
                 "reminder_concept": reminder_concept,
@@ -363,6 +381,9 @@ class LLMService:
                 "date_from": None,
                 "date_to": None,
                 "limit": None,
+                "chart_type": None,
+                "chart_ranking": None,
+                "chart_currency": None,
                 "reminder_title": None,
                 "reminder_date": None,
                 "reminder_concept": None,

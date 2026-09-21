@@ -25,6 +25,7 @@ class WhatsAppSendResult:
     error_code: str | None = None
     status_code: int | None = None
     error_message: str | None = None
+    suppress_retry: bool = False
 
     @property
     def is_success(self) -> bool:
@@ -46,6 +47,14 @@ class WhatsAppSendResult:
 @dataclass(frozen=True)
 class WhatsAppText:
     body: str
+
+
+@dataclass(frozen=True)
+class WhatsAppImage:
+    content: bytes
+    filename: str = "luka-grafico.png"
+    caption: str | None = None
+    mime_type: str = "image/png"
 
 
 @dataclass(frozen=True)
@@ -84,7 +93,9 @@ class WhatsAppList:
     footer: str | None = None
 
 
-OutboundWhatsAppMessage: TypeAlias = WhatsAppText | WhatsAppReplyButtons | WhatsAppList
+OutboundWhatsAppMessage: TypeAlias = (
+    WhatsAppText | WhatsAppImage | WhatsAppReplyButtons | WhatsAppList
+)
 
 
 @dataclass(frozen=True)
@@ -349,7 +360,7 @@ async def send_whatsapp_message_detailed(
     template_name: str | None = None,
     template_parameters: list[str] | None = None,
 ) -> WhatsAppSendResult:
-    """Send a text, interactive message or approved template through Meta returning a detailed result."""
+    """Send a supported message through Meta returning a detailed result."""
     api_token = os.getenv("WHATSAPP_API_TOKEN")
     phone_id = os.getenv("WHATSAPP_PHONE_ID")
     api_version = whatsapp_graph_api_version()
@@ -369,19 +380,42 @@ async def send_whatsapp_message_detailed(
         )
 
     try:
-        payload = build_whatsapp_payload(
-            to_number,
-            message_text,
-            template_name=template_name,
-            template_parameters=template_parameters,
-        )
+        if isinstance(message_text, WhatsAppImage):
+            _validate_image(message_text)
+            upload_result, media_id = await _upload_whatsapp_image(
+                message_text,
+                api_token=api_token,
+                phone_id=phone_id,
+                api_version=api_version,
+            )
+            if media_id is None:
+                return await _image_failure_with_fallback(
+                    to_number,
+                    upload_result,
+                    ambiguous=upload_result.is_unknown,
+                )
+            payload = _image_payload(to_number, media_id, message_text.caption)
+        else:
+            payload = build_whatsapp_payload(
+                to_number,
+                message_text,
+                template_name=template_name,
+                template_parameters=template_parameters,
+            )
     except (TypeError, ValueError) as exc:
         print(f"Mensaje saliente de WhatsApp invalido: {exc}")
-        return WhatsAppSendResult(
+        invalid_result = WhatsAppSendResult(
             status=WhatsAppDeliveryStatus.PERMANENT,
             error_code="invalid_payload",
             error_message=str(exc),
         )
+        if isinstance(message_text, WhatsAppImage):
+            return await _image_failure_with_fallback(
+                to_number,
+                invalid_result,
+                ambiguous=False,
+            )
+        return invalid_result
 
     url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
     headers = {
@@ -394,25 +428,34 @@ async def send_whatsapp_message_detailed(
         response = await client.post(url, headers=headers, json=payload)
     except (httpx.ConnectTimeout, httpx.ConnectError) as exc:
         print(f"Error de conexión al enviar mensaje de WhatsApp: {type(exc).__name__}: {exc}")
-        return WhatsAppSendResult(
+        result = WhatsAppSendResult(
             status=WhatsAppDeliveryStatus.RETRYABLE,
             error_code="connect_error",
             error_message=f"{type(exc).__name__}: {exc}",
         )
+        if isinstance(message_text, WhatsAppImage):
+            return await _image_failure_with_fallback(to_number, result, ambiguous=False)
+        return result
     except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
         print(f"Timeout ambiguo al enviar mensaje de WhatsApp: {type(exc).__name__}: {exc}")
-        return WhatsAppSendResult(
+        result = WhatsAppSendResult(
             status=WhatsAppDeliveryStatus.UNKNOWN,
             error_code="ambiguous_timeout",
             error_message=f"{type(exc).__name__}: {exc}",
         )
+        if isinstance(message_text, WhatsAppImage):
+            return await _image_failure_with_fallback(to_number, result, ambiguous=True)
+        return result
     except Exception as exc:
         print(f"Excepción inesperada de red al enviar mensaje de WhatsApp: {type(exc).__name__}: {exc}")
-        return WhatsAppSendResult(
+        result = WhatsAppSendResult(
             status=WhatsAppDeliveryStatus.UNKNOWN,
             error_code="unexpected_network_error",
             error_message=f"{type(exc).__name__}: {exc}",
         )
+        if isinstance(message_text, WhatsAppImage):
+            return await _image_failure_with_fallback(to_number, result, ambiguous=True)
+        return result
 
     if response.status_code == 200:
         wamid = None
@@ -432,20 +475,26 @@ async def send_whatsapp_message_detailed(
 
     if response.status_code in {429, 500, 502, 503, 504}:
         print(f"Error reintentable al enviar el mensaje: {response.status_code} {response.text}")
-        return WhatsAppSendResult(
+        result = WhatsAppSendResult(
             status=WhatsAppDeliveryStatus.RETRYABLE,
             status_code=response.status_code,
             error_code=f"http_{response.status_code}",
             error_message=response.text[:500],
         )
+        if isinstance(message_text, WhatsAppImage):
+            return await _image_failure_with_fallback(to_number, result, ambiguous=False)
+        return result
 
     print(f"Error permanente al enviar el mensaje: {response.status_code} {response.text}")
-    return WhatsAppSendResult(
+    result = WhatsAppSendResult(
         status=WhatsAppDeliveryStatus.PERMANENT,
         status_code=response.status_code,
         error_code=f"http_{response.status_code}",
         error_message=response.text[:500],
     )
+    if isinstance(message_text, WhatsAppImage):
+        return await _image_failure_with_fallback(to_number, result, ambiguous=False)
+    return result
 
 
 async def send_whatsapp_message(
@@ -462,7 +511,119 @@ async def send_whatsapp_message(
         template_name=template_name,
         template_parameters=template_parameters,
     )
-    return result.is_success
+    return result.is_success or result.suppress_retry
+
+
+def _validate_image(message: WhatsAppImage) -> None:
+    if message.mime_type != "image/png":
+        raise ValueError("only PNG images are supported")
+    if not message.content.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("image content is not a valid PNG")
+    if not 1 <= len(message.content) <= 5 * 1024 * 1024:
+        raise ValueError("image must be between 1 byte and 5 MB")
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", message.filename):
+        raise ValueError("image filename is invalid")
+    _optional_bounded_text(message.caption, field="image caption", maximum=1024)
+
+
+def _image_payload(to_number: str, media_id: str, caption: str | None) -> dict:
+    image = {"id": media_id}
+    if caption:
+        image["caption"] = caption
+    return {
+        "messaging_product": "whatsapp",
+        "to": normalize_whatsapp_number(to_number),
+        "type": "image",
+        "image": image,
+    }
+
+
+async def _upload_whatsapp_image(
+    message: WhatsAppImage,
+    *,
+    api_token: str,
+    phone_id: str,
+    api_version: str,
+) -> tuple[WhatsAppSendResult, str | None]:
+    url = f"https://graph.facebook.com/{api_version}/{phone_id}/media"
+    client = get_whatsapp_client()
+    try:
+        response = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {api_token}"},
+            data={"messaging_product": "whatsapp", "type": message.mime_type},
+            files={"file": (message.filename, message.content, message.mime_type)},
+        )
+    except (httpx.ConnectTimeout, httpx.ConnectError) as exc:
+        return WhatsAppSendResult(
+            WhatsAppDeliveryStatus.RETRYABLE,
+            error_code="media_connect_error",
+            error_message=f"{type(exc).__name__}: {exc}",
+        ), None
+    except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
+        return WhatsAppSendResult(
+            WhatsAppDeliveryStatus.UNKNOWN,
+            error_code="media_ambiguous_timeout",
+            error_message=f"{type(exc).__name__}: {exc}",
+        ), None
+    except Exception as exc:
+        return WhatsAppSendResult(
+            WhatsAppDeliveryStatus.UNKNOWN,
+            error_code="media_unexpected_network_error",
+            error_message=f"{type(exc).__name__}: {exc}",
+        ), None
+
+    if response.status_code == 200:
+        try:
+            media_id = str(response.json().get("id") or "").strip()
+        except Exception:
+            media_id = ""
+        if media_id:
+            return WhatsAppSendResult(
+                WhatsAppDeliveryStatus.SUCCESS,
+                message_id=media_id,
+                status_code=200,
+            ), media_id
+        return WhatsAppSendResult(
+            WhatsAppDeliveryStatus.PERMANENT,
+            status_code=200,
+            error_code="missing_media_id",
+            error_message="Meta did not return a media id",
+        ), None
+
+    retryable = response.status_code in {429, 500, 502, 503, 504}
+    return WhatsAppSendResult(
+        WhatsAppDeliveryStatus.RETRYABLE if retryable else WhatsAppDeliveryStatus.PERMANENT,
+        status_code=response.status_code,
+        error_code=f"media_http_{response.status_code}",
+        error_message=response.text[:500],
+    ), None
+
+
+async def _image_failure_with_fallback(
+    to_number: str,
+    failure: WhatsAppSendResult,
+    *,
+    ambiguous: bool,
+) -> WhatsAppSendResult:
+    fallback = await send_whatsapp_message_detailed(
+        to_number,
+        WhatsAppText(
+            "No pude enviar el gráfico en este momento. "
+            "Podés volver a pedírmelo en unos minutos."
+        ),
+    )
+    if fallback.is_success:
+        return fallback
+    if ambiguous:
+        return WhatsAppSendResult(
+            status=failure.status,
+            error_code=failure.error_code,
+            status_code=failure.status_code,
+            error_message=failure.error_message,
+            suppress_retry=True,
+        )
+    return failure
 
 
 async def send_whatsapp_reaction(

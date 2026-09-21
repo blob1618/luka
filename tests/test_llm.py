@@ -369,6 +369,35 @@ async def test_process_message_query_movements():
 
 
 @pytest.mark.asyncio
+async def test_process_message_movement_chart_keeps_currency_nullable():
+    mock_response = {
+        "intent": "movement_chart",
+        "movement_type": "egreso",
+        "chart_type": "pie",
+        "chart_ranking": "lowest",
+        "chart_currency": None,
+        "date_from": "2026-09-01",
+        "date_to": "2026-09-30",
+        "reply_text": "Generando tu grafico.",
+    }
+
+    with patch.object(LLMService, "_get_provider") as mock_get_provider:
+        mock_provider = AsyncMock()
+        mock_provider.generate_json.return_value = mock_response
+        mock_get_provider.return_value = mock_provider
+
+        result = await LLMService.process_message(
+            "Mostrame una torta de las categorias con menor gasto"
+        )
+
+    assert result["intent"] == "movement_chart"
+    assert result["movement_type"] == "egreso"
+    assert result["chart_type"] == "pie"
+    assert result["chart_ranking"] == "lowest"
+    assert result["chart_currency"] is None
+
+
+@pytest.mark.asyncio
 async def test_process_message_fallback_on_exception():
     """Prueba: Cuando el LLM falla, el servicio devuelve un mensaje de error controlado."""
     with patch.object(LLMService, "_get_provider") as mock_get_provider:
