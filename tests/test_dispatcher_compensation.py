@@ -215,13 +215,13 @@ class TestUserRequestedCompensation:
         assert result.event_key == "budget.compensation_proposed"
         assert (
             result.event_variables["summary"]
-            == "Compensación de $500 ARS para Comida"
+            == "Compensación de $500,00 ARS para Comida"
         )
-        assert "Muevo $500 ARS" in result.reply_text
-        target_line = "Comida: $2000 → $2500 ARS"
+        assert "Muevo $500,00 ARS" in result.reply_text
+        target_line = "Comida: $2.000,00 → $2.500,00 ARS"
         assert result.reply_text.count(target_line) == 1
         donors_block = result.reply_text.split("Donantes:\n", 1)[1].split("\n\n", 1)[0]
-        assert "• Transporte: $1000 → $500 ARS" in donors_block
+        assert "• Transporte: $1.000,00 → $500,00 ARS" in donors_block
         assert target_line not in donors_block
         assert "El total de tus límites se mantiene" in result.reply_text
         assert "30 minutos" in result.reply_text
@@ -315,8 +315,8 @@ class TestCompensationConfirmation:
             result = await process_incoming_message("12345", "confirmar compensación")
 
         assert result.service_invoked == "compensation"
-        assert "Comida: $2000 → $2500 ARS" in result.reply_text
-        assert "Transporte: $1000 → $500 ARS" in result.reply_text
+        assert "Comida: $2.000,00 → $2.500,00 ARS" in result.reply_text
+        assert "Transporte: $1.000,00 → $500,00 ARS" in result.reply_text
         assert "No se modificó ningún movimiento" in result.reply_text
         mock_apply.assert_called_once_with(proposal.to_dict())
         mocks["clear_state"].assert_awaited_once()
@@ -540,9 +540,9 @@ class TestAutomaticCompensationProposal:
 
         assert "Superaste el límite en $500,00 ARS." in reply
         assert "Detecté que *Comida* superó su límite." in reply
-        assert "💡 Podés compensarlo moviendo $500 ARS:" in reply
-        assert "• Transporte: $1000 → $500 ARS" in reply
-        assert "• Comida: $2000 → $2500 ARS" in reply
+        assert "💡 Podés compensarlo moviendo $500,00 ARS:" in reply
+        assert "• Transporte: $1.000,00 → $500,00 ARS" in reply
+        assert "• Comida: $2.000,00 → $2.500,00 ARS" in reply
         assert "Respondé *confirmar compensación* o *no por ahora*." in reply
         assert mock_build.call_count == 1
         assert mock_build.call_args.kwargs == {
@@ -826,8 +826,8 @@ class TestConfiguredCompensationActions:
             result = await _handle_configured_action("12345", "confirm_compensation")
 
         assert result.service_invoked == "compensation"
-        assert "Comida: $2000 → $2500 ARS" in result.reply_text
-        assert "Transporte: $1000 → $500 ARS" in result.reply_text
+        assert "Comida: $2.000,00 → $2.500,00 ARS" in result.reply_text
+        assert "Transporte: $1.000,00 → $500,00 ARS" in result.reply_text
         assert "No se modificó ningún movimiento" in result.reply_text
         mock_apply.assert_called_once_with(proposal.to_dict())
         mock_clear.assert_awaited_once_with("12345")

@@ -638,8 +638,8 @@ class TestCompensationMultiTurn:
             assert response1.json() == {"status": "ok"}
             assert send_message.await_count == 1
             reply1 = send_message.await_args.args[1]
-            assert "Comida: $1000 → $1100 ARS" in reply1
-            assert "Transporte: $1000 → $900 ARS" in reply1
+            assert "Comida: $1.000,00 → $1.100,00 ARS" in reply1
+            assert "Transporte: $1.000,00 → $900,00 ARS" in reply1
             assert amounts_by_category() == limits_before
 
             response2 = client.post("/webhook", json=turn2_payload)
@@ -647,8 +647,8 @@ class TestCompensationMultiTurn:
             assert process_message.await_count == 2
             assert send_message.await_count == 2
             reply2 = send_message.await_args.args[1]
-            assert "Comida: $1000 → $1100 ARS" in reply2
-            assert "Transporte: $1000 → $900 ARS" in reply2
+            assert "Comida: $1.000,00 → $1.100,00 ARS" in reply2
+            assert "Transporte: $1.000,00 → $900,00 ARS" in reply2
             assert "No se modificó ningún movimiento" in reply2
 
             limits_after = amounts_by_category()

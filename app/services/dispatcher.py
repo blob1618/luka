@@ -1141,14 +1141,14 @@ def _budget_status_reply(status: BudgetStatus) -> str:
 def _compensation_allocation_line(allocation, currency: str) -> str:
     return (
         f"{allocation.category_name}: "
-        f"${_format_amount(allocation.before_limit)} → "
-        f"${_format_amount(allocation.after_limit)} {currency}"
+        f"${_format_limit_amount(allocation.before_limit)} → "
+        f"${_format_limit_amount(allocation.after_limit)} {currency}"
     )
 
 
 def _compensation_summary(proposal: CompensationProposal) -> str:
     return (
-        f"Compensación de ${_format_amount(proposal.amount)} {proposal.currency} "
+        f"Compensación de ${_format_limit_amount(proposal.amount)} {proposal.currency} "
         f"para {proposal.target.category_name}"
     )
 
@@ -1162,7 +1162,7 @@ def _compensation_reply(proposal: CompensationProposal, *, auto: bool = False) -
         )
         return (
             f"Detecté que *{proposal.target.category_name}* superó su límite.\n\n"
-            f"💡 Podés compensarlo moviendo ${_format_amount(proposal.amount)} "
+            f"💡 Podés compensarlo moviendo ${_format_limit_amount(proposal.amount)} "
             f"{currency}:\n"
             f"{allocations}"
             "El total se mantiene. Vence en 30 minutos.\n"
@@ -1174,7 +1174,7 @@ def _compensation_reply(proposal: CompensationProposal, *, auto: bool = False) -
     )
     return (
         "💡 *Compensación de presupuesto*\n\n"
-        f"Muevo ${_format_amount(proposal.amount)} {currency} de otras categorías "
+        f"Muevo ${_format_limit_amount(proposal.amount)} {currency} de otras categorías "
         f"a *{proposal.target.category_name}*.\n\n"
         f"Donantes:\n{donors}\n\n"
         f"*{_compensation_allocation_line(proposal.target, currency)}*\n\n"
@@ -1192,7 +1192,7 @@ def _compensation_applied_reply(proposal: CompensationProposal) -> str:
     )
     return (
         f"✅ Compensé *{proposal.target.category_name}* con "
-        f"${_format_amount(proposal.amount)} {currency}.\n\n"
+        f"${_format_limit_amount(proposal.amount)} {currency}.\n\n"
         f"{allocations}\n\n"
         "No se modificó ningún movimiento."
     )
