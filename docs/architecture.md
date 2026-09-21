@@ -156,11 +156,17 @@ Puntos clave del flujo:
 
 ## Estado conversacional en Redis
 
-Los pedidos de gráficos pueden quedar en `awaiting_movement_chart_details` cuando el
-período está incompleto o existen varias monedas. Redis conserva el tipo de movimiento,
-formato, ranking y filtros ya resueltos; la siguiente respuesta completa la solicitud o
-la cancela. El estado se elimina después de generar la imagen, responder sin datos o
-informar un fallo recuperable.
+Los pedidos de gráficos pueden quedar en `awaiting_movement_chart_details` por período,
+moneda, categoría o elección de una distribución para un pedido en pastel. El estado
+contiene la especificación y las opciones concretas; el número de una opción se resuelve
+sin LLM. Se elimina al finalizar o cancelar. `last_chart:{whatsapp_id}` conserva durante
+30 minutos la última especificación generada para modificaciones explícitas posteriores;
+el reset de contexto también la elimina. No almacena PNG ni importes agregados.
+
+El dispatcher delega el flujo a `chart_service.py`; `chart_request.py` valida los filtros,
+`chart_query.py` ejecuta la agregación de solo lectura y `movement_chart.py` renderiza.
+Los períodos mensuales largos producen varias imágenes con la misma escala, usando el
+envío de follow-ups e idempotencia existentes.
 
 - `ConversationService` crea su propio cliente Redis por event loop (separado del
   cliente global del webhook). El estado se cachea por corrutina/ContextVar con

@@ -8,6 +8,22 @@ from app.services.llm import LLMService
 from app.services.llm_providers import GeminiProvider, MistralProvider, create_provider
 
 
+@pytest.mark.asyncio
+async def test_chart_contract_preserves_comparison_and_explicit_filter_clearing():
+    payload = {
+        "intent": "movement_chart", "movement_type": "both",
+        "chart_mode": "month_comparison", "chart_months": ["2025-01", "2026-01"],
+        "chart_categories": [], "chart_percentages": False,
+    }
+    with patch.object(LLMService, "_get_provider") as get_provider:
+        get_provider.return_value.generate_json = AsyncMock(return_value=payload)
+        result = await LLMService.process_message("Compará esos meses con todas las categorías")
+    for key, value in payload.items():
+        assert result[key] == value
+    assert result["movements"] == []
+    assert result["chart_type"] is None
+
+
 # =============================================================================
 # Tests de LLMService - process_message (nuevo multi-intent)
 # =============================================================================

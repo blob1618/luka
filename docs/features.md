@@ -132,6 +132,13 @@ procesa en silencio para no repetir una confirmación ya enviada.
 
 ## Gráficos de movimientos en WhatsApp
 
+- También permite comparar ingresos y gastos, filtrar categorías, seguir la evolución
+  mes a mes (hasta 24 meses) y comparar exactamente dos meses. El mes actual se marca
+  parcial en consultas mensuales. Una comparación en pastel ofrece opciones numeradas.
+- Modificaciones como «que sea pastel» o «ahora solo ocio» conservan los demás filtros
+  del último gráfico durante 30 minutos. Las series largas se dividen en imágenes de
+  hasta seis barras con escala compartida. Ver [detalle y ejemplos](movement-charts.md).
+
 - Un pedido explícito de gráfico o diagrama por categoría usa `movement_chart` y devuelve
   una imagen PNG en el mismo chat. Los pedidos genéricos de resumen siguen siendo texto y
   `/link` continúa reservado para abrir el dashboard.

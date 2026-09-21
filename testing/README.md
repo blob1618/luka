@@ -7,7 +7,10 @@ El entorno vive dentro de `testing/` y se levanta únicamente con Docker o Podma
 ## Funcionalidades
 
 - Galería de gráficos: página lateral con muestras reproducibles, vista de 360 px
-  y descarga PNG; funciona sin llamadas a LLM ni consultas a la base.
+  y descarga PNG; funciona sin llamadas a LLM ni consultas a la base. Incluye
+  comparaciones de ingresos/gastos, comparación de meses y evolución mensual.
+- El chat previsualiza todas las imágenes cuando la evolución abarca más de seis
+  barras. Los bytes de estas imágenes tampoco se incluyen en la exportación JSON.
 
 - Chat que simula WhatsApp: entrada de mensajes, historial de conversación, avatar de Luka y respuesta procesada por el flujo completo del dispatcher (modo webhook). No se envía ningún mensaje real por WhatsApp.
 - Configuración desde la sidebar:

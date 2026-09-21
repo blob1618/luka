@@ -36,8 +36,8 @@ def _exportable_messages(messages: list[dict]) -> list[dict]:
     """Exclude in-memory image bytes while retaining that a preview existed."""
     exported = []
     for message in messages:
-        copy = {key: value for key, value in message.items() if key != "image_png"}
-        if isinstance(message.get("image_png"), (bytes, bytearray)):
+        copy = {key: value for key, value in message.items() if key != "image_pngs"}
+        if message.get("image_pngs"):
             copy["has_image_preview"] = True
         exported.append(copy)
     return exported
@@ -141,13 +141,13 @@ def render_assistant_text(text: str) -> None:
     st.markdown(whatsapp_to_markdown(text))
 
 
-def render_chart_preview(image_png: bytes) -> None:
+def render_chart_preview(image_pngs: list[bytes]) -> None:
     """Render an in-memory chart produced by the dispatcher."""
-    st.image(
-        image_png,
-        caption="Vista previa del gráfico que recibiría el usuario",
-        use_container_width=True,
-    )
+    for png in image_pngs:
+        st.image(
+            png, caption="Vista previa del gráfico que recibiría el usuario",
+            use_container_width=True,
+        )
 
 
 def _get_prompt_path(config: TestingConfig) -> str:
@@ -161,11 +161,11 @@ async def _process_message(
     text: str,
     config: TestingConfig,
     phone: str,
-) -> tuple[str, dict, bytes | None]:
+) -> tuple[str, dict, list[bytes]]:
     """
     Procesa el mensaje a través del flujo completo del dispatcher (webhook).
 
-    Returns (reply_text, debug_data, image_png).
+    Returns (reply_text, debug_data, image_pngs).
     """
     service = WebhookModeService()
     result = await service.send_message(
@@ -186,10 +186,10 @@ async def _process_message(
         "memory": result.memory,
         "memory_ttl_seconds": result.memory_ttl_seconds,
     }
-    image_png = getattr(result, "image_png", None)
-    if not isinstance(image_png, (bytes, bytearray)):
-        image_png = None
-    return result.reply_text, debug_data, bytes(image_png) if image_png else None
+    image_pngs = getattr(result, "image_pngs", [])
+    if not isinstance(image_pngs, list):
+        image_pngs = []
+    return result.reply_text, debug_data, image_pngs
 
 
 def render_chat(config: TestingConfig) -> None:
@@ -205,9 +205,9 @@ def render_chat(config: TestingConfig) -> None:
         if msg["role"] == "assistant":
             with st.chat_message("assistant", avatar=bot_avatar()):
                 render_assistant_text(msg["content"])
-                image_png = msg.get("image_png")
-                if isinstance(image_png, (bytes, bytearray)):
-                    render_chart_preview(bytes(image_png))
+                image_pngs = msg.get("image_pngs")
+                if image_pngs:
+                    render_chart_preview(image_pngs)
                 if msg.get("debug"):
                     flags = {
                         "json": config.debug_json,
@@ -234,7 +234,7 @@ def render_chat(config: TestingConfig) -> None:
         # Process and add assistant response
         with st.chat_message("assistant", avatar=bot_avatar()):
             with st.spinner("Procesando..."):
-                reply_text, debug_data, image_png = asyncio.run(
+                reply_text, debug_data, image_pngs = asyncio.run(
                     _process_message(prompt, config, session.phone)
                 )
 
@@ -243,8 +243,8 @@ def render_chat(config: TestingConfig) -> None:
                 st.error(reply_text or "Error del LLM")
             else:
                 render_assistant_text(reply_text or "Sin respuesta")
-                if image_png is not None:
-                    render_chart_preview(image_png)
+                if image_pngs:
+                    render_chart_preview(image_pngs)
 
             flags = {
                 "json": config.debug_json,
@@ -259,8 +259,8 @@ def render_chat(config: TestingConfig) -> None:
             "content": reply_text or "Sin respuesta",
             "debug": debug_data,
         }
-        if image_png is not None:
-            assistant_message["image_png"] = image_png
+        if image_pngs:
+            assistant_message["image_pngs"] = image_pngs
         session.messages.append(assistant_message)
 
     # Export buttons in sidebar

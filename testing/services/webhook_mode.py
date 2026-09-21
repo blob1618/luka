@@ -2,7 +2,7 @@
 
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import redis.asyncio as redis
 
@@ -32,7 +32,7 @@ class WebhookModeResult:
     model: str = ""
     memory: list[dict[str, str]] | None = None
     memory_ttl_seconds: int | None = None
-    image_png: bytes | None = None
+    image_pngs: list[bytes] = field(default_factory=list)
 
 
 class WebhookModeService:
@@ -139,11 +139,11 @@ class WebhookModeService:
                 model=model,
                 memory=memory,
                 memory_ttl_seconds=memory_ttl_seconds,
-                image_png=(
-                    dispatch_result.reply_message.content
-                    if isinstance(dispatch_result.reply_message, WhatsAppImage)
-                    else None
-                ),
+                image_pngs=[
+                    message.content for message in
+                    [dispatch_result.reply_message, *dispatch_result.followup_messages]
+                    if isinstance(message, WhatsAppImage)
+                ],
             )
         except Exception as exc:
             latency_ms = (time.perf_counter() - start) * 1000
@@ -159,7 +159,7 @@ class WebhookModeService:
                 model=model,
                 memory=None,
                 memory_ttl_seconds=None,
-                image_png=None,
+                image_pngs=[],
             )
         finally:
             if redis_client is not None:

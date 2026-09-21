@@ -111,16 +111,13 @@ class PendingCompensation:
 
 @dataclass
 class PendingMovementChart:
-    """Chart request waiting for an unambiguous period or currency."""
+    """Chart request waiting for a validated choice or missing detail."""
 
     sender_phone: str
-    movement_type: str = "egreso"
-    chart_type: str = "bar"
-    ranking: str = "highest"
-    date_from: str | None = None
-    date_to: str | None = None
-    chart_currency: str | None = None
-    available_currencies: list[str] = field(default_factory=list)
+    request: dict = field(default_factory=dict)
+    reason: str = ""
+    question: str = ""
+    options: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -986,6 +983,32 @@ class ConversationService:
     ) -> PendingMovementChart | None:
         state = await cls.get_state(whatsapp_id)
         return state.pending_movement_chart
+
+    @classmethod
+    async def get_last_chart(cls, whatsapp_id: str) -> dict | None:
+        try:
+            client = await cls._get_client()
+            raw = await client.get(f"last_chart:{whatsapp_id}")
+            result = json.loads(raw) if raw else None
+            return result if isinstance(result, dict) else None
+        except Exception:
+            return None
+
+    @classmethod
+    async def set_last_chart(cls, whatsapp_id: str, request: dict) -> None:
+        try:
+            client = await cls._get_client()
+            await client.setex(f"last_chart:{whatsapp_id}", CONVERSATION_TTL, json.dumps(request))
+        except Exception as exc:
+            print(f"[ConversationService] chart state unavailable: {type(exc).__name__}")
+
+    @classmethod
+    async def clear_last_chart(cls, whatsapp_id: str) -> None:
+        try:
+            client = await cls._get_client()
+            await client.delete(f"last_chart:{whatsapp_id}")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Último límite creado (para editarlo sin diálogo previo)

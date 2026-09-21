@@ -102,7 +102,7 @@ class LLMService:
                 continue
 
             movement_type = str(raw_value).strip().lower()
-            if movement_type in {"ingreso", "egreso"}:
+            if movement_type in {"ingreso", "egreso"} or (intent == "movement_chart" and movement_type == "both"):
                 return movement_type
 
         if explicit_type:
@@ -345,6 +345,10 @@ class LLMService:
                 "chart_type": chart_type,
                 "chart_ranking": chart_ranking,
                 "chart_currency": chart_currency,
+                **{key: parsed.get(key) for key in (
+                    "chart_mode", "chart_categories", "chart_limit", "chart_percentages",
+                    "chart_start_month", "chart_end_month", "chart_months",
+                )},
                 "reminder_title": parsed.get("reminder_title"),
                 "reminder_date": parsed.get("reminder_date"),
                 "reminder_concept": reminder_concept,

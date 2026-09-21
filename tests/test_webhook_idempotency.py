@@ -18,6 +18,21 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.mark.asyncio
+async def test_monthly_chart_pages_are_sent_once_on_webhook_replay():
+    redis = FakeRedis()
+    images = [WhatsAppImage(content=b"PNG", caption=f"Parte {index}") for index in range(1, 4)]
+    process = AsyncMock(return_value=SimpleNamespace(reply_message=images[0], followup_messages=images[1:]))
+    send = AsyncMock(return_value=True)
+    kwargs = dict(redis_client=redis, sender_phone="5491111111111", text_body="Gráfico desde enero",
+                  whatsapp_message_id="monthly-chart", process_message=process, send_message=send)
+    assert await process_text_message_once(**kwargs) == "completed"
+    assert await process_text_message_once(**kwargs) == "duplicate"
+    assert send.await_count == 3
+    assert [call.args[1] for call in send.await_args_list] == images
+    process.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_claim_is_atomic_for_same_message_id():
     redis = FakeRedis()
     first = await WebhookIdempotencyService.claim(redis, "wamid.1")

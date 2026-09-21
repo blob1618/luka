@@ -449,11 +449,11 @@ class TestChatLogic:
                 "role": "assistant",
                 "content": "Gastos por categoría",
                 "debug": {},
-                "image_png": b"\x89PNG\r\n\x1a\nchart",
+                "image_pngs": [b"\x89PNG\r\n\x1a\nchart"],
             }
         ])
 
-        assert "image_png" not in exported
+        assert "image_pngs" not in exported
         assert '"has_image_preview": true' in exported
 
     def test_get_prompt_path_default(self):
@@ -496,14 +496,14 @@ class TestChatLogic:
                 prompt_path="prompt.md",
                 redis_state={"step": "none"},
             )
-            reply, debug, image_png = await _process_message(
+            reply, debug, image_pngs = await _process_message(
                 "Gasté 5000", config, "5491187654321"
             )
 
         assert reply == "✅ registrado"
         assert debug["service_log"] == "finance"
         assert debug["redis_state"]["step"] == "none"
-        assert image_png is None
+        assert image_pngs == []
         assert mock_send.await_args.kwargs["phone"] == "5491187654321"
 
     @pytest.mark.asyncio
@@ -528,12 +528,12 @@ class TestChatLogic:
                 prompt_path="prompt.md",
                 redis_state=None,
             )
-            reply, debug, image_png = await _process_message(
+            reply, debug, image_pngs = await _process_message(
                 "test", config, "5491112345678"
             )
 
         assert debug["service_log"] == "unknown"
-        assert image_png is None
+        assert image_pngs == []
 
     def test_bot_avatar_returns_bytes(self):
         from testing.components.chat import bot_avatar
@@ -590,7 +590,7 @@ class TestChatLogic:
                     "role": "assistant",
                     "content": "Gastos por categoría",
                     "debug": {},
-                    "image_png": b"\x89PNG\r\n\x1a\nchart",
+                    "image_pngs": [b"\x89PNG\r\n\x1a\nchart"],
                 }
             ])
         )

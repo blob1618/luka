@@ -1,4 +1,5 @@
 """Layout regressions at the actual export size, including long labels."""
+
 import pytest
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
@@ -21,6 +22,9 @@ def test_labels_stay_inside_canvas_and_do_not_overlap(spec):
             assert box.y0 >= bounds.y0 and box.y1 <= bounds.y1
         for index, box in enumerate(boxes):
             for other_index in range(index + 1, len(boxes)):
-                assert not box.overlaps(boxes[other_index]), (texts[index].get_text(), texts[other_index].get_text())
+                assert not box.overlaps(boxes[other_index]), (
+                    texts[index].get_text(),
+                    texts[other_index].get_text(),
+                )
     finally:
         figure.clear()

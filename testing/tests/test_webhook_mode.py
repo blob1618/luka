@@ -73,7 +73,7 @@ class TestWebhookModeResult:
         assert result.reply_text == "ok"
         assert result.memory is None
         assert result.memory_ttl_seconds is None
-        assert result.image_png is None
+        assert result.image_pngs == []
 
 
 class TestSendMessage:
@@ -92,6 +92,7 @@ class TestSendMessage:
                         content=chart_png,
                         caption="Gastos por categoría",
                     ),
+                    followup_messages=[WhatsAppImage(content=b"second-png", caption="Parte 2")],
                 ),
             ),
             patch("testing.services.webhook_mode.LLMService.reset_provider"),
@@ -104,7 +105,7 @@ class TestSendMessage:
                 "prompt.md",
             )
 
-        assert result.image_png == chart_png
+        assert result.image_pngs == [chart_png, b"second-png"]
 
     @pytest.mark.asyncio
     async def test_routes_through_dispatcher(self, redis_mocks):
