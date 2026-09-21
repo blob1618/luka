@@ -371,3 +371,90 @@ async def test_send_reaction_error_timeout_and_network_tolerance(monkeypatch):
     monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client_network))
 
     assert await send_whatsapp_reaction("541123456789", "wamid.1") is False
+
+
+@pytest.mark.asyncio
+async def test_send_typing_indicator_contract_and_timeout(monkeypatch):
+    from app.api.whatsapp import send_whatsapp_typing_indicator
+
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id-123")
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
+
+    response = Mock(status_code=200)
+    response.text = '{"success": true}'
+    post = AsyncMock(return_value=response)
+    client = Mock()
+    client.post = post
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=None)
+    client_factory = Mock(return_value=client)
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", client_factory)
+
+    sent = await send_whatsapp_typing_indicator("wamid.12345")
+
+    assert sent is True
+    client_factory.assert_called_once_with(timeout=3.0)
+    post.assert_awaited_once()
+    assert post.await_args.args[0] == "https://graph.facebook.com/v26.0/phone-id-123/messages"
+    assert post.await_args.kwargs["json"] == {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": "wamid.12345",
+        "typing_indicator": {"type": "text"},
+    }
+    assert post.await_args.kwargs["headers"]["Authorization"] == "Bearer test-token"
+
+
+@pytest.mark.asyncio
+async def test_send_typing_indicator_skips_network_without_config(monkeypatch):
+    from app.api.whatsapp import send_whatsapp_typing_indicator
+
+    client_factory = Mock()
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", client_factory)
+
+    monkeypatch.delenv("WHATSAPP_API_TOKEN", raising=False)
+    monkeypatch.delenv("WHATSAPP_PHONE_ID", raising=False)
+    assert await send_whatsapp_typing_indicator("wamid.1") is False
+
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id")
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "invalid_ver")
+    assert await send_whatsapp_typing_indicator("wamid.1") is False
+
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
+    assert await send_whatsapp_typing_indicator("") is False
+
+    client_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_typing_indicator_error_timeout_and_network_tolerance(monkeypatch):
+    import httpx
+    from app.api.whatsapp import send_whatsapp_typing_indicator
+
+    monkeypatch.setenv("WHATSAPP_API_TOKEN", "test-token")
+    monkeypatch.setenv("WHATSAPP_PHONE_ID", "phone-id")
+    monkeypatch.setenv("WHATSAPP_GRAPH_API_VERSION", "v26.0")
+
+    response_400 = Mock(status_code=400, text="Bad Request")
+    client_400 = Mock()
+    client_400.post = AsyncMock(return_value=response_400)
+    client_400.__aenter__ = AsyncMock(return_value=client_400)
+    client_400.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client_400))
+    assert await send_whatsapp_typing_indicator("wamid.1") is False
+
+    client_timeout = Mock()
+    client_timeout.post = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
+    client_timeout.__aenter__ = AsyncMock(return_value=client_timeout)
+    client_timeout.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client_timeout))
+    assert await send_whatsapp_typing_indicator("wamid.1") is False
+
+    client_network = Mock()
+    client_network.post = AsyncMock(side_effect=httpx.NetworkError("refused"))
+    client_network.__aenter__ = AsyncMock(return_value=client_network)
+    client_network.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr("app.api.whatsapp.httpx.AsyncClient", Mock(return_value=client_network))
+    assert await send_whatsapp_typing_indicator("wamid.1") is False
