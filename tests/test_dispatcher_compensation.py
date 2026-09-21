@@ -179,8 +179,11 @@ class TestUserRequestedCompensation:
             == "Compensación de $500 ARS para Comida"
         )
         assert "Muevo $500 ARS" in result.reply_text
-        assert "Transporte: $1000 → $500 ARS" in result.reply_text
-        assert "Comida: $2000 → $2500 ARS" in result.reply_text
+        target_line = "Comida: $2000 → $2500 ARS"
+        assert result.reply_text.count(target_line) == 1
+        donors_block = result.reply_text.split("Donantes:\n", 1)[1].split("\n\n", 1)[0]
+        assert "• Transporte: $1000 → $500 ARS" in donors_block
+        assert target_line not in donors_block
         assert "El total de tus límites se mantiene" in result.reply_text
         assert "30 minutos" in result.reply_text
         assert "confirmar compensación" in result.reply_text

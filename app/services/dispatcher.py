@@ -1067,11 +1067,11 @@ def _compensation_summary(proposal: CompensationProposal) -> str:
 
 def _compensation_reply(proposal: CompensationProposal, *, auto: bool = False) -> str:
     currency = proposal.currency
-    allocations = "".join(
-        f"• {_compensation_allocation_line(allocation, currency)}\n"
-        for allocation in (*proposal.donors, proposal.target)
-    )
     if auto:
+        allocations = "".join(
+            f"• {_compensation_allocation_line(allocation, currency)}\n"
+            for allocation in (*proposal.donors, proposal.target)
+        )
         return (
             f"Detecté que *{proposal.target.category_name}* superó su límite.\n\n"
             f"💡 Podés compensarlo moviendo ${_format_amount(proposal.amount)} "
@@ -1080,11 +1080,15 @@ def _compensation_reply(proposal: CompensationProposal, *, auto: bool = False) -
             "El total se mantiene. Vence en 30 minutos.\n"
             "Respondé *confirmar compensación* o *no por ahora*."
         )
+    donors = "\n".join(
+        f"• {_compensation_allocation_line(donor, currency)}"
+        for donor in proposal.donors
+    )
     return (
         "💡 *Compensación de presupuesto*\n\n"
         f"Muevo ${_format_amount(proposal.amount)} {currency} de otras categorías "
         f"a *{proposal.target.category_name}*.\n\n"
-        f"Donantes:\n{allocations}\n"
+        f"Donantes:\n{donors}\n\n"
         f"*{_compensation_allocation_line(proposal.target, currency)}*\n\n"
         "El total de tus límites se mantiene: no se modifica ningún movimiento.\n"
         "La propuesta vence en 30 minutos.\n"
