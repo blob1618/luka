@@ -284,42 +284,55 @@ async def _movement_budget_after_change(sender_phone: str, *movements) -> str:
             evaluated.append(result.budget)
 
     exceeded = [budget for budget in evaluated if budget.state == "exceeded"]
-    if not exceeded:
-        return "\n\n".join(replies)
+    for budget in exceeded:
+        auto_compensation = await _auto_compensation_reply(
+            sender_phone, budget, user_id
+        )
+        if auto_compensation:
+            replies.append(auto_compensation)
+            break
+    return "\n\n".join(replies)
+
+
+async def _auto_compensation_reply(
+    sender_phone: str, budget: BudgetStatus, user_id=None
+) -> str:
     try:
         state = await ConversationService.get_state(sender_phone)
     except Exception as exc:
         logger.warning("movement_budget_state_failed error=%s", type(exc).__name__)
-        return "\n\n".join(replies)
+        return ""
     if state.step != "none":
-        return "\n\n".join(replies)
-    proposal = None
-    for budget in exceeded:
+        return ""
+    if user_id is None:
         try:
-            proposal_result = await asyncio.to_thread(
-                BudgetCompensationService.build_proposal,
-                user_id,
-                target_category=budget.category_name,
-                reference_date=budget.period_start,
-                currency=budget.currency,
-            )
+            user_id = await asyncio.to_thread(_user_id_by_phone, sender_phone)
         except Exception as exc:
-            logger.warning("movement_budget_proposal_failed error=%s", type(exc).__name__)
-            continue
-        if proposal_result.status == "ok" and proposal_result.proposal is not None:
-            proposal = proposal_result.proposal
-            break
-    if proposal is None:
-        return "\n\n".join(replies)
+            logger.warning("movement_budget_lookup_failed error=%s", type(exc).__name__)
+            return ""
+    if user_id is None:
+        return ""
+    try:
+        result = await asyncio.to_thread(
+            BudgetCompensationService.build_proposal,
+            user_id,
+            target_category=budget.category_name,
+            reference_date=budget.period_start,
+            currency=budget.currency,
+        )
+    except Exception as exc:
+        logger.warning("movement_budget_proposal_failed error=%s", type(exc).__name__)
+        return ""
+    if result.status != "ok" or result.proposal is None:
+        return ""
     try:
         await ConversationService.set_pending_compensation(
-            sender_phone, proposal.to_dict()
+            sender_phone, result.proposal.to_dict()
         )
     except Exception as exc:
         logger.warning("movement_budget_pending_failed error=%s", type(exc).__name__)
-        return "\n\n".join(replies)
-    replies.append(_compensation_reply(proposal, auto=True))
-    return "\n\n".join(replies)
+        return ""
+    return _compensation_reply(result.proposal, auto=True)
 
 
 async def _apply_movement_action(
@@ -930,7 +943,16 @@ async def _register_single_with_hint(
         result.movement_id,
     )
     budget_feedback = _budget_feedback_reply(evaluation)
-    return f"{reply}\n\n{budget_feedback}" if budget_feedback else reply
+    parts = [reply]
+    if budget_feedback:
+        parts.append(budget_feedback)
+    if evaluation.budget is not None and evaluation.budget.state == "exceeded":
+        auto_compensation = await _auto_compensation_reply(
+            sender_phone, evaluation.budget, result.user_id
+        )
+        if auto_compensation:
+            parts.append(auto_compensation)
+    return "\n\n".join(parts)
 
 
 async def _route_needs_category_confirmation(
@@ -1024,6 +1046,23 @@ async def _register_multiop(
         budget_feedback = _unique_budget_feedback(evaluations)
         if budget_feedback:
             reply = f"{reply}\n\n" + "\n\n".join(budget_feedback)
+        user_id = next(
+            (result.user_id for result in results if result.user_id), None
+        )
+        seen_limits = set()
+        for evaluation in evaluations:
+            budget = evaluation.budget
+            if budget is None or budget.limit_id in seen_limits:
+                continue
+            seen_limits.add(budget.limit_id)
+            if budget.state != "exceeded":
+                continue
+            auto_compensation = await _auto_compensation_reply(
+                sender_phone, budget, user_id
+            )
+            if auto_compensation:
+                reply = f"{reply}\n\n{auto_compensation}"
+                break
     return reply
 
 

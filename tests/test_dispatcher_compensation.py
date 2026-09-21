@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.services.budget import BudgetStatus, BudgetStatusResult
+from app.services.budget import BudgetEvaluation, BudgetStatus, BudgetStatusResult
 from app.services.compensation import (
     CompensationAllocation,
     CompensationApplyResult,
@@ -17,7 +17,13 @@ from app.services.compensation import (
     CompensationProposalResult,
 )
 from app.services.conversation import ConversationService, ConversationState, PendingCompensation
-from app.services.dispatcher import _movement_budget_after_change, process_incoming_message
+from app.services.dispatcher import (
+    _movement_budget_after_change,
+    _register_multiop,
+    _register_single_with_hint,
+    process_incoming_message,
+)
+from app.services.finance import MovementRegistrationResult
 from app.services.onboarding import OnboardingDecision, OnboardingResult
 
 
@@ -457,3 +463,165 @@ class TestAutomaticCompensationProposal:
         assert reply == ""
         mock_status.assert_not_called()
         mock_build.assert_not_called()
+
+
+class TestRegistrationAutoProposal:
+    @staticmethod
+    def registered(movement_id, user_id):
+        return MovementRegistrationResult(
+            status="registered",
+            message="ok",
+            movement_id=movement_id,
+            user_id=user_id,
+        )
+
+    @pytest.mark.asyncio
+    async def test_exceeded_registration_auto_proposes_and_stores_pending(self):
+        proposal = make_proposal()
+        movement_id = str(uuid4())
+        user_id = str(uuid4())
+        register_data = {
+            "intent": "expense",
+            "movement_type": "egreso",
+            "amount": 2500,
+            "currency": "ARS",
+            "description": "supermercado",
+            "category": "Comida",
+        }
+        with (
+            patch(
+                "app.services.dispatcher.FinanceService.register_movement_with_category",
+                return_value=self.registered(movement_id, user_id),
+            ),
+            patch(
+                "app.services.dispatcher.BudgetService.evaluate_movement",
+                return_value=BudgetEvaluation(
+                    status="ok",
+                    message="evaluated",
+                    movement_id=movement_id,
+                    has_limit=True,
+                    should_alert=True,
+                    budget=budget_status(),
+                ),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.set_last_movement",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.build_proposal",
+                return_value=CompensationProposalResult("ok", "created", proposal),
+            ) as mock_build,
+        ):
+            reply = await _register_single_with_hint(
+                "12345", "wamid.1", "gasté 2500 en supermercado",
+                register_data, register_data,
+            )
+
+        assert "Registré tu egreso" in reply
+        assert "Superaste el límite en $500,00 ARS." in reply
+        assert "Detecté que *Comida* superó su límite." in reply
+        assert mock_build.call_count == 1
+        assert mock_build.call_args.kwargs == {
+            "target_category": "Comida",
+            "reference_date": date(2026, 9, 1),
+            "currency": "ARS",
+        }
+        pending = await ConversationService.get_pending_compensation("12345")
+        assert pending is not None
+        assert pending.proposal == proposal.to_dict()
+
+    @pytest.mark.asyncio
+    async def test_exceeded_registration_skips_when_another_flow_pending(self):
+        await ConversationService.set_state(
+            "12345", ConversationState(step="awaiting_limit_data")
+        )
+        register_data = {
+            "intent": "expense",
+            "movement_type": "egreso",
+            "amount": 2500,
+            "currency": "ARS",
+            "description": "supermercado",
+            "category": "Comida",
+        }
+        with (
+            patch(
+                "app.services.dispatcher.FinanceService.register_movement_with_category",
+                return_value=self.registered(str(uuid4()), str(uuid4())),
+            ),
+            patch(
+                "app.services.dispatcher.BudgetService.evaluate_movement",
+                return_value=BudgetEvaluation(
+                    status="ok",
+                    message="evaluated",
+                    has_limit=True,
+                    should_alert=True,
+                    budget=budget_status(),
+                ),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.set_last_movement",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.build_proposal",
+            ) as mock_build,
+        ):
+            reply = await _register_single_with_hint(
+                "12345", "wamid.2", "gasté 2500 en supermercado",
+                register_data, register_data,
+            )
+
+        assert "Superaste el límite en $500,00 ARS." in reply
+        assert "Detecté que" not in reply
+        mock_build.assert_not_called()
+        assert await ConversationService.get_pending_compensation("12345") is None
+        assert (await ConversationService.get_state("12345")).step == "awaiting_limit_data"
+
+    @pytest.mark.asyncio
+    async def test_multiop_proposes_once_for_first_exceeded_limit(self):
+        proposal = make_proposal()
+        user_id = str(uuid4())
+        exceeded = budget_status()
+        movements = [
+            {"movement_type": "egreso", "amount": 1000, "currency": "ARS",
+             "description": "pan", "category": "Comida"},
+            {"movement_type": "egreso", "amount": 1500, "currency": "ARS",
+             "description": "leche", "category": "Comida"},
+        ]
+        evaluations = [
+            BudgetEvaluation(
+                status="ok", message="evaluated", has_limit=True, budget=exceeded,
+            ),
+            BudgetEvaluation(
+                status="ok", message="evaluated", has_limit=True, budget=exceeded,
+            ),
+        ]
+        with (
+            patch(
+                "app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text",
+                side_effect=[
+                    self.registered(str(uuid4()), user_id),
+                    self.registered(str(uuid4()), user_id),
+                ],
+            ),
+            patch(
+                "app.services.dispatcher.BudgetService.evaluate_movements",
+                return_value=evaluations,
+            ),
+            patch(
+                "app.services.dispatcher.BudgetCompensationService.build_proposal",
+                return_value=CompensationProposalResult("ok", "created", proposal),
+            ) as mock_build,
+        ):
+            reply = await _register_multiop(
+                "12345", "wamid.multi", "compré pan y leche", {}, movements,
+            )
+
+        assert "Registré los 2 movimientos." in reply
+        assert "Superaste el límite en $500,00 ARS." in reply
+        assert "Detecté que *Comida* superó su límite." in reply
+        assert mock_build.call_count == 1
+        pending = await ConversationService.get_pending_compensation("12345")
+        assert pending is not None
+        assert pending.proposal == proposal.to_dict()
