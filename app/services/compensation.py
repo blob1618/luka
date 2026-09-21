@@ -115,11 +115,11 @@ class BudgetCompensationService:
     def _normalize_requested(value: Any) -> Decimal | None:
         try:
             amount = Decimal(str(value))
+            if not amount.is_finite():
+                return None
+            return amount.quantize(_MONEY)
         except (InvalidOperation, ValueError):
             return None
-        if not amount.is_finite():
-            return None
-        return amount.quantize(_MONEY)
 
     @staticmethod
     def _allocation(status: BudgetStatus, delta: Decimal) -> CompensationAllocation:

@@ -389,6 +389,24 @@ def test_proposal_non_positive_requested_amount_returns_invalid_data(
     assert result.proposal is None
 
 
+def test_proposal_oversized_requested_amount_returns_invalid_data(db_context):
+    session = db_context
+    user = create_user(session)
+    food = create_category(session, user, "Comida")
+    create_budget(session, user, food, amount="1000")
+    create_movement(session, user, food, 1200)
+
+    result = BudgetCompensationService.build_proposal(
+        user.id,
+        target_category="Comida",
+        requested_amount=Decimal("1e30"),
+        reference_date=REFERENCE_DATE,
+    )
+
+    assert result.status == "invalid_data"
+    assert result.proposal is None
+
+
 def test_proposal_uses_requested_amount(db_context):
     session = db_context
     user = create_user(session)
