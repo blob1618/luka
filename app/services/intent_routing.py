@@ -100,6 +100,13 @@ def normalize_limit_intent(
         data["intent"] = "list_limits"
         return data
 
+    if data.get("intent") in (
+        "compensate_budget",
+        "confirm_compensation",
+        "reject_compensation",
+    ):
+        return data
+
     if _LIMIT_TERMS.search(normalized) and _BUDGET_TERMS.search(normalized):
         data["intent"] = "budget_query"
         return data
