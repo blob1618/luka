@@ -139,7 +139,7 @@ class BudgetService:
         ).quantize(Decimal("0.1"))
         if spent_amount > limit_amount:
             state = "exceeded"
-        elif spent_amount == limit_amount:
+        elif limit_amount > 0 and spent_amount == limit_amount:
             state = "reached"
         else:
             state = "available"

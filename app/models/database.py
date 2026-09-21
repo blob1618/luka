@@ -291,7 +291,7 @@ class LimiteCategoria(Base):
     )
 
     __table_args__ = (
-        CheckConstraint("cantidad_max > 0", name="limite_categoria_cantidad_max_check"),
+        CheckConstraint("cantidad_max >= 0", name="limite_categoria_cantidad_max_check"),
         CheckConstraint(
             "length(moneda) = 3 AND moneda = upper(moneda)",
             name="limite_categoria_moneda_check",
