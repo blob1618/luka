@@ -33,7 +33,7 @@ def test_prompt_categories_reference_context_list():
 
 SUPPORTED_INTENTS = {
     "expense", "budget_query", "reminder", "expense_summary",
-    "query_movements", "greeting", "out_of_scope", "create_reminder",
+    "query_movements", "greeting", "out_of_scope", "financial_education", "create_reminder",
     "list_reminders", "update_reminder", "pause_reminder",
     "activate_reminder", "delete_reminder", "enable_proactive_reminders",
     "disable_proactive_reminders", "confirm_category", "reject_category",

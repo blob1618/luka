@@ -52,6 +52,7 @@ from app.services.compensation import (
     CompensationProposal,
 )
 from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkService
+from app.services.financial_education import FinancialEducationService
 from app.services.finance import (
     FinanceService,
     MovementQueryResult,
@@ -2805,6 +2806,20 @@ async def _dispatch_incoming_message(
         # procesar el mensaje normalmente (fall-through).
         await ConversationService.clear_state(sender_phone)
 
+    # Las consultas pedagógicas conocidas se resuelven antes del LLM. Así un
+    # importe dentro de un ejemplo nunca puede llegar a la ruta de persistencia.
+    if FinancialEducationService.is_conceptual_query(text_body):
+        education_reply = FinancialEducationService.answer(text_body)
+        return DispatchResult(
+            reply_text=education_reply.text,
+            service_invoked="financial_education",
+            intent="financial_education",
+            raw_llm_response={
+                "education_status": education_reply.status,
+                "education_term": education_reply.term,
+            },
+        )
+
     # Procesar mensaje con LLM (fecha + categorías del usuario como contexto)
     extracted_data = await extract_message_once()
     if extracted_data.get("intent") == "reset_context":
@@ -2862,6 +2877,16 @@ async def _dispatch_incoming_message(
     elif intent == "query_movements":
         reply_text = await _handle_query_movements(sender_phone, extracted_data)
         service_invoked = "finance"
+
+    elif intent == "financial_education":
+        education_reply = FinancialEducationService.answer(
+            text_body,
+            requested_term=extracted_data.get("education_term"),
+        )
+        reply_text = education_reply.text
+        extracted_data["education_status"] = education_reply.status
+        extracted_data["education_term"] = education_reply.term
+        service_invoked = "financial_education"
 
     elif intent in {"update_movement", "delete_movement"}:
         reply_text = await _handle_movement_action(sender_phone, text_body, extracted_data)

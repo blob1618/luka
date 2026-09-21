@@ -8,6 +8,7 @@ from app.services.llm_contract import (
     normalize_llm_response,
     resolve_relative_date,
 )
+from app.services.financial_education import FinancialEducationService
 from app.services.llm_providers import LLMProvider, create_provider
 
 
@@ -154,7 +155,14 @@ class LLMService:
         Returns:
             Dict con los campos del JSON parseado (intent, amount, etc.)
         """
-        system_prompt = cls._load_system_prompt()
+        # The glossary is static, reviewed content. It intentionally stays apart
+        # from per-user context so a future provider cache can share only this
+        # safe portion (STK-184).
+        system_prompt = (
+            cls._load_system_prompt()
+            + "\n\n"
+            + FinancialEducationService.static_prompt_context()
+        )
         if isinstance(context, str) and context:
             system_prompt = system_prompt + "\n\n" + context
 
@@ -193,7 +201,7 @@ class LLMService:
                 "create_limit", "change_limit", "list_limits",
                 "delete_limit", "confirm_limit", "reject_limit",
                 "compensate_budget", "confirm_compensation", "reject_compensation",
-                "reset_context",
+                "reset_context", "financial_education",
             }
             if intent not in allowed_intents:
                 intent = "out_of_scope"
@@ -292,6 +300,10 @@ class LLMService:
             except (TypeError, ValueError):
                 compensation_amount = None
 
+            education_term = parsed.get("education_term")
+            if education_term is not None:
+                education_term = str(education_term).strip() or None
+
             raw_movements = parsed.get("movements")
             if isinstance(raw_movements, list) and raw_movements:
                 movements = [cls._normalize_single(m, base=parsed) for m in raw_movements]
@@ -330,6 +342,7 @@ class LLMService:
                 "compensation_target": compensation_target,
                 "compensation_source": compensation_source,
                 "compensation_amount": compensation_amount,
+                "education_term": education_term,
                 "reply_text": str(parsed.get("reply_text") or ""),
                 "movements": movements,
             }
@@ -365,6 +378,7 @@ class LLMService:
                 "compensation_target": None,
                 "compensation_source": None,
                 "compensation_amount": None,
+                "education_term": None,
                 "reply_text": (
                     "No he podido analizar tu mensaje en este momento. "
                     "¿Podés reformularlo e intentar de nuevo?"
