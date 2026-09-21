@@ -136,7 +136,13 @@ Puntos clave del flujo:
   `delete_reminder`, `enable_proactive_reminders`, `disable_proactive_reminders`,
   `confirm_category`, `reject_category`, `delete_category`, `list_categories`,
   `create_limit`, `change_limit`, `list_limits`, `delete_limit`, `confirm_limit`,
-  `reject_limit`, `update_movement`, `delete_movement` y `reset_context`.
+  `reject_limit`, `update_movement`, `delete_movement`, `compensate_budget`,
+  `confirm_compensation`, `reject_compensation` y `reset_context`.
+- `compensate_budget` calcula una propuesta de compensación entre límites de la misma
+  moneda y período, la deja pendiente y emite el evento `budget.compensation_proposed`.
+  Solo se persiste al confirmar (`confirm_compensation`), previa revalidación; el
+  rechazo (`reject_compensation`) no escribe. El dispatcher también puede proponerla
+  automáticamente al registrar un egreso que excede un límite.
 - `reset_context` ejecuta el reset en el backend: limpia la memoria conversacional del
   usuario y el estado multi-turno pendiente, y responde con un texto fijo («Listo,
   arrancamos de cero. Olvidé lo anterior.»). El LLM solo detecta el pedido explícito.
@@ -157,8 +163,9 @@ Puntos clave del flujo:
   interrumpen pidiendo una referencia explícita.
 - Estados multi-turno: confirmación de categoría, datos faltantes de recordatorio,
   renombrado de recordatorio por título duplicado, confirmación de año y de categoría
-  de un límite, datos faltantes de límite, selección de mes a eliminar y categoría a
-  eliminar.
+  de un límite, datos faltantes de límite, selección de mes a eliminar, categoría a
+  eliminar y confirmación de compensación de presupuesto
+  (`awaiting_compensation_confirmation`).
 - Contexto acotado por usuario: último movimiento registrado, último límite creado,
   elementos recientemente mostrados y selección pendiente. Los TTL son 30 minutos para
   el estado de conversación y el flujo administrable, y 60 minutos para último

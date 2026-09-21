@@ -139,7 +139,9 @@ WhatsApp -> Backend -> public.movimientos_financieros
 
 ## Límites y presupuestos
 
-`public.limite_categoria` define un presupuesto mensual por usuario, categoría, período y moneda. `cantidad_max` usa `numeric(18,2)`, debe ser positiva y el período debe ser válido. La combinación `(usuario_id, categoria_id, inicio_periodo, moneda)` es única, por lo que un alta repetida actualiza el mismo presupuesto en vez de crear duplicados.
+`public.limite_categoria` define un presupuesto mensual por usuario, categoría, período y moneda. `cantidad_max` usa `numeric(18,2)`, debe ser `>= 0` y el período debe ser válido. La combinación `(usuario_id, categoria_id, inicio_periodo, moneda)` es única, por lo que un alta repetida actualiza el mismo presupuesto en vez de crear duplicados.
+
+El mínimo en cero es deliberado: una compensación puede dejar a una categoría donante sin cupo. `20260920210000_allow_zero_limit_amount.sql` reemplaza el check `cantidad_max > 0` por `cantidad_max >= 0` y debe aplicarse antes del código que compensa.
 
 Cuando el usuario propone una categoría inexistente al crear un límite, el backend solicita confirmación y luego crea o reactiva la categoría y persiste el límite en la misma transacción. La taxonomía base normaliza categorías conocidas, pero no funciona como una lista cerrada para los límites personalizados.
 
@@ -163,7 +165,7 @@ Al crear la migración base se compararon el esquema remoto y una reconstrucció
 
 ## Migraciones y desarrollo local
 
-Supabase CLI es el flujo único de migraciones. El historial previo quedó consolidado en `supabase/migrations/20260911010815_baseline_remote_schema.sql`, cuyo timestamp coincide con el historial remoto. El historial vigente llega hasta `20260919120000_drop_legacy_metas_movimientos.sql`.
+Supabase CLI es el flujo único de migraciones. El historial previo quedó consolidado en `supabase/migrations/20260911010815_baseline_remote_schema.sql`, cuyo timestamp coincide con el historial remoto. El historial vigente llega hasta `20260920210000_allow_zero_limit_amount.sql`.
 
 1. Crear cada cambio con `supabase migration new <nombre>` y editar solo el archivo nuevo.
 2. Ejecutar `supabase db reset` y `supabase db lint --level warning` antes de abrir o integrar el cambio.

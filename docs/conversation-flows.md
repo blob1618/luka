@@ -152,7 +152,7 @@ versión contempla estos grupos:
 | Categorías | `category.confirmation_required`, `category.deleted`, `category.not_found` | `FinanceService` |
 | Recordatorios | `reminder.missing_concept`, `reminder.missing_day`, `reminder.created`, `reminder.duplicate`, `reminder.updated`, `reminder.paused`, `reminder.activated`, `reminder.deleted` | `ReminderService` |
 | Límites | `limit.missing_data`, `limit.year_confirmation`, `limit.category_confirmation`, `limit.created`, `limit.updated`, `limit.listed`, `limit.deleted`, `limit.bulk_deleted`, `limit.month_selection` | `LimitService` |
-| Consultas | `budget.result`, `movements.query_result` | `BudgetService` / `FinanceService` |
+| Consultas | `budget.result`, `movements.query_result`, `budget.compensation_proposed` | `BudgetService` / `FinanceService` / `BudgetCompensationService` |
 | Conversación | `conversation.context_lost`, `conversation.cancelled` | Dispatcher |
 
 Cada evento declara en código su lista de variables y acciones. Ejemplos:
@@ -168,6 +168,7 @@ Cada evento declara en código su lista de variables y acciones. Ejemplos:
 | `category.confirmation_required` | `category` | `confirm_category`, `reject_category`, `cancel_pending_operation` |
 | `reminder.missing_day` | `concept` | `cancel_pending_operation` |
 | `limit.category_confirmation` | `category` | `confirm_limit_category`, `reject_limit`, `cancel_pending_operation` |
+| `budget.compensation_proposed` | `summary` | `confirm_compensation`, `reject_compensation`, `cancel_pending_operation` |
 
 Las URLs sólo pueden ingresar mediante variables tipadas producidas por el
 backend; no se admiten URLs libres dentro de textos ni acciones.

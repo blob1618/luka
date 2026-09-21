@@ -98,6 +98,24 @@ procesa en silencio para no repetir una confirmación ya enviada.
   nombres de meses o «ambos») y se ejecutan en una sola transacción. Si algún límite no
   coincide, no se elimina ninguno.
 
+## Compensación de presupuesto
+
+- La compensación mueve cupo entre categorías del mismo período y moneda: sube el límite
+  de una categoría excedida y baja el de categorías con disponible. El total de los
+  límites se mantiene y ningún movimiento se modifica.
+- Se dispara por pedido explícito (`compensate_budget`) o de forma automática al registrar
+  un egreso que deja una categoría excedida. En ambos casos el cálculo sale de los límites
+  y egresos persistidos; la propuesta automática solo se muestra si se pudo guardar.
+- La propuesta es multi-turno: muestra el antes y el después de cada categoría y espera una
+  confirmación explícita (`confirm_compensation`) o un rechazo
+  (`reject_compensation`/«cancelar»). Un mensaje distinto descarta la propuesta pendiente
+  y sigue su curso normal.
+- Antes de aplicar, el backend revalida límites y saldos contra el estado actual; si
+  cambiaron, no escribe y pide un nuevo cálculo. La aplicación es idempotente por mensaje:
+  reintentar el mismo `message_id` no aplica dos veces.
+- La propuesta vence a los 30 minutos. Una categoría donante puede quedar en cero; el
+  sistema elige donantes con disponible suficiente y nunca crea límites nuevos.
+
 ## Consulta de movimientos
 
 - `query_movements` filtra por tipo (`ingreso`/`egreso`), categoría y rango de fechas,
