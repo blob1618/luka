@@ -96,6 +96,20 @@ class PendingLimit:
 
 
 @dataclass
+class PendingCompensation:
+    """Propuesta de compensación de presupuesto pendiente de confirmar (multi-turno)."""
+    sender_phone: str
+    proposal: dict[str, Any]
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PendingCompensation":
+        return cls(**dict(d))
+
+
+@dataclass
 class LastCreatedLimit:
     """
     Datos del último límite creado, para permitir editarlo sin diálogo previo
@@ -151,11 +165,13 @@ class ConversationState:
     #               | "awaiting_limit_year_confirmation" | "awaiting_limit_category_confirmation"
     #               | "awaiting_limit_data"
     #               | "awaiting_limit_month_selection" | "awaiting_limit_delete_category"
+    #               | "awaiting_compensation_confirmation"
     step: str
     pending_movement: PendingMovement | None = None
     pending_reminder: PendingReminder | None = None
     pending_limit: PendingLimit | None = None
     pending_limit_delete: PendingLimitDelete | None = None
+    pending_compensation: PendingCompensation | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -164,6 +180,7 @@ class ConversationState:
             "pending_reminder": self.pending_reminder.to_dict() if self.pending_reminder else None,
             "pending_limit": self.pending_limit.to_dict() if self.pending_limit else None,
             "pending_limit_delete": self.pending_limit_delete.to_dict() if self.pending_limit_delete else None,
+            "pending_compensation": self.pending_compensation.to_dict() if self.pending_compensation else None,
         }
 
     @classmethod
@@ -180,12 +197,16 @@ class ConversationState:
         pld = None
         if d.get("pending_limit_delete"):
             pld = PendingLimitDelete.from_dict(d["pending_limit_delete"])
+        pc = None
+        if d.get("pending_compensation"):
+            pc = PendingCompensation.from_dict(d["pending_compensation"])
         return cls(
             step=d.get("step", "none"),
             pending_movement=pm,
             pending_reminder=pr,
             pending_limit=pl,
             pending_limit_delete=pld,
+            pending_compensation=pc,
         )
 
     @classmethod
@@ -196,6 +217,7 @@ class ConversationState:
             pending_reminder=None,
             pending_limit=None,
             pending_limit_delete=None,
+            pending_compensation=None,
         )
 
 
@@ -868,6 +890,42 @@ class ConversationService:
         """Obtiene el contexto de eliminación pendiente."""
         state = await cls.get_state(whatsapp_id)
         return state.pending_limit_delete
+
+    # ------------------------------------------------------------------
+    # Compensación de presupuesto pendiente
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def set_pending_compensation(
+        cls,
+        whatsapp_id: str,
+        proposal: dict,
+        step: str = "awaiting_compensation_confirmation",
+    ) -> None:
+        """Fija el estado con la propuesta de compensación pendiente de confirmar."""
+        state = ConversationState(
+            step=step,
+            pending_compensation=PendingCompensation(
+                sender_phone=whatsapp_id,
+                proposal=proposal,
+            ),
+        )
+        await cls.set_state(whatsapp_id, state)
+
+    @classmethod
+    async def is_awaiting_compensation_confirmation(cls, whatsapp_id: str) -> bool:
+        """Consulta si el usuario está esperando confirmar una compensación."""
+        state = await cls.get_state(whatsapp_id)
+        return state.step == "awaiting_compensation_confirmation"
+
+    @classmethod
+    async def get_pending_compensation(
+        cls,
+        whatsapp_id: str,
+    ) -> PendingCompensation | None:
+        """Obtiene la propuesta de compensación pendiente si existe."""
+        state = await cls.get_state(whatsapp_id)
+        return state.pending_compensation
 
     # ------------------------------------------------------------------
     # Último límite creado (para editarlo sin diálogo previo)
