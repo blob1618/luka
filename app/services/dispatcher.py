@@ -33,6 +33,11 @@ from app.services.conversation import (
 )
 from app.services.conversation_flow_runtime import ConversationFlowRuntime
 from app.services.budget import BudgetEvaluation, BudgetService, BudgetStatus
+from app.services.compensation import (
+    BudgetCompensationService,
+    CompensationApplyResult,
+    CompensationProposal,
+)
 from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkService
 from app.services.finance import (
     FinanceService,
@@ -261,6 +266,7 @@ async def _movement_budget_after_change(sender_phone: str, *movements) -> str:
         return ""
     replies = []
     seen = set()
+    evaluated: list[BudgetStatus] = []
     for movement in movements:
         if movement is None or movement.tipo != "egreso" or not movement.categoria_nombre:
             continue
@@ -279,7 +285,64 @@ async def _movement_budget_after_change(sender_phone: str, *movements) -> str:
             continue
         if result.status == "ok" and result.budget is not None:
             replies.append(_budget_status_reply(result.budget))
+            evaluated.append(result.budget)
+
+    exceeded = [budget for budget in evaluated if budget.state == "exceeded"]
+    for budget in exceeded:
+        auto_compensation = await _auto_compensation_reply(
+            sender_phone, budget, user_id
+        )
+        if auto_compensation:
+            replies.append(auto_compensation)
+            break
     return "\n\n".join(replies)
+
+
+async def _auto_compensation_reply(
+    sender_phone: str, budget: BudgetStatus, user_id=None
+) -> str:
+    try:
+        state = await ConversationService.get_state(sender_phone)
+    except Exception as exc:
+        logger.warning("movement_budget_state_failed error=%s", type(exc).__name__)
+        return ""
+    if state.step != "none":
+        return ""
+    if user_id is None:
+        try:
+            user_id = await asyncio.to_thread(_user_id_by_phone, sender_phone)
+        except Exception as exc:
+            logger.warning("movement_budget_lookup_failed error=%s", type(exc).__name__)
+            return ""
+    if user_id is None:
+        return ""
+    try:
+        result = await asyncio.to_thread(
+            BudgetCompensationService.build_proposal,
+            user_id,
+            target_category=budget.category_name,
+            reference_date=budget.period_start,
+            currency=budget.currency,
+        )
+    except Exception as exc:
+        logger.warning("movement_budget_proposal_failed error=%s", type(exc).__name__)
+        return ""
+    if result.status != "ok" or result.proposal is None:
+        return ""
+    try:
+        await ConversationService.set_pending_compensation(
+            sender_phone, result.proposal.to_dict()
+        )
+        stored = await ConversationService.get_pending_compensation(sender_phone)
+    except Exception as exc:
+        logger.warning("movement_budget_pending_failed error=%s", type(exc).__name__)
+        return ""
+    if (
+        stored is None
+        or stored.proposal.get("proposal_id") != result.proposal.proposal_id
+    ):
+        return ""
+    return _compensation_reply(result.proposal, auto=True)
 
 
 async def _apply_movement_action(
@@ -890,7 +953,16 @@ async def _register_single_with_hint(
         result.movement_id,
     )
     budget_feedback = _budget_feedback_reply(evaluation)
-    return f"{reply}\n\n{budget_feedback}" if budget_feedback else reply
+    parts = [reply]
+    if budget_feedback:
+        parts.append(budget_feedback)
+    if evaluation.budget is not None and evaluation.budget.state == "exceeded":
+        auto_compensation = await _auto_compensation_reply(
+            sender_phone, evaluation.budget, result.user_id
+        )
+        if auto_compensation:
+            parts.append(auto_compensation)
+    return "\n\n".join(parts)
 
 
 async def _route_needs_category_confirmation(
@@ -984,6 +1056,23 @@ async def _register_multiop(
         budget_feedback = _unique_budget_feedback(evaluations)
         if budget_feedback:
             reply = f"{reply}\n\n" + "\n\n".join(budget_feedback)
+        user_id = next(
+            (result.user_id for result in results if result.user_id), None
+        )
+        seen_limits = set()
+        for evaluation in evaluations:
+            budget = evaluation.budget
+            if budget is None or budget.limit_id in seen_limits:
+                continue
+            seen_limits.add(budget.limit_id)
+            if budget.state != "exceeded":
+                continue
+            auto_compensation = await _auto_compensation_reply(
+                sender_phone, budget, user_id
+            )
+            if auto_compensation:
+                reply = f"{reply}\n\n{auto_compensation}"
+                break
     return reply
 
 
@@ -1047,6 +1136,79 @@ def _budget_status_reply(status: BudgetStatus) -> str:
         f"Gastaste ${spent} {status.currency} de ${limit} {status.currency}.\n"
         f"Te quedan ${remaining} {status.currency} ({status.percentage}% usado)."
     )
+
+
+def _compensation_allocation_line(allocation, currency: str) -> str:
+    return (
+        f"{allocation.category_name}: "
+        f"${_format_limit_amount(allocation.before_limit)} → "
+        f"${_format_limit_amount(allocation.after_limit)} {currency}"
+    )
+
+
+def _compensation_summary(proposal: CompensationProposal) -> str:
+    return (
+        f"Compensación de ${_format_limit_amount(proposal.amount)} {proposal.currency} "
+        f"para {proposal.target.category_name}"
+    )
+
+
+def _compensation_reply(proposal: CompensationProposal, *, auto: bool = False) -> str:
+    currency = proposal.currency
+    if auto:
+        allocations = "".join(
+            f"• {_compensation_allocation_line(allocation, currency)}\n"
+            for allocation in (*proposal.donors, proposal.target)
+        )
+        return (
+            f"Detecté que *{proposal.target.category_name}* superó su límite.\n\n"
+            f"💡 Podés compensarlo moviendo ${_format_limit_amount(proposal.amount)} "
+            f"{currency}:\n"
+            f"{allocations}"
+            "El total se mantiene. Vence en 30 minutos.\n"
+            "Respondé *confirmar compensación* o *no por ahora*."
+        )
+    donors = "\n".join(
+        f"• {_compensation_allocation_line(donor, currency)}"
+        for donor in proposal.donors
+    )
+    return (
+        "💡 *Compensación de presupuesto*\n\n"
+        f"Muevo ${_format_limit_amount(proposal.amount)} {currency} de otras categorías "
+        f"a *{proposal.target.category_name}*.\n\n"
+        f"Donantes:\n{donors}\n\n"
+        f"*{_compensation_allocation_line(proposal.target, currency)}*\n\n"
+        "El total de tus límites se mantiene: no se modifica ningún movimiento.\n"
+        "La propuesta vence en 30 minutos.\n"
+        "Respondé *confirmar compensación* o *no por ahora*."
+    )
+
+
+def _compensation_applied_reply(proposal: CompensationProposal) -> str:
+    currency = proposal.currency
+    allocations = "\n".join(
+        f"• {_compensation_allocation_line(allocation, currency)}"
+        for allocation in (proposal.target, *proposal.donors)
+    )
+    return (
+        f"✅ Compensé *{proposal.target.category_name}* con "
+        f"${_format_limit_amount(proposal.amount)} {currency}.\n\n"
+        f"{allocations}\n\n"
+        "No se modificó ningún movimiento."
+    )
+
+
+def _compensation_apply_reply(apply_result: CompensationApplyResult) -> str:
+    if apply_result.status == "applied" and apply_result.proposal is not None:
+        return _compensation_applied_reply(apply_result.proposal)
+    if apply_result.status == "stale":
+        return (
+            "Los saldos cambiaron desde que armé la propuesta. "
+            "Pedime un nuevo cálculo."
+        )
+    if apply_result.status == "expired":
+        return "La propuesta venció. Pedime un nuevo cálculo."
+    return "No pude aplicar la compensación. No se modificó ningún límite."
 
 
 def _budget_feedback_reply(evaluation: BudgetEvaluation) -> str:
@@ -1618,6 +1780,48 @@ async def _handle_budget_query(sender_phone: str, extracted_data: dict) -> str:
         label = _limit_month_label(reference_date.month, reference_date.year)
         return f"No tenés presupuestos definidos para {label} en {currency}."
     return "\n\n".join(_budget_status_reply(status) for status in result.budgets)
+
+
+async def _handle_budget_compensation(sender_phone: str, extracted_data: dict) -> str:
+    user_id = await asyncio.to_thread(_user_id_by_phone, sender_phone)
+    if user_id is None:
+        return "No encontré tu cuenta."
+    raw_amount = extracted_data.get("compensation_amount")
+    requested_amount = Decimal(str(raw_amount)) if raw_amount is not None else None
+    result = await asyncio.to_thread(
+        BudgetCompensationService.build_proposal,
+        user_id,
+        target_category=extracted_data.get("compensation_target"),
+        source_category=extracted_data.get("compensation_source"),
+        requested_amount=requested_amount,
+        currency=extracted_data.get("limit_currency"),
+    )
+    if result.status == "ok" and result.proposal is not None:
+        await ConversationService.set_pending_compensation(
+            sender_phone, result.proposal.to_dict()
+        )
+        stored = await ConversationService.get_pending_compensation(sender_phone)
+        if (
+            stored is None
+            or stored.proposal.get("proposal_id") != result.proposal.proposal_id
+        ):
+            return (
+                "No pude preparar la propuesta de compensación. "
+                "Intentá nuevamente."
+            )
+        extracted_data["_conversation_event_key"] = "budget.compensation_proposed"
+        extracted_data["_conversation_event_variables"] = {
+            "summary": _compensation_summary(result.proposal)
+        }
+        return _compensation_reply(result.proposal)
+    if result.status == "no_excess":
+        return "No veo categorías excedidas en el período actual."
+    if result.status == "no_funds":
+        return (
+            "No hay otras categorías con saldo disponible para compensar. "
+            "Podés ajustar el límite de la categoría excedida para darle más margen."
+        )
+    return "No pude calcular la compensación. Intentá nuevamente."
 
 
 def _format_query_movements_reply(
@@ -2443,6 +2647,61 @@ async def _dispatch_incoming_message(
                 )
         return DispatchResult(reply_text=reply_text, service_invoked="conversation")
 
+    # ----------------------------------------------------------
+    # Multi-turn: confirmar una compensación de presupuesto
+    # ----------------------------------------------------------
+    is_awaiting_compensation = (
+        await ConversationService.is_awaiting_compensation_confirmation(sender_phone)
+    )
+
+    if is_awaiting_compensation:
+        pending = await ConversationService.get_pending_compensation(sender_phone)
+        if pending is None:
+            await ConversationService.clear_state(sender_phone)
+            return DispatchResult(
+                reply_text=(
+                    "Se perdió el contexto. Podés pedirme una nueva compensación."
+                ),
+                service_invoked="conversation",
+            )
+        extracted_data = await extract_message_once()
+        if extracted_data.get("intent") == "reset_context":
+            return await _handle_reset_context(sender_phone)
+        intent = extracted_data.get("intent", "out_of_scope")
+        if intent == "reject_compensation" or _is_cancel_request(text_body):
+            await ConversationService.clear_state(sender_phone)
+            return DispatchResult(
+                reply_text="Listo, no cambié ningún límite.",
+                service_invoked="conversation",
+            )
+        if intent == "confirm_compensation" or (
+            intent in ("out_of_scope", "greeting") and _is_confirm_request(text_body)
+        ):
+            apply_result = await asyncio.to_thread(
+                BudgetCompensationService.apply, pending.proposal
+            )
+            await ConversationService.clear_state(sender_phone)
+            return DispatchResult(
+                reply_text=_compensation_apply_reply(apply_result),
+                service_invoked="compensation",
+            )
+        # Con error del LLM no se puede decidir la intención: conservar la
+        # propuesta pendiente para que el usuario pueda confirmar o rechazar.
+        if extracted_data.get("error"):
+            return DispatchResult(
+                reply_text=(
+                    "No pude procesar tu respuesta. "
+                    "Respondé *confirmar compensación* o *no por ahora*."
+                ),
+                raw_llm_response=extracted_data,
+                service_invoked="llm",
+                intent=intent,
+            )
+        # El mensaje no responde la confirmación: la propuesta quedó abandonada.
+        # Limpiar el estado para que no secuestre los mensajes siguientes y
+        # procesar el mensaje normalmente (fall-through).
+        await ConversationService.clear_state(sender_phone)
+
     # Procesar mensaje con LLM (fecha + categorías del usuario como contexto)
     extracted_data = await extract_message_once()
     if extracted_data.get("intent") == "reset_context":
@@ -2492,6 +2751,10 @@ async def _dispatch_incoming_message(
     elif intent == "budget_query":
         reply_text = await _handle_budget_query(sender_phone, extracted_data)
         service_invoked = "budget"
+
+    elif intent == "compensate_budget":
+        reply_text = await _handle_budget_compensation(sender_phone, extracted_data)
+        service_invoked = "compensation"
 
     elif intent == "query_movements":
         reply_text = await _handle_query_movements(sender_phone, extracted_data)
@@ -2642,6 +2905,13 @@ async def _dispatch_incoming_message(
         reply_text = "No encontré un movimiento pendiente para confirmar."
         service_invoked = "conversation"
 
+    elif intent in ("confirm_compensation", "reject_compensation"):
+        reply_text = (
+            "No tengo una propuesta de compensación vigente. "
+            "Pedime que evalúe tu presupuesto."
+        )
+        service_invoked = "conversation"
+
     elif intent in ("greeting", "out_of_scope", "reminder", "expense_summary"):
         print(f"[{intent.upper()}] User {sender_phone}: {text_body}")
         reply_text = _safe_non_persisted_reply(extracted_data)
@@ -2729,7 +2999,7 @@ async def _handle_configured_action(
             reply_text="Listo, cancelé la operación pendiente.",
             service_invoked="conversation_flow",
         )
-    if action in {"reject_category", "reject_limit"}:
+    if action in {"reject_category", "reject_limit", "reject_compensation"}:
         await ConversationService.clear_state(sender_phone)
         return DispatchResult(
             reply_text="Listo, no hice ningún cambio.",
@@ -2742,6 +3012,8 @@ async def _handle_configured_action(
         )
     if action == "confirm_category":
         return await _confirm_pending_category_action(sender_phone)
+    if action == "confirm_compensation":
+        return await _confirm_pending_compensation_action(sender_phone)
     if action in {"confirm_limit_year", "confirm_limit_category"}:
         return await _confirm_pending_limit_action(sender_phone, action)
     return DispatchResult(
@@ -2796,6 +3068,23 @@ async def _confirm_pending_category_action(sender_phone: str) -> DispatchResult:
             "amount": _format_amount(pending.amount),
             "currency": pending.currency,
         },
+    )
+
+
+async def _confirm_pending_compensation_action(sender_phone: str) -> DispatchResult:
+    pending = await ConversationService.get_pending_compensation(sender_phone)
+    if pending is None:
+        return DispatchResult(
+            reply_text="No encontré una propuesta de compensación pendiente.",
+            service_invoked="conversation_flow",
+        )
+    apply_result = await asyncio.to_thread(
+        BudgetCompensationService.apply, pending.proposal
+    )
+    await ConversationService.clear_state(sender_phone)
+    return DispatchResult(
+        reply_text=_compensation_apply_reply(apply_result),
+        service_invoked="compensation",
     )
 
 

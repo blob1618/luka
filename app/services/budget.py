@@ -139,7 +139,7 @@ class BudgetService:
         ).quantize(Decimal("0.1"))
         if spent_amount > limit_amount:
             state = "exceeded"
-        elif spent_amount == limit_amount:
+        elif limit_amount > 0 and spent_amount == limit_amount:
             state = "reached"
         else:
             state = "available"
@@ -222,6 +222,18 @@ class BudgetService:
             .all()
         )
         return [cls._build_status(row) for row in rows]
+
+    @classmethod
+    def query_statuses(
+        cls,
+        session,
+        user_id: Any,
+        reference_date: date,
+        currency: str | None = None,
+        category_id: Any | None = None,
+    ) -> list[BudgetStatus]:
+        """Contrato público para servicios que ya administran su propia sesión."""
+        return cls._query_statuses(session, user_id, reference_date, currency, category_id)
 
     @classmethod
     def get_status(

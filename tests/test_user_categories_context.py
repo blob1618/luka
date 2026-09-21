@@ -173,6 +173,10 @@ async def test_expense_flow_passes_context_to_llm(db_context, monkeypatch):
             new_callable=AsyncMock, return_value=False,
         ),
         patch(
+            "app.services.dispatcher.ConversationService.is_awaiting_compensation_confirmation",
+            new_callable=AsyncMock, return_value=False,
+        ),
+        patch(
             "app.services.dispatcher.ConversationService.set_last_movement",
             new_callable=AsyncMock,
         ),

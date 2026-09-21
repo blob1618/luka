@@ -75,6 +75,23 @@ def create_limit(session, user_id, categoria_id, amount, month, year):
     return limite
 
 
+def test_zero_limit_amount_is_persisted(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    category = create_category(session, user.id, "Transporte")
+    limit = LimiteCategoria(
+        usuario_id=user.id,
+        categoria_id=category.id,
+        cantidad_max=Decimal("0.00"),
+        moneda="ARS",
+        inicio_periodo=date(2026, 9, 1),
+        fin_periodo=date(2026, 9, 30),
+    )
+    session.add(limit)
+    session.commit()
+    assert session.get(LimiteCategoria, limit.id) is not None
+
+
 def limit_data(**overrides):
     data = {
         "limit_category": "Comida",

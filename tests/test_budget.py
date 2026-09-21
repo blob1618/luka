@@ -175,6 +175,22 @@ def test_status_reached_and_exceeded(
     assert result.budget.percentage == Decimal(percentage)
 
 
+def test_zero_limit_without_spending_is_available(db_context):
+    session = db_context
+    user = create_user(session)
+    category = create_category(session, user, "Transporte")
+    create_budget(session, user, category, amount="0")
+
+    result = BudgetService.get_status(
+        user.id,
+        "Transporte",
+        reference_date=REFERENCE_DATE,
+    )
+
+    assert result.status == "ok"
+    assert result.budget.state == "available"
+
+
 def test_status_is_isolated_by_user(db_context):
     session = db_context
     first = create_user(session)

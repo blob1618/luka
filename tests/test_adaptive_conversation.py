@@ -60,7 +60,7 @@ def conversation_db(monkeypatch):
         "is_awaiting_rename", "is_awaiting_reminder_data",
         "is_awaiting_limit_year_confirmation", "is_awaiting_limit_category_confirmation",
         "is_awaiting_limit_data", "is_awaiting_limit_delete_category",
-        "is_awaiting_category_confirmation",
+        "is_awaiting_category_confirmation", "is_awaiting_compensation_confirmation",
     ):
         monkeypatch.setattr(service, method, AsyncMock(return_value=False))
     monkeypatch.setattr(service, "is_awaiting_limit_month_selection", AsyncMock(side_effect=lambda phone: state["pending_delete"] is not None))

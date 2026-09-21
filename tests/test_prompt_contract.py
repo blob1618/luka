@@ -40,6 +40,7 @@ SUPPORTED_INTENTS = {
     "delete_category", "list_categories", "update_movement",
     "delete_movement", "create_limit", "change_limit", "list_limits",
     "delete_limit", "confirm_limit", "reject_limit", "reset_context",
+    "compensate_budget", "confirm_compensation", "reject_compensation",
 }
 
 

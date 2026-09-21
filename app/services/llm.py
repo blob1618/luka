@@ -192,6 +192,7 @@ class LLMService:
                 "update_movement", "delete_movement",
                 "create_limit", "change_limit", "list_limits",
                 "delete_limit", "confirm_limit", "reject_limit",
+                "compensate_budget", "confirm_compensation", "reject_compensation",
                 "reset_context",
             }
             if intent not in allowed_intents:
@@ -275,6 +276,22 @@ class LLMService:
                 ):
                     limit_currency = None
 
+            compensation_target = parsed.get("compensation_target")
+            if compensation_target is not None:
+                compensation_target = str(compensation_target).strip() or None
+
+            compensation_source = parsed.get("compensation_source")
+            if compensation_source is not None:
+                compensation_source = str(compensation_source).strip() or None
+
+            compensation_amount = parsed.get("compensation_amount")
+            try:
+                compensation_amount = (
+                    float(compensation_amount) if compensation_amount is not None else None
+                )
+            except (TypeError, ValueError):
+                compensation_amount = None
+
             raw_movements = parsed.get("movements")
             if isinstance(raw_movements, list) and raw_movements:
                 movements = [cls._normalize_single(m, base=parsed) for m in raw_movements]
@@ -310,6 +327,9 @@ class LLMService:
                 "limit_month": limit_month,
                 "limit_year": limit_year,
                 "limit_currency": limit_currency,
+                "compensation_target": compensation_target,
+                "compensation_source": compensation_source,
+                "compensation_amount": compensation_amount,
                 "reply_text": str(parsed.get("reply_text") or ""),
                 "movements": movements,
             }
@@ -342,6 +362,9 @@ class LLMService:
                 "limit_month": None,
                 "limit_year": None,
                 "limit_currency": None,
+                "compensation_target": None,
+                "compensation_source": None,
+                "compensation_amount": None,
                 "reply_text": (
                     "No he podido analizar tu mensaje en este momento. "
                     "¿Podés reformularlo e intentar de nuevo?"

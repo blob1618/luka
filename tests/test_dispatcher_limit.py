@@ -90,6 +90,11 @@ def limit_flow_patches(**overrides):
             return_value=defaults["awaiting_limit_month"],
         ),
         patch(
+            "app.services.dispatcher.ConversationService.is_awaiting_compensation_confirmation",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
             "app.services.dispatcher.LLMService.process_message",
             new_callable=AsyncMock,
             return_value=defaults["llm"],

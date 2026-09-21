@@ -1,4 +1,7 @@
 import uuid
+from calendar import monthrange
+from datetime import datetime
+from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -8,6 +11,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.models.database as database_module
+import app.services.compensation as compensation_module
+import app.services.dispatcher as dispatcher_module
 import app.services.finance as finance_module
 import app.services.onboarding as onboarding_module
 import app.services.reminder as reminder_module
@@ -15,11 +20,24 @@ from app.main import app
 from app.models.database import (
     Base,
     Categoria,
+    LimiteCategoria,
     MovimientoFinanciero,
     OnboardingInvitacion,
     Usuario,
 )
-from app.services.webhook_idempotency import InboundMessageClaim
+from app.services.budget import ARGENTINA_TZ
+from app.services.conversation import ConversationService
+from app.services.webhook_idempotency import (
+    InboundMessageClaim,
+    WebhookIdempotencyService,
+)
+
+_REAL_IS_AWAITING_COMPENSATION = (
+    ConversationService.is_awaiting_compensation_confirmation
+)
+_REAL_IDEMPOTENCY_CLAIM = WebhookIdempotencyService.claim
+_REAL_IDEMPOTENCY_COMPLETE = WebhookIdempotencyService.complete
+_REAL_IDEMPOTENCY_RELEASE = WebhookIdempotencyService.release
 
 pytestmark = pytest.mark.integration
 
@@ -37,6 +55,7 @@ def no_pending_conversation_flows(monkeypatch):
         "is_awaiting_limit_data",
         "is_awaiting_limit_delete_category",
         "is_awaiting_limit_month_selection",
+        "is_awaiting_compensation_confirmation",
     ):
         monkeypatch.setattr(
             f"app.services.dispatcher.ConversationService.{method}",
@@ -75,6 +94,8 @@ def db_context(monkeypatch):
     monkeypatch.setattr(onboarding_module, "SessionLocal", testing_session_local)
     monkeypatch.setattr(database_module, "SessionLocal", testing_session_local)
     monkeypatch.setattr(reminder_module, "SessionLocal", testing_session_local)
+    monkeypatch.setattr(dispatcher_module, "SessionLocal", testing_session_local)
+    monkeypatch.setattr(compensation_module, "SessionLocal", testing_session_local)
     monkeypatch.setenv(
         "ONBOARDING_REGISTRATION_URL",
         "https://example.com/registro",
@@ -504,3 +525,149 @@ class TestReminderMultiTurn:
         send_message.assert_awaited_once()
         reply = send_message.await_args.args[1]
         assert "nombre" in reply.lower()
+
+
+class TestCompensationMultiTurn:
+    def test_manual_proposal_confirm_and_idempotent_retry(self, db_context):
+        """Turn 1 proposes without writing; turn 2 applies; retried id is ignored."""
+        session = db_context["session"]
+        user = create_user(session, whatsapp_id="5491155551234")
+        comida = create_category(session, user.id, "Comida")
+        transporte = create_category(session, user.id, "Transporte")
+
+        today = datetime.now(ARGENTINA_TZ).date()
+        period_start = today.replace(day=1)
+        period_end = today.replace(day=monthrange(today.year, today.month)[1])
+        session.add_all(
+            [
+                LimiteCategoria(
+                    usuario_id=user.id,
+                    categoria_id=comida.id,
+                    cantidad_max=Decimal("1000"),
+                    moneda="ARS",
+                    inicio_periodo=period_start,
+                    fin_periodo=period_end,
+                ),
+                LimiteCategoria(
+                    usuario_id=user.id,
+                    categoria_id=transporte.id,
+                    cantidad_max=Decimal("1000"),
+                    moneda="ARS",
+                    inicio_periodo=period_start,
+                    fin_periodo=period_end,
+                ),
+                MovimientoFinanciero(
+                    usuario_id=user.id,
+                    categoria_id=comida.id,
+                    tipo="egreso",
+                    cantidad=Decimal("1100"),
+                    moneda="ARS",
+                    descripcion="cena",
+                    fecha_movimiento=today,
+                ),
+            ]
+        )
+        session.commit()
+
+        def amounts_by_category():
+            session.expire_all()
+            rows = (
+                session.query(Categoria.nombre, LimiteCategoria.cantidad_max)
+                .join(LimiteCategoria, LimiteCategoria.categoria_id == Categoria.id)
+                .all()
+            )
+            return {nombre: Decimal(str(cantidad)) for nombre, cantidad in rows}
+
+        limits_before = amounts_by_category()
+        movements_before = movements(session)
+        movement_total_before = sum(
+            (movement.cantidad for movement in movements_before), Decimal("0")
+        )
+
+        phone = "5491155551234"
+        turn1_payload = make_webhook_payload(
+            body="compensá mi presupuesto",
+            sender_phone=phone,
+            whatsapp_message_id="wamid.compensation.1",
+        )
+        turn2_payload = make_webhook_payload(
+            body="confirmar compensación",
+            sender_phone=phone,
+            whatsapp_message_id="wamid.compensation.2",
+        )
+        turn1_llm = {
+            "intent": "compensate_budget",
+            "compensation_target": "Comida",
+            "compensation_source": None,
+            "compensation_amount": None,
+            "limit_currency": "ARS",
+            "reply_text": "El reply del LLM no confirma cambios.",
+        }
+        turn2_llm = {"intent": "confirm_compensation", "reply_text": "Confirmando."}
+
+        with (
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+            ) as process_message,
+            patch(
+                "app.main.send_whatsapp_message",
+                new_callable=AsyncMock,
+            ) as send_message,
+            patch(
+                "app.services.dispatcher.ConversationService.is_awaiting_compensation_confirmation",
+                _REAL_IS_AWAITING_COMPENSATION,
+            ),
+            patch(
+                "app.services.webhook_idempotency.WebhookIdempotencyService.claim",
+                _REAL_IDEMPOTENCY_CLAIM,
+            ),
+            patch(
+                "app.services.webhook_idempotency.WebhookIdempotencyService.complete",
+                _REAL_IDEMPOTENCY_COMPLETE,
+            ),
+            patch(
+                "app.services.webhook_idempotency.WebhookIdempotencyService.release",
+                _REAL_IDEMPOTENCY_RELEASE,
+            ),
+        ):
+            process_message.side_effect = [turn1_llm, turn2_llm]
+
+            response1 = client.post("/webhook", json=turn1_payload)
+            assert response1.status_code == 200
+            assert response1.json() == {"status": "ok"}
+            assert send_message.await_count == 1
+            reply1 = send_message.await_args.args[1]
+            assert "Comida: $1.000,00 → $1.100,00 ARS" in reply1
+            assert "Transporte: $1.000,00 → $900,00 ARS" in reply1
+            assert amounts_by_category() == limits_before
+
+            response2 = client.post("/webhook", json=turn2_payload)
+            assert response2.status_code == 200
+            assert process_message.await_count == 2
+            assert send_message.await_count == 2
+            reply2 = send_message.await_args.args[1]
+            assert "Comida: $1.000,00 → $1.100,00 ARS" in reply2
+            assert "Transporte: $1.000,00 → $900,00 ARS" in reply2
+            assert "No se modificó ningún movimiento" in reply2
+
+            limits_after = amounts_by_category()
+            assert limits_after == {
+                "Comida": Decimal("1100"),
+                "Transporte": Decimal("900"),
+            }
+            assert sum(limits_after.values()) == sum(limits_before.values())
+            assert len(movements(session)) == len(movements_before)
+            assert (
+                sum(
+                    (movement.cantidad for movement in movements(session)),
+                    Decimal("0"),
+                )
+                == movement_total_before
+            )
+
+            retry_response = client.post("/webhook", json=turn2_payload)
+            assert retry_response.status_code == 200
+            assert process_message.await_count == 2
+            assert send_message.await_count == 2
+            assert amounts_by_category() == limits_after

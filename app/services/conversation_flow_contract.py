@@ -185,6 +185,16 @@ EVENT_POLICIES: dict[str, EventPolicy] = {
     ),
     "category.deleted": EventPolicy(frozenset({"category"})),
     "category.not_found": EventPolicy(frozenset({"category"})),
+    "budget.compensation_proposed": EventPolicy(
+        frozenset({"summary"}),
+        frozenset(
+            {
+                "confirm_compensation",
+                "reject_compensation",
+                "cancel_pending_operation",
+            }
+        ),
+    ),
     "reminder.missing_concept": EventPolicy(
         actions=frozenset({"cancel_pending_operation"})
     ),

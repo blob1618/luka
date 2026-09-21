@@ -1,6 +1,8 @@
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from app.services.conversation import LastCreatedLimit
 from app.services.intent_routing import (
     normalize_limit_intent,
@@ -43,6 +45,41 @@ def test_limit_status_is_budget_query_not_list():
         {"intent": "list_limits"},
     )
     assert result["intent"] == "budget_query"
+
+
+@pytest.mark.parametrize(
+    ("text", "intent"),
+    [
+        ("compensá mi presupuesto porque me pasé", "compensate_budget"),
+        (
+            "confirmá la compensación del presupuesto porque me excedí",
+            "confirm_compensation",
+        ),
+        (
+            "rechazá la compensación del presupuesto porque me excedí",
+            "reject_compensation",
+        ),
+    ],
+)
+def test_compensation_intents_are_not_rerouted_to_budget_query(text, intent):
+    result = normalize_limit_intent(text, {"intent": intent})
+    assert result["intent"] == intent
+
+
+def test_pure_budget_query_still_wins_over_limit_terms():
+    result = normalize_limit_intent(
+        "¿cuánto me queda del presupuesto de comida?",
+        {"intent": "out_of_scope"},
+    )
+    assert result["intent"] == "budget_query"
+
+
+def test_pure_limit_creation_is_untouched():
+    result = normalize_limit_intent(
+        "creá un límite de 50000 para comida",
+        {"intent": "create_limit"},
+    )
+    assert result["intent"] == "create_limit"
 
 
 def test_current_month_references_last_limit():
