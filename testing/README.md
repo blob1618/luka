@@ -74,6 +74,8 @@ docker compose -f testing/docker-compose.yml up -d
 
 El primer `build` puede tardar: descarga la imagen `python:3.11-slim` e instala las dependencias del proyecto + Streamlit.
 
+> Si venís de una versión anterior de este compose (antes del hot reload), recreá el contenedor una vez con `docker compose -f testing/docker-compose.yml down` y después `up -d`. No hace falta `build` salvo que cambien dependencias.
+
 Abrir la app en:
 
 ```text
@@ -121,7 +123,7 @@ Si Redis no responde, el test se saltea con `pytest.skip` en lugar de fallar.
 ## Características
 
 - Base de datos aislada: la app configura `DATABASE_URL` desde `TESTING_DATABASE_URL`; fuera del contenedor su valor por defecto es `sqlite:///./testing_luka.db`. El compose lo dirige a `/data/testing_luka.db`, dentro del volumen administrado `testing_data`, para evitar conflictos de permisos con el montaje del repositorio. Es independiente de `luka.db` y de Supabase.
-- Volumen en vivo: el compose monta todo el repositorio en `/app`, por lo que los cambios de código se reflejan sin reconstruir la imagen. El `COPY . /app/` del Dockerfile queda cubierto por el volumen en runtime.
+- Hot reload: el compose monta todo el repositorio en `/app` (bind mount) y setea `PYTHONPATH=/app`; el config de proyecto `.streamlit/config.toml` de la raíz usa `fileWatcherType = "poll"` y `runOnSave = true` (polling porque los eventos inotify no cruzan el bind mount Windows→VM de Podman). Guardar un módulo ya importado bajo `app/` o `testing/` rerunea la app en ejecución en ~1-3 s y reimporta el código nuevo, sin reiniciar ni reconstruir: se conservan la sesión de chat (`st.session_state`), la DB SQLite y Redis. Los archivos nuevos bajo `app/` también disparan (namespace package: se vigila el directorio); en `testing/`, un archivo nuevo entra cuando un módulo existente lo importa. Guardar mientras se procesa un mensaje puede cortar esa respuesta. El rerun necesita una pestaña conectada: si guardás con el navegador cerrado, la próxima sesión puede arrancar con módulos viejos hasta el siguiente guardado. Los prompts (`prompts/*.md`) se releen en cada mensaje, así que no necesitan reload. Reconstruir la imagen solo hace falta si cambian dependencias (`requirements*.txt`) o el `testing/Dockerfile`. El `.streamlit/config.toml` que antes vivía en `testing/.streamlit/` se movió a la raíz del repo porque el CWD del contenedor es `/app` y Streamlit busca `$CWD/.streamlit/config.toml` (la copia vieja nunca se leía). El `COPY . /app/` del Dockerfile queda cubierto por el bind mount en runtime.
 - Redis: el compose levanta `redis:7-alpine` y lo expone en el host como `localhost:6380` (mapea al puerto interno 6379). El estado multi-turno de la conversación (confirmación de categoría, recordatorios en pasos, etc.) vive ahí y se puede inspeccionar desde el panel de debug.
 - Mismo código de backend: la app importa `app/*` directamente. `WebhookModeService` ejecuta `process_incoming_message` del dispatcher con el teléfono simulado, sin HTTP y sin enviar mensajes a la API de WhatsApp; la confirmación de un registro ocurre recién después de la persistencia en base, igual que en producción.
 - Provider y prompt en caliente: cambiar provider o archivo de prompt en la sidebar resetea el `LLMService` y aplica el nuevo modelo/prompt en el siguiente mensaje.
