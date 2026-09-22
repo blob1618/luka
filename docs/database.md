@@ -165,7 +165,7 @@ Al crear la migración base se compararon el esquema remoto y una reconstrucció
 
 ## Migraciones y desarrollo local
 
-Supabase CLI es el flujo único de migraciones. El historial previo quedó consolidado en `supabase/migrations/20260911010815_baseline_remote_schema.sql`, cuyo timestamp coincide con el historial remoto. El historial vigente llega hasta `20260920210000_allow_zero_limit_amount.sql`.
+Supabase CLI es el flujo operativo vigente de migraciones durante STK-210. El historial previo quedó consolidado en `supabase/migrations/20260911010815_baseline_remote_schema.sql`, y el historial vigente llega hasta `20260921045538_recurring_confirmation_delivery.sql`.
 
 1. Crear cada cambio con `supabase migration new <nombre>` y editar solo el archivo nuevo.
 2. Ejecutar `supabase db reset` y `supabase db lint --level warning` antes de abrir o integrar el cambio.
@@ -173,6 +173,14 @@ Supabase CLI es el flujo único de migraciones. El historial previo quedó conso
 4. Confirmar después del despliegue con `supabase migration list` y una verificación puntual de los objetos modificados. Que exista el archivo no prueba que la migración esté aplicada.
 5. Corregir un cambio publicado mediante una nueva migración forward-only; no guardar rollbacks dentro de `supabase/migrations/`.
 6. Limitar `Base.metadata.create_all()` a SQLite o bases locales descartables; no sustituye migraciones en Supabase.
+
+### Preparación de Alembic y Gobernanza de Esquema (STK-210 / STK-211)
+
+Como parte de **STK-210**, se establece la infraestructura de Alembic en el backend (`alembic.ini`, `alembic/env.py`, `alembic/versions/20260922_0001_initial_baseline.py`):
+- **Autoridad única sin dualidad**: Durante STK-210, `supabase/migrations/` permanece como la única autoridad operativa del esquema. La transición definitiva y exclusiva hacia Alembic se ejecutará en **STK-211** (coordinada con el pipeline de despliegue automático `alembic upgrade head`).
+- **Baseline canónica**: `20260922_0001_initial_baseline.py` modela el esquema completo para bases vacías y falla de inmediato ante esquemas preexistentes (fail-fast).
+- **Adopción verificable (cero blind stamp)**: Se provee `scripts/adopt_existing_database.py` que comprueba el estado de `alembic_version`, verifica la ausencia de drift y estampa la revisión baseline nativamente. La ejecución sobre producción queda reservada para una autorización posterior explícita.
+- **Auditoría de solo lectura y snapshots**: `scripts/audit_schema_adoption.py` contrasta la base viva o un snapshot JSON de catálogos (`--snapshot`) contra el Contrato de Comparación PostgreSQL sin leer PII ni ejecutar DDL (ver `docs/audits/README.md` y `docs/audits/export_supabase_catalog_snapshot.sql`).
 
 Configuración local por defecto:
 
