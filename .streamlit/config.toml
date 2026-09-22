@@ -1,0 +1,14 @@
+# Configuración del entorno de testing (Streamlit corre con CWD=/app dentro del contenedor).
+[theme]
+base = "dark"
+primaryColor = "#8ab4f8"
+backgroundColor = "#161b22"
+secondaryBackgroundColor = "#21262d"
+textColor = "#e6edf3"
+
+[server]
+maxUploadSize = 10
+# El bind mount Windows→VM no propaga eventos inotify: forzamos polling.
+fileWatcherType = "poll"
+# Rerun automático al guardar (sin esto Streamlit solo muestra un aviso).
+runOnSave = true
