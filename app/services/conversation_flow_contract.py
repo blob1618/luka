@@ -158,8 +158,17 @@ EVENT_POLICIES: dict[str, EventPolicy] = {
     "dashboard.link.not_eligible": EventPolicy(terminal_only=True),
     "dashboard.link.error": EventPolicy(terminal_only=True),
     "movement.registered": EventPolicy(
-        frozenset({"movement_type", "description", "amount", "currency"}),
-        terminal_only=True,
+        frozenset(
+            {
+                "movement_id",
+                "movement_type",
+                "description",
+                "amount",
+                "currency",
+                "category",
+            }
+        ),
+        frozenset({"request_category_change"}),
     ),
     "movement.invalid_data": EventPolicy(
         frozenset({"reason"}),
@@ -173,9 +182,6 @@ EVENT_POLICIES: dict[str, EventPolicy] = {
     "movement.annulled": EventPolicy(
         frozenset({"description", "amount", "currency"}),
         terminal_only=True,
-    ),
-    "movement.category_hint": EventPolicy(
-        actions=frozenset({"request_category_change"})
     ),
     "category.confirmation_required": EventPolicy(
         frozenset({"category"}),

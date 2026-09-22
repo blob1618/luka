@@ -148,7 +148,7 @@ versión contempla estos grupos:
 | --- | --- | --- |
 | Onboarding | `onboarding.invitation`, `onboarding.error` | `OnboardingService` |
 | Dashboard | `dashboard.link.sent`, `dashboard.link.not_eligible`, `dashboard.link.error` | `DashboardLinkService` |
-| Movimientos | `movement.registered`, `movement.updated`, `movement.annulled`, `movement.invalid_data`, `movement.persistence_error`, `movement.category_hint` | `FinanceService` |
+| Movimientos | `movement.registered`, `movement.updated`, `movement.annulled`, `movement.invalid_data`, `movement.persistence_error` | `FinanceService` |
 | Categorías | `category.confirmation_required`, `category.deleted`, `category.not_found` | `FinanceService` |
 | Recordatorios | `reminder.missing_concept`, `reminder.missing_day`, `reminder.created`, `reminder.duplicate`, `reminder.updated`, `reminder.paused`, `reminder.activated`, `reminder.deleted` | `ReminderService` |
 | Límites | `limit.missing_data`, `limit.year_confirmation`, `limit.category_confirmation`, `limit.created`, `limit.updated`, `limit.listed`, `limit.deleted`, `limit.bulk_deleted`, `limit.month_selection` | `LimitService` |
@@ -160,11 +160,10 @@ Cada evento declara en código su lista de variables y acciones. Ejemplos:
 | Evento | Variables | Acciones permitidas |
 | --- | --- | --- |
 | `dashboard.link.sent` | `login_url`, `ttl_minutes` | ninguna |
-| `movement.registered` | `movement_type`, `description`, `amount`, `currency` | ninguna |
+| `movement.registered` | `movement_id`, `movement_type`, `description`, `amount`, `currency`, `category` | `request_category_change` |
 | `movement.updated` | `description`, `amount`, `currency`, `category` | ninguna |
 | `movement.annulled` | `description`, `amount`, `currency` | ninguna |
 | `limit.bulk_deleted` | `category`, `periods`, `count` | ninguna |
-| `movement.category_hint` | ninguna | `request_category_change` |
 | `category.confirmation_required` | `category` | `confirm_category`, `reject_category`, `cancel_pending_operation` |
 | `reminder.missing_day` | `concept` | `cancel_pending_operation` |
 | `limit.category_confirmation` | `category` | `confirm_limit_category`, `reject_limit`, `cancel_pending_operation` |

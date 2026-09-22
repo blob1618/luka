@@ -116,7 +116,7 @@ class ConversationFlowRuntime:
 
             if option.get("action"):
                 await ConversationService.clear_pending_conversation_flow(sender_phone)
-                return await action_handler(option["action"])
+                return await action_handler(option["action"], pending.variables)
 
             next_node = option.get("next_node")
             if not next_node:

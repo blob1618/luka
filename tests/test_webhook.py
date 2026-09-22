@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.whatsapp import WhatsAppReplyButtons
 from app.main import app
 from app.services.finance import MovementRegistrationResult
 from app.services.onboarding import OnboardingDecision, OnboardingResult, OnboardingService
@@ -24,6 +25,7 @@ def no_pending_conversation_flows(monkeypatch):
         "is_awaiting_limit_delete_category",
         "is_awaiting_limit_month_selection",
         "is_awaiting_compensation_confirmation",
+        "is_awaiting_movement_category_change",
     ):
         monkeypatch.setattr(
             f"app.services.dispatcher.ConversationService.{method}",
@@ -41,6 +43,10 @@ def no_pending_conversation_flows(monkeypatch):
     monkeypatch.setattr(
         "app.services.webhook_idempotency.WebhookIdempotencyService.release",
         AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "app.services.dispatcher.ConversationFlowRuntime.render_event",
+        AsyncMock(return_value=None),
     )
 
 
@@ -196,10 +202,13 @@ def test_handle_webhook_registered_movement_confirms_after_persistence():
     assert reg_kwargs["whatsapp_message_id"] == "wamid.HBgL"
     assert reg_kwargs["original_text"] == "Gaste 5000 en supermercado"
     assert reg_kwargs["llm_result"] == llm_result
-    send_message.assert_awaited_once_with(
-        "12345",
-        "✅ Registré tu egreso: supermercado por $5000 ARS.\n¿No estás de acuerdo con la categoría? Indicame y lo cambiamos.",
+    sent_message = send_message.await_args.args[1]
+    assert isinstance(sent_message, WhatsAppReplyButtons)
+    assert sent_message.body == (
+        "✅ Registré tu egreso: supermercado por $5000 ARS.\n"
+        "¿No estás de acuerdo con la categoría? Indicame y lo cambiamos."
     )
+    assert sent_message.buttons[0].title == "Cambiar categoría"
 
 
 def test_handle_webhook_registered_movement_does_not_use_llm_reply_text():
@@ -210,9 +219,10 @@ def test_handle_webhook_registered_movement_does_not_use_llm_reply_text():
         finance_result=registration_result("registered"),
     )
 
-    sent_text = send_message.await_args.args[1]
-    assert sent_text != llm_result["reply_text"]
-    assert sent_text.startswith("✅ Registré tu egreso")
+    sent_message = send_message.await_args.args[1]
+    assert isinstance(sent_message, WhatsAppReplyButtons)
+    assert sent_message.body != llm_result["reply_text"]
+    assert sent_message.body.startswith("✅ Registré tu egreso")
 
 
 def test_handle_webhook_registered_income_movement_confirms_income():
@@ -229,9 +239,10 @@ def test_handle_webhook_registered_income_movement_confirms_income():
     )
 
     register_movement.assert_called_once()
-    sent_text = send_message.await_args.args[1]
-    assert "ingreso: sueldo" in sent_text
-    assert "$250000 ARS" in sent_text
+    sent_message = send_message.await_args.args[1]
+    assert isinstance(sent_message, WhatsAppReplyButtons)
+    assert "ingreso: sueldo" in sent_message.body
+    assert "$250000 ARS" in sent_message.body
 
 
 def test_handle_webhook_duplicate_movement_is_silent():

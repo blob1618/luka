@@ -270,9 +270,10 @@ async def test_valid_action_clears_state_before_execution(session_factory, flow_
         variables={"category": "Agua"},
     )
 
-    async def action_handler(action):
+    async def action_handler(action, variables):
         assert "5411" not in flow_state
         assert action == "confirm_category"
+        assert variables == {"category": "Agua"}
         return ConfiguredFlowReply(reply_text="Confirmado")
 
     result = await ConversationFlowRuntime.handle_reply(
