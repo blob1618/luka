@@ -49,6 +49,17 @@ jobs:
         with:
           version: 2.117.0
 
+      - name: Set up Python for migration auditing
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
       - name: Rebuild database from migrations
         run: |
           supabase start --exclude gotrue,realtime,storage-api,imgproxy,kong,mailpit,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor
@@ -56,3 +67,16 @@ jobs:
 
       - name: Lint database schema
         run: supabase db lint --level warning
+
+      - name: Validate Alembic baseline on separate ephemeral database
+        env:
+          PGPASSWORD: postgres
+          ALEMBIC_DB_URL: "postgresql://postgres:postgres@127.0.0.1:54322/alembic_ephemeral"
+          SUPABASE_DB_URL: "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
+        run: |
+          psql -h 127.0.0.1 -p 54322 -U postgres -d postgres -c "CREATE DATABASE alembic_ephemeral WITH TEMPLATE template0;"
+          psql -h 127.0.0.1 -p 54322 -U postgres -d alembic_ephemeral -c "CREATE SCHEMA IF NOT EXISTS extensions; CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\" WITH SCHEMA extensions; CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions; CREATE EXTENSION IF NOT EXISTS pg_stat_statements; CREATE EXTENSION IF NOT EXISTS supabase_vault; CREATE SCHEMA IF NOT EXISTS auth; CREATE TABLE IF NOT EXISTS auth.users (id uuid PRIMARY KEY); ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated;"
+          DATABASE_URL="$ALEMBIC_DB_URL" alembic upgrade head
+          DATABASE_URL="$ALEMBIC_DB_URL" python scripts/audit_schema_adoption.py --output alembic_audit.json
+          DATABASE_URL="$SUPABASE_DB_URL" python scripts/audit_schema_adoption.py --output sql_audit.json
+          python scripts/audit_schema_adoption.py --compare alembic_audit.json sql_audit.json

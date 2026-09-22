@@ -232,7 +232,7 @@ class AcuerdoAceptado(Base):
         ForeignKey("acuerdo_version.id"),
         nullable=False,
     )
-    aceptado_en = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    aceptado_en = Column(DateTime, nullable=False, default=func.now())
     origen = Column(String, nullable=False, default="web_onboarding")
 
     __table_args__ = (
@@ -270,19 +270,19 @@ class LimiteCategoria(Base):
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     usuario_id = Column(
         Uuid(as_uuid=True),
-        ForeignKey("usuario.id", ondelete="CASCADE"),
+        ForeignKey("usuario.id"),
         nullable=False,
     )
     categoria_id = Column(
         Uuid(as_uuid=True),
-        ForeignKey("categorias.id", ondelete="CASCADE"),
+        ForeignKey("categorias.id"),
         nullable=False,
     )
     cantidad_max = Column(Numeric(18, 2), nullable=False)
     moneda = Column(String(3), nullable=False, default="ARS")
     inicio_periodo = Column(Date, nullable=False)
     fin_periodo = Column(Date, nullable=False)
-    creado_en = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    creado_en = Column(DateTime, nullable=True, default=func.now())
     actualizado_en = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -329,7 +329,7 @@ class Recordatorio(Base):
     )
     titulo = Column(String, nullable=False)
     descripcion = Column(String)
-    dia_del_mes = Column(Integer, nullable=False)
+    dia_del_mes = Column(Integer, nullable=True)
     monto = Column(Numeric)
     moneda = Column(String, default="ARS")
     estado = Column(String, nullable=False, default="activo")
@@ -346,6 +346,13 @@ class Recordatorio(Base):
         CheckConstraint("monto IS NULL OR monto > 0", name="recordatorio_monto_check"),
         CheckConstraint("dias_anticipacion BETWEEN 1 AND 30", name="recordatorio_dias_anticipacion_check"),
         CheckConstraint("origen IN ('manual', 'recurrente_inteligente')", name="recordatorio_origen_check"),
+        Index(
+            "recordatorio_usuario_estado_idx",
+            "usuario_id",
+            "estado",
+            postgresql_where=(estado == "activo"),
+            sqlite_where=(estado == "activo"),
+        ),
     )
 
 class Evento(Base):

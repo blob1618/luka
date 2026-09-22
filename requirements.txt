@@ -15,3 +15,4 @@ pytest-cov==7.1.0
 ruff==0.3.0
 redis>=5.0.0
 starlette<1.4.0
+alembic==1.14.1
