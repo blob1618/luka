@@ -78,6 +78,22 @@ def test_valid_allowed_action_is_accepted():
     assert definition["nodes"][0]["options"][0]["action"] == "confirm_category"
 
 
+def test_movement_registered_accepts_category_change_button():
+    definition = validate_flow_definition(
+        "movement.registered",
+        button_definition(
+            id="change-category",
+            title="Cambiar categoría",
+            action="request_category_change",
+        ),
+    )
+
+    assert (
+        definition["nodes"][0]["options"][0]["action"]
+        == "request_category_change"
+    )
+
+
 def test_compensation_event_accepts_configured_confirmation():
     definition = validate_flow_definition(
         "budget.compensation_proposed",

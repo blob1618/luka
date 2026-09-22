@@ -16,6 +16,7 @@ import app.services.dispatcher as dispatcher_module
 import app.services.finance as finance_module
 import app.services.onboarding as onboarding_module
 import app.services.reminder as reminder_module
+from app.api.whatsapp import WhatsAppReplyButtons
 from app.main import app
 from app.models.database import (
     Base,
@@ -56,6 +57,7 @@ def no_pending_conversation_flows(monkeypatch):
         "is_awaiting_limit_delete_category",
         "is_awaiting_limit_month_selection",
         "is_awaiting_compensation_confirmation",
+        "is_awaiting_movement_category_change",
     ):
         monkeypatch.setattr(
             f"app.services.dispatcher.ConversationService.{method}",
@@ -73,6 +75,10 @@ def no_pending_conversation_flows(monkeypatch):
     monkeypatch.setattr(
         "app.services.webhook_idempotency.WebhookIdempotencyService.release",
         AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "app.services.dispatcher.ConversationFlowRuntime.render_event",
+        AsyncMock(return_value=None),
     )
 
 
@@ -236,7 +242,10 @@ def test_webhook_integration_valid_expense_creates_egreso(db_context):
     process_message.assert_awaited_once()
     assert process_message.await_args.args[0] == "Gaste 5000 en supermercado"
     send_message.assert_awaited_once()
-    assert "egreso: supermercado" in send_message.await_args.args[1]
+    sent_message = send_message.await_args.args[1]
+    assert isinstance(sent_message, WhatsAppReplyButtons)
+    assert "egreso: supermercado" in sent_message.body
+    assert sent_message.buttons[0].title == "Cambiar categoría"
     assert len(saved_movements) == 1
     movement = saved_movements[0]
     assert movement.usuario_id == user.id
@@ -278,7 +287,9 @@ def test_webhook_integration_valid_income_creates_ingreso(db_context):
     assert movement.cantidad == 250000
     assert movement.descripcion == "sueldo"
     assert movement.whatsapp_message_id == "wamid.integration.2"
-    assert "ingreso: sueldo" in send_message.await_args.args[1]
+    sent_message = send_message.await_args.args[1]
+    assert isinstance(sent_message, WhatsAppReplyButtons)
+    assert "ingreso: sueldo" in sent_message.body
 
 
 def test_webhook_integration_unknown_user_does_not_create_movement(db_context):
@@ -327,7 +338,9 @@ def test_webhook_integration_duplicate_message_id_does_not_create_second_row(db_
     assert first_response.status_code == 200
     assert second_response.status_code == 200
     assert len(saved_movements) == 1
-    assert "egreso: supermercado" in first_send_message.await_args.args[1]
+    sent_message = first_send_message.await_args.args[1]
+    assert isinstance(sent_message, WhatsAppReplyButtons)
+    assert "egreso: supermercado" in sent_message.body
     second_send_message.assert_not_awaited()
 
 

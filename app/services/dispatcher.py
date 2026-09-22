@@ -40,6 +40,7 @@ from app.services.conversation import (
     PendingLimit,
     PendingLimitDelete,
     PendingMovement,
+    PendingMovementCategoryChange,
     PendingReminder,
     PendingSelection,
     RecentItems,
@@ -139,6 +140,39 @@ def _registered_reply(extracted_data: dict) -> str:
 def _category_hint_reply() -> str:
     return (
         "¿No estás de acuerdo con la categoría? Indicame y lo cambiamos."
+    )
+
+
+def _extract_movement_category_reply(text: str) -> str | None:
+    """Extract a category name from the answer after the change button."""
+    candidate = text.strip().strip(".!?¿¡")
+    if not candidate:
+        return None
+    prefix = re.compile(
+        r"^(?:"
+        r"(?:cambi(?:a|ar|á)(?:la)?\s+(?:la\s+)?categor[ií]a\s+(?:a|por)\s+)"
+        r"|(?:categor[ií]a(?:\s+del\s+(?:[uú]ltimo\s+)?(?:gasto|movimiento))?"
+        r"(?:\s+(?:es|a|por|pone|pon[eé]la(?:\s+en)?))?\s+)"
+        r"|(?:pon(?:e|é)(?:la)?\s+(?:en\s+)?(?:la\s+)?categor[ií]a\s+)"
+        r")",
+        re.IGNORECASE,
+    )
+    candidate = prefix.sub("", candidate, count=1).strip()
+    return candidate[:120] or None
+
+
+def _movement_category_change_button(
+    body: str,
+    movement_id: str,
+) -> WhatsAppReplyButtons:
+    return WhatsAppReplyButtons(
+        body=body,
+        buttons=(
+            WhatsAppReplyButton(
+                id=f"movement:change_category:{movement_id}",
+                title="Cambiar categoría",
+            ),
+        ),
     )
 
 
@@ -1018,10 +1052,12 @@ async def _register_single_with_hint(
     currency = str(llm_result.get("currency") or "ARS").upper()
     extracted_data["_conversation_event_key"] = "movement.registered"
     extracted_data["_conversation_event_variables"] = {
+        "movement_id": result.movement_id,
         "movement_type": movement_type,
         "description": description,
         "amount": amount,
         "currency": currency,
+        "category": category_name or "sin categoría",
     }
 
     reply = f"✅ Registré tu {movement_type}: {description} por ${amount} {currency}."
@@ -1181,6 +1217,22 @@ async def _register_multiop(
                 )
                 if pending_cand:
                     extracted_data["_pending_recurring_proposal"] = pending_cand
+        if len(movements) == 1 and results[0].status == "registered":
+            mov = movements[0]
+            movement_type = (
+                mov.get("movement_type")
+                or extracted_data.get("movement_type")
+                or "egreso"
+            )
+            extracted_data["_conversation_event_key"] = "movement.registered"
+            extracted_data["_conversation_event_variables"] = {
+                "movement_id": registered_ids[0],
+                "movement_type": movement_type,
+                "description": _movement_description(mov),
+                "amount": _format_amount(mov.get("amount")),
+                "currency": str(mov.get("currency") or "ARS").upper(),
+                "category": mov.get("category") or "sin categoría",
+            }
     return reply
 
 
@@ -2302,6 +2354,87 @@ async def _dispatch_incoming_message(
         reply = await _handle_query_movements(sender_phone, query)
         return DispatchResult(reply, service_invoked="finance", intent="query_movements")
 
+    if await ConversationService.is_awaiting_movement_category_change(sender_phone):
+        pending_change = (
+            await ConversationService.get_pending_movement_category_change(sender_phone)
+        )
+        if pending_change is None:
+            await ConversationService.clear_state(sender_phone)
+        elif _is_cancel_request(text_body):
+            await ConversationService.clear_state(sender_phone)
+            return DispatchResult(
+                "Listo, no cambié la categoría.",
+                service_invoked="conversation",
+                intent="update_movement",
+            )
+        else:
+            category_reply = _extract_movement_category_reply(text_body)
+            starts_with_category_instruction = bool(
+                re.match(
+                    r"^\s*(?:categor[ií]a|cambi\w*\s+(?:la\s+)?categor[ií]a|"
+                    r"pon\w*\s+(?:en\s+)?(?:la\s+)?categor[ií]a)\b",
+                    text_body,
+                    re.IGNORECASE,
+                )
+            )
+            starts_new_movement = bool(
+                re.search(
+                    r"\b(?:gast\w*|pag\w*|compr\w*|cobr\w*|recib\w*|registr\w*)\b",
+                    text_body,
+                    re.IGNORECASE,
+                )
+                and re.search(r"\d", text_body)
+            )
+            starts_new_query = bool(
+                re.search(r"\b(?:mostr\w*|list\w*|consult\w*)\b", text_body, re.IGNORECASE)
+                and re.search(
+                    r"\b(?:movimientos?|transacciones?|gastos?|ingresos?|l[ií]mites?|categor[ií]as?)\b",
+                    text_body,
+                    re.IGNORECASE,
+                )
+            )
+            starts_new_other_operation = bool(
+                re.search(
+                    r"\b(?:record\w*|avis\w*|crea\w*|elimin\w*|borr\w*|"
+                    r"anul\w*|grafic\w*|presupuesto\w*|l[ií]mit\w*)\b",
+                    text_body,
+                    re.IGNORECASE,
+                )
+                and not starts_with_category_instruction
+            )
+            if (
+                starts_new_movement
+                or starts_new_query
+                or starts_new_other_operation
+            ):
+                await ConversationService.clear_state(sender_phone)
+            else:
+                if category_reply is None:
+                    return DispatchResult(
+                        "Decime el nombre de la categoría que querés usar.",
+                        service_invoked="conversation",
+                        intent="update_movement",
+                    )
+                event_data: dict[str, Any] = {}
+                reply = await _apply_movement_action(
+                    sender_phone,
+                    "update_movement",
+                    pending_change.movement_id,
+                    {"category": category_reply},
+                    event_data,
+                )
+                if event_data.get("_conversation_event_key") == "movement.updated":
+                    await ConversationService.clear_state(sender_phone)
+                return DispatchResult(
+                    reply,
+                    service_invoked="finance",
+                    intent="update_movement",
+                    event_key=event_data.get("_conversation_event_key"),
+                    event_variables=event_data.get(
+                        "_conversation_event_variables", {}
+                    ),
+                )
+
     selection_reply = re.search(
         r"\b(?:primero|primera|segundo|segunda|tercero|tercera|ambos|"
         r"los dos|todos|ninguno|cancelar|el de)\b",
@@ -3171,6 +3304,35 @@ async def process_incoming_message(
         if configured is not None:
             result.reply_message = configured
 
+    if result.event_key == "movement.registered":
+        movement_id = str(result.event_variables.get("movement_id") or "")
+        if movement_id and result.reply_message is None:
+            if len(result.reply_text) <= 1024:
+                result.reply_message = _movement_category_change_button(
+                    result.reply_text,
+                    movement_id,
+                )
+            else:
+                result.followup_messages.append(
+                    _movement_category_change_button(
+                        "¿Querés corregir la categoría de este movimiento?",
+                        movement_id,
+                    )
+                )
+        elif movement_id and isinstance(result.reply_message, WhatsAppText):
+            if len(result.reply_message.body) <= 1024:
+                result.reply_message = _movement_category_change_button(
+                    result.reply_message.body,
+                    movement_id,
+                )
+            else:
+                result.followup_messages.append(
+                    _movement_category_change_button(
+                        "¿Querés corregir la categoría de este movimiento?",
+                        movement_id,
+                    )
+                )
+
     # STK-187: Adjuntar propuesta interactiva si el registro generó un candidato recurrente elegible
     pending_proposal = result.debug_info.get("pending_recurring_proposal")
     if pending_proposal:
@@ -3409,8 +3571,30 @@ async def process_incoming_interactive_reply(
     if option_id.startswith("rec_cand:accept:") or option_id.startswith("rec_cand:reject:"):
         return await _handle_candidate_interactive_reply(sender_phone, option_id)
 
-    async def handle_action(action: str) -> DispatchResult:
-        return await _handle_configured_action(sender_phone, action)
+    if option_id.startswith("movement:change_category:"):
+        movement_id = option_id.removeprefix("movement:change_category:").strip()
+        try:
+            UUID(movement_id)
+        except (TypeError, ValueError):
+            return DispatchResult(
+                reply_text="Esa opción ya no es válida.",
+                service_invoked="conversation",
+            )
+        await ConversationService.set_pending_movement_category_change(
+            sender_phone,
+            PendingMovementCategoryChange(movement_id=movement_id),
+        )
+        return DispatchResult(
+            reply_text="Decime qué categoría querés usar.",
+            service_invoked="conversation",
+            intent="update_movement",
+        )
+
+    async def handle_action(
+        action: str,
+        variables: dict[str, str],
+    ) -> DispatchResult:
+        return await _handle_configured_action(sender_phone, action, variables)
 
     result = await ConversationFlowRuntime.handle_reply(
         sender_phone=sender_phone,
@@ -3432,6 +3616,7 @@ async def process_incoming_interactive_reply(
 async def _handle_configured_action(
     sender_phone: str,
     action: str,
+    variables: dict[str, str] | None = None,
 ) -> DispatchResult:
     if action == "cancel_pending_operation":
         await ConversationService.clear_state(sender_phone)
@@ -3446,9 +3631,30 @@ async def _handle_configured_action(
             service_invoked="conversation_flow",
         )
     if action == "request_category_change":
+        movement_id = (variables or {}).get("movement_id")
+        if movement_id is None:
+            last_movement = await ConversationService.get_last_movement(sender_phone)
+            movement_id = (
+                last_movement.movement_id if last_movement is not None else None
+            )
+            if movement_id is None:
+                return DispatchResult(
+                    reply_text=(
+                        "Se perdió el contexto del movimiento. "
+                        "Consultá /movimientos y decime cuál querés corregir."
+                    ),
+                    service_invoked="conversation_flow",
+                )
+        await ConversationService.set_pending_movement_category_change(
+            sender_phone,
+            PendingMovementCategoryChange(
+                movement_id=movement_id,
+            ),
+        )
         return DispatchResult(
             reply_text="Decime qué categoría querés usar.",
             service_invoked="conversation_flow",
+            intent="update_movement",
         )
     if action == "confirm_category":
         return await _confirm_pending_category_action(sender_phone)
@@ -3489,6 +3695,34 @@ async def _confirm_pending_category_action(sender_phone: str) -> DispatchResult:
         )
     if result.status in {"registered", "duplicate"}:
         await ConversationService.clear_state(sender_phone)
+    if result.status == "registered" and result.movement_id:
+        await ConversationService.set_last_movement(
+            sender_phone,
+            LastRegisteredMovement(
+                movement_id=result.movement_id,
+                sender_phone=sender_phone,
+                movement_type=pending.movement_type,
+                amount=pending.amount,
+                currency=pending.currency,
+                description=pending.description,
+                category_name=pending.inferred_category,
+            ),
+        )
+        await ConversationService.set_recent_items(
+            sender_phone,
+            RecentItems(
+                "movement",
+                [
+                    {
+                        "id": result.movement_id,
+                        "label": pending.description,
+                        "description": pending.description,
+                        "amount": str(pending.amount),
+                        "currency": pending.currency,
+                    }
+                ],
+            ),
+        )
     reply_text = _registration_dispatch_reply(
         result,
         {
@@ -3503,10 +3737,12 @@ async def _confirm_pending_category_action(sender_phone: str) -> DispatchResult:
         service_invoked="finance",
         event_key=("movement.registered" if result.status == "registered" else None),
         event_variables={
+            "movement_id": result.movement_id or "",
             "movement_type": pending.movement_type,
             "description": pending.description,
             "amount": _format_amount(pending.amount),
             "currency": pending.currency,
+            "category": pending.inferred_category,
         },
     )
 

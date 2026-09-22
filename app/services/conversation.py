@@ -50,6 +50,20 @@ class PendingMovement:
 
 
 @dataclass
+class PendingMovementCategoryChange:
+    """Movimiento registrado que espera una nueva categoría."""
+
+    movement_id: str
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PendingMovementCategoryChange":
+        return cls(movement_id=str(data["movement_id"]))
+
+
+@dataclass
 class PendingReminder:
     """Datos parciales de un recordatorio pendiente de completar (multi-turno)."""
     sender_phone: str
@@ -179,13 +193,15 @@ class PendingLimitDelete:
 @dataclass
 class ConversationState:
     """Estado de conversación de un usuario."""
-    # step puede ser: "none" | "awaiting_category_confirmation" | "awaiting_reminder_data"
+    # step puede ser: "none" | "awaiting_category_confirmation"
+    #               | "awaiting_movement_category_change" | "awaiting_reminder_data"
     #               | "awaiting_limit_year_confirmation" | "awaiting_limit_category_confirmation"
     #               | "awaiting_limit_data"
     #               | "awaiting_limit_month_selection" | "awaiting_limit_delete_category"
     #               | "awaiting_compensation_confirmation"
     step: str
     pending_movement: PendingMovement | None = None
+    pending_movement_category_change: PendingMovementCategoryChange | None = None
     pending_reminder: PendingReminder | None = None
     pending_limit: PendingLimit | None = None
     pending_limit_delete: PendingLimitDelete | None = None
@@ -196,6 +212,10 @@ class ConversationState:
         return {
             "step": self.step,
             "pending_movement": self.pending_movement.to_dict() if self.pending_movement else None,
+            "pending_movement_category_change": (
+                self.pending_movement_category_change.to_dict()
+                if self.pending_movement_category_change else None
+            ),
             "pending_reminder": self.pending_reminder.to_dict() if self.pending_reminder else None,
             "pending_limit": self.pending_limit.to_dict() if self.pending_limit else None,
             "pending_limit_delete": self.pending_limit_delete.to_dict() if self.pending_limit_delete else None,
@@ -211,6 +231,11 @@ class ConversationState:
         pm = None
         if d.get("pending_movement"):
             pm = PendingMovement.from_dict(d["pending_movement"])
+        pmcc = None
+        if d.get("pending_movement_category_change"):
+            pmcc = PendingMovementCategoryChange.from_dict(
+                d["pending_movement_category_change"]
+            )
         pr = None
         if d.get("pending_reminder"):
             pr = PendingReminder.from_dict(d["pending_reminder"])
@@ -229,6 +254,7 @@ class ConversationState:
         return cls(
             step=d.get("step", "none"),
             pending_movement=pm,
+            pending_movement_category_change=pmcc,
             pending_reminder=pr,
             pending_limit=pl,
             pending_limit_delete=pld,
@@ -241,6 +267,7 @@ class ConversationState:
         return cls(
             step="none",
             pending_movement=None,
+            pending_movement_category_change=None,
             pending_reminder=None,
             pending_limit=None,
             pending_limit_delete=None,
@@ -676,6 +703,33 @@ class ConversationService:
         """Obtiene el movimiento pendiente si existe."""
         state = await cls.get_state(whatsapp_id)
         return state.pending_movement
+
+    @classmethod
+    async def set_pending_movement_category_change(
+        cls,
+        whatsapp_id: str,
+        pending: PendingMovementCategoryChange,
+    ) -> None:
+        state = ConversationState(
+            step="awaiting_movement_category_change",
+            pending_movement_category_change=pending,
+        )
+        await cls.set_state(whatsapp_id, state)
+
+    @classmethod
+    async def get_pending_movement_category_change(
+        cls,
+        whatsapp_id: str,
+    ) -> PendingMovementCategoryChange | None:
+        state = await cls.get_state(whatsapp_id)
+        if state.step != "awaiting_movement_category_change":
+            return None
+        return state.pending_movement_category_change
+
+    @classmethod
+    async def is_awaiting_movement_category_change(cls, whatsapp_id: str) -> bool:
+        state = await cls.get_state(whatsapp_id)
+        return state.step == "awaiting_movement_category_change"
 
     # ------------------------------------------------------------------
     # Último movimiento registrado (para cambio de categoría)

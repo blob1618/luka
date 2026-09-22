@@ -42,6 +42,7 @@ def setup_webhook_environment(monkeypatch):
         "is_awaiting_limit_delete_category",
         "is_awaiting_limit_month_selection",
         "is_awaiting_compensation_confirmation",
+        "is_awaiting_movement_category_change",
     ):
         monkeypatch.setattr(
             f"app.services.dispatcher.ConversationService.{method}",
@@ -59,6 +60,10 @@ def setup_webhook_environment(monkeypatch):
     monkeypatch.setattr(
         "app.services.webhook_idempotency.WebhookIdempotencyService.release",
         AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        "app.services.dispatcher.ConversationFlowRuntime.render_event",
+        AsyncMock(return_value=None),
     )
 
 
@@ -348,7 +353,7 @@ class TestWebhookQueryMovementsIntegration:
         ):
             client.post("/webhook", json=payload_expense)
             _, reply = mock_send.call_args[0]
-            assert "Comida" in reply
+            assert "Comida" in getattr(reply, "body", reply)
             # Comprobar que en la base de datos se registró el movimiento
             assert session.query(MovimientoFinanciero).filter(MovimientoFinanciero.usuario_id == user.id).count() == 1
 

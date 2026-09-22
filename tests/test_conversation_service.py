@@ -19,6 +19,7 @@ from app.services.conversation import (
     LastRegisteredMovement,
     PendingConversationFlow,
     PendingMovement,
+    PendingMovementCategoryChange,
     PendingReminder,
 )
 from tests.conftest import FakeRedis
@@ -432,6 +433,19 @@ class TestConversationState:
         assert state.step == "awaiting_category_confirmation"
         assert state.pending_movement is not None
         assert state.pending_movement.amount == Decimal("5000")
+
+    def test_from_dict_with_pending_movement_category_change(self):
+        pending = PendingMovementCategoryChange(movement_id="movement-123")
+
+        state = ConversationState.from_dict(
+            {
+                "step": "awaiting_movement_category_change",
+                "pending_movement_category_change": pending.to_dict(),
+            }
+        )
+
+        assert state.step == "awaiting_movement_category_change"
+        assert state.pending_movement_category_change == pending
 
 
 # ---------------------------------------------------------------------------

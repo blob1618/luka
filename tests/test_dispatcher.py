@@ -12,10 +12,23 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.api.whatsapp import WhatsAppReplyButtons
 from app.models.database import Base, LimiteCategoria, MovimientoFinanciero
-from app.services.dispatcher import process_incoming_message
+from app.services.conversation import (
+    LastRegisteredMovement,
+    PendingMovementCategoryChange,
+)
+from app.services.dispatcher import (
+    _handle_configured_action,
+    process_incoming_interactive_reply,
+    process_incoming_message,
+)
 from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkResult
-from app.services.finance import MovementRegistrationResult
+from app.services.finance import (
+    MovementItem,
+    MovementMutationResult,
+    MovementRegistrationResult,
+)
 from app.services.onboarding import OnboardingDecision, OnboardingResult
 
 
@@ -325,6 +338,191 @@ class TestFinancialMovement:
         assert result.service_invoked == "finance"
         assert result.raw_llm_response is not None
         assert result.raw_llm_response["intent"] == "expense"
+        assert result.event_key == "movement.registered"
+        assert result.event_variables["movement_id"] == "mov-1"
+        assert isinstance(result.reply_message, WhatsAppReplyButtons)
+        assert result.reply_message.buttons[0].title == "Cambiar categoría"
+
+    @pytest.mark.asyncio
+    async def test_category_change_button_keeps_exact_movement_id(self):
+        movement_id = str(uuid.uuid4())
+        set_pending = AsyncMock()
+
+        with patch(
+            "app.services.dispatcher.ConversationService."
+            "set_pending_movement_category_change",
+            set_pending,
+        ):
+            result = await process_incoming_interactive_reply(
+                sender_phone="12345",
+                option_id=f"movement:change_category:{movement_id}",
+                reply_type="button_reply",
+            )
+
+        assert result.reply_text == "Decime qué categoría querés usar."
+        pending = set_pending.await_args.args[1]
+        assert pending == PendingMovementCategoryChange(movement_id=movement_id)
+
+    @pytest.mark.asyncio
+    async def test_category_reply_updates_the_exact_registered_movement(self):
+        movement_id = str(uuid.uuid4())
+        before = MovementItem(
+            id=movement_id,
+            tipo="egreso",
+            cantidad=Decimal("5000"),
+            moneda="ARS",
+            descripcion="pan baguette",
+            fecha_movimiento=date(2026, 9, 22),
+            categoria_nombre="pan",
+        )
+        after = MovementItem(
+            id=movement_id,
+            tipo="egreso",
+            cantidad=Decimal("5000"),
+            moneda="ARS",
+            descripcion="pan baguette",
+            fecha_movimiento=date(2026, 9, 22),
+            categoria_nombre="baguette",
+        )
+        update = MagicMock(
+            return_value=MovementMutationResult(
+                status="updated",
+                movement_id=movement_id,
+                before=before,
+                after=after,
+            )
+        )
+        clear_state = AsyncMock()
+
+        with (
+            patch(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                return_value=known_user(),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService."
+                "is_awaiting_movement_category_change",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService."
+                "get_pending_movement_category_change",
+                new_callable=AsyncMock,
+                return_value=PendingMovementCategoryChange(movement_id=movement_id),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                clear_state,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.set_recent_items",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.set_last_movement",
+                new_callable=AsyncMock,
+            ),
+            patch("app.services.dispatcher.FinanceService.update_movement", update),
+            patch(
+                "app.services.dispatcher._movement_budget_after_change",
+                new_callable=AsyncMock,
+                return_value="",
+            ),
+            patch("app.services.dispatcher._update_ultimo_mensaje"),
+            patch(
+                "app.services.dispatcher.ConversationFlowRuntime.abandon",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationFlowRuntime.render_event",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+            ) as llm,
+        ):
+            result = await process_incoming_message(
+                "12345",
+                "Categoría del último gasto pone baguette",
+            )
+
+        assert result.event_key == "movement.updated"
+        assert "baguette" in result.reply_text
+        assert update.call_args.args[1:] == (movement_id, {"category": "baguette"}, None)
+        clear_state.assert_awaited_once_with("12345")
+        llm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_category_change_wait_does_not_block_a_new_operation(self):
+        movement_id = str(uuid.uuid4())
+        clear_state = AsyncMock()
+        with (
+            common_patches(llm=greeting_llm_result()) as mocks,
+            patch(
+                "app.services.dispatcher.ConversationService."
+                "is_awaiting_movement_category_change",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService."
+                "get_pending_movement_category_change",
+                new_callable=AsyncMock,
+                return_value=PendingMovementCategoryChange(movement_id=movement_id),
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService.clear_state",
+                clear_state,
+            ),
+            patch(
+                "app.services.dispatcher.FinanceService.update_movement"
+            ) as update,
+        ):
+            result = await process_incoming_message(
+                "12345",
+                "Creame un recordatorio para pagar la luz mañana",
+            )
+
+        assert result.reply_text == "¡Hola! Soy Luka."
+        clear_state.assert_awaited_once_with("12345")
+        mocks["llm"].assert_awaited_once()
+        update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_configured_category_change_action_uses_last_movement(self):
+        last = LastRegisteredMovement(
+            movement_id=str(uuid.uuid4()),
+            sender_phone="12345",
+            movement_type="egreso",
+            amount=Decimal("5000"),
+            currency="ARS",
+            description="pan baguette",
+            category_name="pan",
+        )
+        set_pending = AsyncMock()
+        with (
+            patch(
+                "app.services.dispatcher.ConversationService.get_last_movement",
+                new_callable=AsyncMock,
+                return_value=last,
+            ),
+            patch(
+                "app.services.dispatcher.ConversationService."
+                "set_pending_movement_category_change",
+                set_pending,
+            ),
+        ):
+            result = await _handle_configured_action(
+                "12345",
+                "request_category_change",
+                {"movement_id": last.movement_id},
+            )
+
+        assert result.reply_text == "Decime qué categoría querés usar."
+        assert set_pending.await_args.args[1].movement_id == last.movement_id
 
     @pytest.mark.asyncio
     async def test_duplicate_movement_suppresses_reply(self):

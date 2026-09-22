@@ -171,14 +171,18 @@ class TestCandidateProposalFlow:
 
         result = await process_incoming_message(sender_phone=phone, text_body="Pagué Internet Fibertel 15000")
 
-        assert "Noté que solés pagar *Internet Fibertel* alrededor del día 15." in result.reply_text
-        assert "¿Querés que te avise 3 días antes de cada vencimiento?" in result.reply_text
+        assert "Noté que solés pagar" not in result.reply_text
         assert isinstance(result.reply_message, WhatsAppReplyButtons)
-        assert len(result.reply_message.buttons) == 2
-        assert result.reply_message.buttons[0].id == f"rec_cand:accept:{cand.id}"
-        assert result.reply_message.buttons[1].id == f"rec_cand:reject:{cand.id}"
+        assert result.reply_message.buttons[0].title == "Cambiar categoría"
+        assert len(result.followup_messages) == 1
+        proposal = result.followup_messages[0]
+        assert isinstance(proposal, WhatsAppReplyButtons)
+        assert "Noté que solés pagar *Internet Fibertel* alrededor del día 15." in proposal.body
+        assert len(proposal.buttons) == 2
+        assert proposal.buttons[0].id == f"rec_cand:accept:{cand.id}"
+        assert proposal.buttons[1].id == f"rec_cand:reject:{cand.id}"
         assert result.proposal_candidate_id == str(cand.id)
-        assert result.proposal_delivery_mode == "primary"
+        assert result.proposal_delivery_mode == "followup"
 
         # La construcción del mensaje NO activa el cooldown ni la telemetría antes del envío real
         session.refresh(cand)
@@ -197,7 +201,7 @@ class TestCandidateProposalFlow:
             send_message=send_mock,
         )
         assert status == "completed"
-        assert send_mock.await_count == 1
+        assert send_mock.await_count == 2
 
         session.refresh(cand)
         assert cand.propuesta_en is not None
@@ -238,7 +242,8 @@ class TestCandidateProposalFlow:
         result = await process_incoming_message(sender_phone=phone, text_body="Pagué Internet Fibertel 15000")
 
         assert "Noté que solés pagar" not in result.reply_text
-        assert result.reply_message is None
+        assert isinstance(result.reply_message, WhatsAppReplyButtons)
+        assert result.reply_message.buttons[0].title == "Cambiar categoría"
         assert result.proposal_candidate_id is None
         session.refresh(cand)
         assert cand.propuesta_en is None
@@ -327,9 +332,11 @@ class TestCandidateProposalFlow:
 
         result = await process_incoming_message(sender_phone=phone, text_body="Pagué Internet Fibertel 15000")
 
-        assert "Noté que solés pagar" in result.reply_text
+        assert "Noté que solés pagar" not in result.reply_text
+        assert len(result.followup_messages) == 1
+        assert "Noté que solés pagar" in result.followup_messages[0].body
         assert result.proposal_candidate_id == str(cand.id)
-        assert result.proposal_delivery_mode == "primary"
+        assert result.proposal_delivery_mode == "followup"
 
         # Cooldown count is incremented on actual send
         redis = FakeRedis()
@@ -382,8 +389,9 @@ class TestCandidateProposalFlow:
         # Texto principal preservado sin propuesta embebida
         assert "Noté que solés pagar" not in result.reply_text
         # Pero entregada vía follow-up message para no violar el límite de 1024 caracteres
-        assert len(result.followup_messages) == 1
-        assert "Noté que solés pagar" in result.followup_messages[0].body
+        assert len(result.followup_messages) == 2
+        assert result.followup_messages[0].buttons[0].title == "Cambiar categoría"
+        assert "Noté que solés pagar" in result.followup_messages[1].body
         assert result.proposal_delivery_mode == "followup"
         session.refresh(cand)
         assert cand.propuesta_conteo == 0
@@ -1627,4 +1635,3 @@ class TestSingleWorkerDailyDetection:
         ).first()
         assert claim is not None
         assert claim.fecha_ejecucion == date(2026, 3, 14)
-

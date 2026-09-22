@@ -182,10 +182,12 @@ class TestRecurringIntegratedLifecycle:
             whatsapp_message_id="msg_int_001",
         )
 
-        # Verificar que la respuesta adjunta botones interactivos de propuesta
+        # El registro conserva el botón de categoría y entrega la propuesta aparte.
         assert dispatch_result.reply_message is not None
         assert isinstance(dispatch_result.reply_message, WhatsAppReplyButtons)
-        buttons = dispatch_result.reply_message.buttons
+        assert dispatch_result.reply_message.buttons[0].title == "Cambiar categoría"
+        assert len(dispatch_result.followup_messages) == 1
+        buttons = dispatch_result.followup_messages[0].buttons
         assert len(buttons) == 2
         assert buttons[0].id == f"rec_cand:accept:{cand.id}"
         assert buttons[1].id == f"rec_cand:reject:{cand.id}"
@@ -319,8 +321,11 @@ class TestRecurringRejectionAndSuppression:
             text_body="Gimnasio 25000",
             whatsapp_message_id="msg_int_002",
         )
-        # Sin botones interactivos adjuntos
-        assert not isinstance(res_exp.reply_message, WhatsAppReplyButtons)
+        # Sin propuesta recurrente, pero con la corrección de categoría del registro.
+        assert isinstance(res_exp.reply_message, WhatsAppReplyButtons)
+        assert res_exp.reply_message.buttons[0].title == "Cambiar categoría"
+        assert res_exp.proposal_candidate_id is None
+        assert res_exp.followup_messages == []
 
     @pytest.mark.asyncio
     async def test_scheduler_suppression_when_user_pays_early(self, monkeypatch):
