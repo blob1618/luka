@@ -45,6 +45,16 @@ def _network_guard(event: str, args: tuple) -> None:
 sys.addaudithook(_network_guard)
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Opciones de linea de comandos para auditoria externa opcional."""
+    parser.addoption(
+        "--supabase-snapshot",
+        action="store",
+        default=None,
+        help="Ruta al snapshot JSON de catalogo de Supabase para prueba de regresion de paridad real",
+    )
+
+
 
 
 # ---------------------------------------------------------------------------

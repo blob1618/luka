@@ -154,9 +154,11 @@ La rama compartida y de despliegue es `main`. El flujo de ramas, PRs y verificac
 - `app/models/database.py`: engine, sesión y modelos SQLAlchemy.
 - `app/scheduler.py`: jobs en background (recordatorios de pago y recordatorio proactivo diario).
 - `tests/`: suite del backend. `testing/`: entorno Streamlit con tests propios en `testing/tests/`.
-- `supabase/migrations/`: historial de migraciones.
-- `docs/`: [architecture.md](architecture.md), [features.md](features.md), [conversation-flows.md](conversation-flows.md), [database.md](database.md), [development.md](development.md) y [decisions/0001-mvp-db-contract.md](decisions/0001-mvp-db-contract.md).
-- Raíz: `README.md`, `AGENTS.md`, `CONTRIBUTING.md` y `prompt.md` (prompt de runtime del LLM).
+- `supabase/migrations/`: historial de migraciones de Supabase.
+- `alembic/`: configuración y versiones de migración de Alembic (baseline inicial STK-210).
+- `scripts/`: herramientas operativas y de mantenimiento (`adopt_existing_database.py`, `audit_schema_adoption.py`).
+- `docs/`: [architecture.md](architecture.md), [features.md](features.md), [conversation-flows.md](conversation-flows.md), [database.md](database.md), [development.md](development.md), [audits/README.md](audits/README.md) y [decisions/0001-mvp-db-contract.md](decisions/0001-mvp-db-contract.md).
+- Raíz: `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `alembic.ini` y `prompt.md` (prompt de runtime del LLM).
 
 ## Deuda técnica observada
 
