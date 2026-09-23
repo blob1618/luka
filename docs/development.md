@@ -154,7 +154,8 @@ La rama compartida y de despliegue es `main`. El flujo de ramas, PRs y verificac
 - `app/models/database.py`: engine, sesión y modelos SQLAlchemy.
 - `app/scheduler.py`: jobs en background (recordatorios de pago y recordatorio proactivo diario).
 - `tests/`: suite del backend. `testing/`: entorno Streamlit con tests propios en `testing/tests/`.
-- `supabase/migrations/`: historial de migraciones.
+- `supabase/migrations/`: historial canónico de migraciones de Supabase (única autoridad de esquema).
+- `scripts/`: herramientas operativas y de benchmarking (`benchmark_postgres_recurring.py`, `verify_postgres_advisory_lock.py`).
 - `docs/`: [architecture.md](architecture.md), [features.md](features.md), [conversation-flows.md](conversation-flows.md), [database.md](database.md), [development.md](development.md) y [decisions/0001-mvp-db-contract.md](decisions/0001-mvp-db-contract.md).
 - Raíz: `README.md`, `AGENTS.md`, `CONTRIBUTING.md` y `prompt.md` (prompt de runtime del LLM).
 
