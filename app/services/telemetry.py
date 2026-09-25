@@ -2,10 +2,12 @@
 
 import contextvars
 import logging
+import threading
 import time
 from typing import Any
 
 logger = logging.getLogger("luka.metrics")
+sql_logger = logging.getLogger("luka.telemetry.sql")
 
 _current_telemetry: contextvars.ContextVar["MessageTelemetry | None"] = (
     contextvars.ContextVar("current_telemetry", default=None)
@@ -21,12 +23,29 @@ class MessageTelemetry:
         self.message_id = message_id
         self.start_time = time.perf_counter()
         self.phases: dict[str, float] = {}
+        self._lock = threading.RLock()
+        self.sql_count: int = 0
+        self.sql_exec_ms: float = 0.0
+
+    def increment_sql_count(self) -> None:
+        with self._lock:
+            self.sql_count += 1
+
+    def accumulate_sql_time(self, duration_ms: float) -> None:
+        with self._lock:
+            self.sql_exec_ms += duration_ms
 
     def record_phase(self, phase: str, duration_ms: float) -> None:
-        self.phases[phase] = self.phases.get(phase, 0.0) + duration_ms
+        with self._lock:
+            self.phases[phase] = self.phases.get(phase, 0.0) + duration_ms
 
     def finish(self, status: str = "completed") -> dict[str, Any]:
         total_ms = (time.perf_counter() - self.start_time) * 1000
+
+        with self._lock:
+            sql_count = self.sql_count
+            sql_exec_ms = self.sql_exec_ms
+            phases_snapshot = dict(self.phases)
 
         result: dict[str, Any] = {
             "message_id": self.message_id,
@@ -42,18 +61,23 @@ class MessageTelemetry:
         ]
 
         for phase in KNOWN_PHASES:
-            if phase in self.phases:
-                duration = round(self.phases[phase], 2)
+            if phase in phases_snapshot:
+                duration = round(phases_snapshot[phase], 2)
                 result[f"{phase}_ms"] = duration
                 parts.append(f"{phase}_ms={duration:.2f}")
 
-        for phase, duration_val in self.phases.items():
+        for phase, duration_val in phases_snapshot.items():
             if phase not in KNOWN_PHASES:
                 duration = round(duration_val, 2)
                 result[f"{phase}_ms"] = duration
                 parts.append(f"{phase}_ms={duration:.2f}")
 
         logger.info(" ".join(parts))
+
+        sql_logger.info(
+            f"[SQL_METRICS_ANONYMOUS] sql_count={sql_count} sql_exec_ms={sql_exec_ms:.2f}"
+        )
+
         return result
 
 

@@ -1,14 +1,18 @@
 import os
+import time
 import uuid
 from datetime import datetime, date
 from sqlalchemy import (
     Column, String, DateTime, ForeignKey, create_engine,
-    Boolean, Date, Integer, Numeric, CheckConstraint, Index, UniqueConstraint, true
+    Boolean, Date, Integer, Numeric, CheckConstraint, Index, UniqueConstraint, true, event
 )
+from sqlalchemy.engine import Engine
 from sqlalchemy.types import Uuid, JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy.sql import func
+
+from app.services.telemetry import get_current_telemetry
 
 # Obtener DATABASE_URL del entorno, usando SQLite como fallback para desarrollo local
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./luka.db")
@@ -24,6 +28,50 @@ engine = create_engine(
     pool_pre_ping=True,  # Verificar conexiones antes de usarlas
     connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
 )
+
+
+@event.listens_for(Engine, "before_cursor_execute")
+def receive_before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+    telemetry = get_current_telemetry()
+    if telemetry is None:
+        return
+    telemetry.increment_sql_count()
+    if context is not None:
+        context._luka_sql_start = time.perf_counter()
+
+
+@event.listens_for(Engine, "after_cursor_execute")
+def receive_after_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+    telemetry = get_current_telemetry()
+    if telemetry is None:
+        return
+    if context is not None and hasattr(context, "_luka_sql_start"):
+        start = getattr(context, "_luka_sql_start", None)
+        if start is not None:
+            duration_ms = (time.perf_counter() - start) * 1000
+            telemetry.accumulate_sql_time(duration_ms)
+            try:
+                delattr(context, "_luka_sql_start")
+            except (AttributeError, TypeError):
+                pass
+
+
+@event.listens_for(Engine, "handle_error")
+def receive_handle_error(exception_context):
+    telemetry = get_current_telemetry()
+    if telemetry is None:
+        return
+    ctx = getattr(exception_context, "execution_context", None)
+    if ctx is not None and hasattr(ctx, "_luka_sql_start"):
+        start = getattr(ctx, "_luka_sql_start", None)
+        if start is not None:
+            duration_ms = (time.perf_counter() - start) * 1000
+            telemetry.accumulate_sql_time(duration_ms)
+            try:
+                delattr(ctx, "_luka_sql_start")
+            except (AttributeError, TypeError):
+                pass
+
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
