@@ -128,6 +128,16 @@ def test_normalize_movement_query_intent_incomes():
     assert result["movement_type"] == "ingreso"
 
 
+def test_normalize_movement_query_intent_explicit_month_year_without_llm_dates():
+    result = normalize_movement_query_intent(
+        "gastos de enero de 2000",
+        {"intent": "query_movements", "date_from": None, "date_to": None},
+    )
+    assert result["date_from"] == "2000-01-01"
+    assert result["date_to"] == "2000-01-31"
+    assert result.get("limit") is None
+
+
 def test_normalize_movement_query_intent_does_not_override_expense_with_amount():
     result = normalize_movement_query_intent(
         "gasté 5000 en comida",

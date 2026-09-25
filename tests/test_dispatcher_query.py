@@ -452,3 +452,36 @@ class TestDispatcherQueryIntegration:
                 end_date=date(2026, 9, 30),
                 limit=5,
             )
+
+    @pytest.mark.asyncio
+    async def test_explicit_old_month_does_not_query_recent_movements(self):
+        u_id = uuid.uuid4()
+        llm_output = {
+            "intent": "query_movements",
+            "movement_type": "egreso",
+            "date_from": None,
+            "date_to": None,
+            "reply_text": "Consultando tus movimientos.",
+        }
+        empty_result = MovementQueryResult(status="ok", message="ok", movements=[], total_found=0)
+
+        with (
+            patch("app.services.dispatcher._update_ultimo_mensaje"),
+            patch(
+                "app.services.onboarding.OnboardingService.prepare_whatsapp_message",
+                return_value=OnboardingResult(OnboardingDecision.KNOWN_USER),
+            ),
+            patch("app.services.dispatcher.LLMService.process_message", AsyncMock(return_value=llm_output)),
+            patch("app.services.dispatcher._user_id_by_phone", return_value=u_id),
+            patch("app.services.dispatcher.FinanceService.query_movements", return_value=empty_result) as mock_query,
+        ):
+            await process_incoming_message("5491100000001", "gastos de enero de 2000", "wamid.old-month")
+
+        mock_query.assert_called_once_with(
+            u_id,
+            movement_type="egreso",
+            category_name=None,
+            start_date=date(2000, 1, 1),
+            end_date=date(2000, 1, 31),
+            limit=5,
+        )

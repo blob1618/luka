@@ -7,6 +7,7 @@ an incorrect intent would trigger the wrong operation.
 
 import re
 import unicodedata
+from calendar import monthrange
 from datetime import date
 
 from app.services.conversation import LastCreatedLimit
@@ -123,6 +124,9 @@ _QUERY_MOVEMENTS = re.compile(
     r"?\s*(?:mis\s+|los\s+)?(?:ultimos\s+)?(?:\d+\s+)?(?:movimientos|gastos|ingresos|transacciones)"
     r"(?:\s+(?:de|del|en)\s+.*)?$"
 )
+_QUERY_MONTH_YEAR = re.compile(
+    r"\b(?:de|del|en)\s+(" + "|".join(_MONTHS) + r")\s+de\s+(\d{4})$"
+)
 
 
 def normalize_movement_query_intent(
@@ -145,7 +149,15 @@ def normalize_movement_query_intent(
         elif re.search(r"\bingreso(?:s)?\b", normalized):
             data["movement_type"] = "ingreso"
 
-        m_count = re.search(r"\b(\d+)\b", normalized)
+        month_year = _QUERY_MONTH_YEAR.search(normalized)
+        if month_year:
+            month = _MONTHS[month_year.group(1)]
+            year = int(month_year.group(2))
+            if year:
+                data["date_from"] = date(year, month, 1).isoformat()
+                data["date_to"] = date(year, month, monthrange(year, month)[1]).isoformat()
+
+        m_count = re.search(r"\b(\d+)\s+(?:movimientos|gastos|ingresos|transacciones)\b", normalized)
         if m_count:
             try:
                 data["limit"] = min(int(m_count.group(1)), 5)
