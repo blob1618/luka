@@ -45,27 +45,27 @@ def no_pending_conversation_flows(monkeypatch):
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def cleanup_pending_reaction_tasks():
+async def cleanup_pending_typing_tasks():
     import asyncio
     from app.api.whatsapp import close_whatsapp_client
-    from app.main import _pending_reaction_tasks
+    from app.main import _pending_typing_tasks
 
-    if _pending_reaction_tasks:
-        tasks = list(_pending_reaction_tasks)
+    if _pending_typing_tasks:
+        tasks = list(_pending_typing_tasks)
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        _pending_reaction_tasks.clear()
+        _pending_typing_tasks.clear()
     await close_whatsapp_client()
 
     yield
 
-    if _pending_reaction_tasks:
-        tasks = list(_pending_reaction_tasks)
+    if _pending_typing_tasks:
+        tasks = list(_pending_typing_tasks)
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        _pending_reaction_tasks.clear()
+        _pending_typing_tasks.clear()
     await close_whatsapp_client()
 
 
@@ -269,11 +269,13 @@ class TestProcessInboundMessageBackground:
         msg = make_unsupported_message(msg_type="location", msg_id="wamid.proc.unsupp")
         fake_redis = MagicMock()
 
-        await _process_inbound_message_background(msg, fake_redis)
+        with patch("app.main.send_whatsapp_typing_indicator") as mock_typing:
+            await _process_inbound_message_background(msg, fake_redis)
 
         captured = caplog.text
         assert "message_id=wamid.proc.unsupp" in captured
         assert "status=unsupported_type" in captured
+        mock_typing.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_process_invalid_interactive_is_ignored_safely(self, caplog):
@@ -286,11 +288,13 @@ class TestProcessInboundMessageBackground:
         }
         fake_redis = MagicMock()
 
-        await _process_inbound_message_background(msg, fake_redis)
+        with patch("app.main.send_whatsapp_typing_indicator") as mock_typing:
+            await _process_inbound_message_background(msg, fake_redis)
 
         captured = caplog.text
         assert "message_id=wamid.proc.badinter" in captured
         assert "status=ignored_invalid_interactive" in captured
+        mock_typing.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_idempotency_unavailable_is_handled_gracefully(self, caplog):
@@ -336,23 +340,17 @@ class TestProcessInboundMessageBackground:
         assert "RuntimeError: Unexpected crash in domain" in captured
 
     @pytest.mark.asyncio
-    async def test_reaction_is_sent_before_processing_for_text_message(self, caplog):
+    async def test_typing_indicator_is_sent_without_reaction_for_text_message(self, caplog):
         import asyncio
-        from app.main import _pending_reaction_tasks
+        from app.main import _pending_typing_tasks
         caplog.set_level(logging.INFO, logger="luka.metrics")
-        msg = make_text_message(msg_id="wamid.react.text")
+        msg = make_text_message(msg_id="wamid.typing.text")
         fake_redis = MagicMock()
-        reaction_blocked = asyncio.Event()
+        typing_blocked = asyncio.Event()
         process_started = asyncio.Event()
-        signal_order = []
 
-        async def slow_reaction(*args, **kwargs):
-            signal_order.append("reaction")
-            await reaction_blocked.wait()
-            return True
-
-        async def mock_typing(*args, **kwargs):
-            signal_order.append("typing")
+        async def slow_typing(*args, **kwargs):
+            await typing_blocked.wait()
             return True
 
         async def mock_process(*args, **kwargs):
@@ -360,49 +358,44 @@ class TestProcessInboundMessageBackground:
             return "completed"
 
         with (
-            patch("app.main.send_whatsapp_reaction", side_effect=slow_reaction) as mock_react,
+            patch("app.api.whatsapp.send_whatsapp_reaction") as mock_react,
             patch(
                 "app.main.send_whatsapp_typing_indicator",
-                side_effect=mock_typing,
+                side_effect=slow_typing,
             ) as mock_typing_ind,
             patch("app.main.process_text_message_once", side_effect=mock_process) as mock_proc,
         ):
             task = asyncio.create_task(_process_inbound_message_background(msg, fake_redis))
 
-            # Domain processing starts immediately while reaction HTTP call is still pending
+            # Domain processing starts immediately while typing indicator HTTP call is still pending
             await asyncio.wait_for(process_started.wait(), timeout=1.0)
-            assert not reaction_blocked.is_set()
+            assert not typing_blocked.is_set()
 
-            reaction_blocked.set()
+            typing_blocked.set()
             await asyncio.wait_for(task, timeout=1.0)
-            for pending_task in list(_pending_reaction_tasks):
+            for pending_task in list(_pending_typing_tasks):
                 await asyncio.wait_for(pending_task, timeout=1.0)
 
         mock_proc.assert_awaited_once()
-        mock_react.assert_awaited_once_with(
-            to_number="5491112345678",
-            message_id="wamid.react.text",
-            emoji="⏳",
-        )
-        mock_typing_ind.assert_awaited_once_with("wamid.react.text")
-        assert signal_order == ["reaction", "typing"]
+        mock_react.assert_not_called()
+        mock_typing_ind.assert_awaited_once_with("wamid.typing.text")
 
-        # Telemetry verification
+        # Telemetry verification: typing_ms is recorded, reaction_ms is not
         assert "[METRICS]" in caplog.text
-        assert "message_id=wamid.react.text" in caplog.text
+        assert "message_id=wamid.typing.text" in caplog.text
         assert "status=completed" in caplog.text
-        assert "reaction_ms=" in caplog.text
         assert "typing_ms=" in caplog.text
+        assert "reaction_ms=" not in caplog.text
 
     @pytest.mark.asyncio
-    async def test_reaction_is_sent_for_interactive_message(self):
+    async def test_typing_indicator_is_sent_without_reaction_for_interactive_message(self):
         import asyncio
-        from app.main import _pending_reaction_tasks
-        msg = make_interactive_message(option_id="opt_1", msg_id="wamid.react.inter")
+        from app.main import _pending_typing_tasks
+        msg = make_interactive_message(option_id="opt_1", msg_id="wamid.typing.inter")
         fake_redis = MagicMock()
 
         with (
-            patch("app.main.send_whatsapp_reaction", new_callable=AsyncMock, return_value=True) as mock_react,
+            patch("app.api.whatsapp.send_whatsapp_reaction") as mock_react,
             patch(
                 "app.main.send_whatsapp_typing_indicator",
                 new_callable=AsyncMock,
@@ -411,44 +404,50 @@ class TestProcessInboundMessageBackground:
             patch("app.main.process_interactive_message_once", new_callable=AsyncMock, return_value="completed"),
         ):
             await _process_inbound_message_background(msg, fake_redis)
-            for pending_task in list(_pending_reaction_tasks):
+            for pending_task in list(_pending_typing_tasks):
                 await asyncio.wait_for(pending_task, timeout=1.0)
 
-        mock_react.assert_awaited_once_with(
-            to_number="5491112345678",
-            message_id="wamid.react.inter",
-            emoji="⏳",
-        )
-        mock_typing.assert_awaited_once_with("wamid.react.inter")
+        mock_react.assert_not_called()
+        mock_typing.assert_awaited_once_with("wamid.typing.inter")
 
     @pytest.mark.asyncio
-    async def test_reaction_failure_does_not_abort_processing(self, caplog):
+    async def test_typing_indicator_returned_false_does_not_abort_processing(self, caplog):
         import asyncio
+        from app.main import _pending_typing_tasks
         caplog.set_level(logging.INFO)
-        msg = make_text_message(msg_id="wamid.react.fail")
+        msg = make_text_message(msg_id="wamid.typing.false_inbound")
         fake_redis = MagicMock()
 
         with (
-            patch("app.main.send_whatsapp_reaction", new_callable=AsyncMock, side_effect=RuntimeError("Meta network failure")),
-            patch("app.main.process_text_message_once", new_callable=AsyncMock, return_value="completed") as mock_proc,
+            patch(
+                "app.main.send_whatsapp_typing_indicator",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "app.main.process_text_message_once",
+                new_callable=AsyncMock,
+                return_value="completed",
+            ) as mock_proc,
         ):
             await _process_inbound_message_background(msg, fake_redis)
-            await asyncio.sleep(0)
+            for pending_task in list(_pending_typing_tasks):
+                await asyncio.wait_for(pending_task, timeout=1.0)
 
         mock_proc.assert_awaited_once()
-        assert "reaction_failed" in caplog.text
+        assert "typing_failed" in caplog.text
+        assert "error=send_returned_false" in caplog.text
         assert "status=completed" in caplog.text
 
     @pytest.mark.asyncio
     async def test_typing_failure_does_not_abort_processing(self, caplog):
         import asyncio
-        from app.main import _pending_reaction_tasks
+        from app.main import _pending_typing_tasks
         caplog.set_level(logging.INFO)
         msg = make_text_message(msg_id="wamid.typing.fail")
         fake_redis = MagicMock()
 
         with (
-            patch("app.main.send_whatsapp_reaction", new_callable=AsyncMock, return_value=True),
             patch(
                 "app.main.send_whatsapp_typing_indicator",
                 new_callable=AsyncMock,
@@ -461,11 +460,12 @@ class TestProcessInboundMessageBackground:
             ) as mock_proc,
         ):
             await _process_inbound_message_background(msg, fake_redis)
-            for pending_task in list(_pending_reaction_tasks):
+            for pending_task in list(_pending_typing_tasks):
                 await asyncio.wait_for(pending_task, timeout=1.0)
 
         mock_proc.assert_awaited_once()
         assert "typing_failed" in caplog.text
+        assert "RuntimeError" in caplog.text
         assert "status=completed" in caplog.text
 
     @pytest.mark.asyncio
@@ -474,10 +474,7 @@ class TestProcessInboundMessageBackground:
         msg = make_text_message(msg_id="wamid.telemetry.idem")
         fake_redis = MagicMock()
 
-        with (
-            patch("app.main.send_whatsapp_reaction", new_callable=AsyncMock, return_value=True),
-            patch("app.main.process_text_message_once", new_callable=AsyncMock, side_effect=IdempotencyUnavailable("Redis down")),
-        ):
+        with patch("app.main.process_text_message_once", new_callable=AsyncMock, side_effect=IdempotencyUnavailable("Redis down")):
             await _process_inbound_message_background(msg, fake_redis)
 
         assert "[METRICS]" in caplog.text
@@ -487,83 +484,83 @@ class TestProcessInboundMessageBackground:
     @pytest.mark.asyncio
     async def test_lifespan_shutdown_cleans_pending_tasks_and_closes_client(self):
         import asyncio
-        from app.main import _dispatch_whatsapp_reaction, _pending_reaction_tasks, lifespan, app
+        from app.main import _dispatch_whatsapp_typing_indicator, _pending_typing_tasks, lifespan, app
 
-        reaction_unblock = asyncio.Event()
+        typing_unblock = asyncio.Event()
 
-        async def hanging_reaction(*args, **kwargs):
-            await reaction_unblock.wait()
+        async def hanging_typing(*args, **kwargs):
+            await typing_unblock.wait()
             return True
 
         with (
             patch("app.main.start_scheduler"),
-            patch("app.main.send_whatsapp_reaction", side_effect=hanging_reaction),
+            patch("app.main.send_whatsapp_typing_indicator", side_effect=hanging_typing),
             patch("app.main.close_whatsapp_client", new_callable=AsyncMock) as mock_close_client,
         ):
-            _dispatch_whatsapp_reaction("5491112345678", "wamid.hanging")
-            assert len(_pending_reaction_tasks) == 1
+            _dispatch_whatsapp_typing_indicator("wamid.hanging")
+            assert len(_pending_typing_tasks) == 1
 
             async with lifespan(app):
                 pass
 
-            assert len(_pending_reaction_tasks) == 0
+            assert len(_pending_typing_tasks) == 0
             mock_close_client.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_lifespan_shutdown_cleans_up_even_on_exception_in_body(self):
         import asyncio
-        from app.main import _dispatch_whatsapp_reaction, _pending_reaction_tasks, lifespan, app
+        from app.main import _dispatch_whatsapp_typing_indicator, _pending_typing_tasks, lifespan, app
 
-        reaction_unblock = asyncio.Event()
+        typing_unblock = asyncio.Event()
 
-        async def hanging_reaction(*args, **kwargs):
-            await reaction_unblock.wait()
+        async def hanging_typing(*args, **kwargs):
+            await typing_unblock.wait()
             return True
 
         mock_redis = AsyncMock()
         with (
             patch("app.main.start_scheduler"),
             patch("app.main.redis.from_url", return_value=mock_redis),
-            patch("app.main.send_whatsapp_reaction", side_effect=hanging_reaction),
+            patch("app.main.send_whatsapp_typing_indicator", side_effect=hanging_typing),
             patch("app.main.close_whatsapp_client", new_callable=AsyncMock) as mock_close_client,
         ):
-            _dispatch_whatsapp_reaction("5491112345678", "wamid.exc_test")
-            assert len(_pending_reaction_tasks) == 1
+            _dispatch_whatsapp_typing_indicator("wamid.exc_test")
+            assert len(_pending_typing_tasks) == 1
 
             with pytest.raises(RuntimeError, match="Crash inside lifespan"):
                 async with lifespan(app):
                     raise RuntimeError("Crash inside lifespan")
 
             # Cleanup must still have occurred!
-            assert len(_pending_reaction_tasks) == 0
+            assert len(_pending_typing_tasks) == 0
             mock_close_client.assert_awaited_once()
             mock_redis.close.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_reaction_returned_false_logs_reaction_failed(self, caplog):
+    async def test_typing_indicator_returned_false_logs_typing_failed(self, caplog):
         import asyncio
         caplog.set_level(logging.INFO)
-        from app.main import _dispatch_whatsapp_reaction
+        from app.main import _dispatch_whatsapp_typing_indicator
 
-        with patch("app.main.send_whatsapp_reaction", new_callable=AsyncMock, return_value=False):
-            task = _dispatch_whatsapp_reaction("5491112345678", "wamid.false_test")
+        with patch("app.main.send_whatsapp_typing_indicator", new_callable=AsyncMock, return_value=False):
+            task = _dispatch_whatsapp_typing_indicator("wamid.false_test")
             await asyncio.sleep(0)
             assert task.done()
-            assert "reaction_failed" in caplog.text
+            assert "typing_failed" in caplog.text
             assert "error=send_returned_false" in caplog.text
             assert "message_id=wamid.false_test" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_reaction_exception_is_retrieved_and_not_leaked(self):
+    async def test_typing_indicator_exception_is_retrieved_and_not_leaked(self):
         import asyncio
-        from app.main import _dispatch_whatsapp_reaction, _pending_reaction_tasks
+        from app.main import _dispatch_whatsapp_typing_indicator, _pending_typing_tasks
 
-        with patch("app.main.send_whatsapp_reaction", new_callable=AsyncMock, side_effect=RuntimeError("Meta 500")):
-            task = _dispatch_whatsapp_reaction("5491112345678", "wamid.err")
+        with patch("app.main.send_whatsapp_typing_indicator", new_callable=AsyncMock, side_effect=RuntimeError("Meta 500")):
+            task = _dispatch_whatsapp_typing_indicator("wamid.err")
             await asyncio.sleep(0)
             assert task.done()
             assert task.exception() is None
-            assert task not in _pending_reaction_tasks
+            assert task not in _pending_typing_tasks
 
     @pytest.mark.asyncio
     async def test_telemetry_records_all_pipeline_phases_end_to_end(self, caplog, monkeypatch):
@@ -613,7 +610,7 @@ class TestProcessInboundMessageBackground:
         )
 
         with (
-            patch("app.main.send_whatsapp_reaction", new_callable=AsyncMock, return_value=True) as mock_react,
+            patch("app.api.whatsapp.send_whatsapp_reaction") as mock_react,
             patch(
                 "app.main.send_whatsapp_typing_indicator",
                 new_callable=AsyncMock,
@@ -624,7 +621,7 @@ class TestProcessInboundMessageBackground:
             await _process_inbound_message_background(msg, fake_redis)
             await asyncio.sleep(0)
 
-        mock_react.assert_awaited_once()
+        mock_react.assert_not_called()
         mock_send.assert_awaited_once()
 
         # Verify all phases were recorded
@@ -635,12 +632,12 @@ class TestProcessInboundMessageBackground:
         assert "message_id=wamid.full.pipeline" in record
         assert "status=completed" in record
         assert "total_ms=" in record
-        assert "reaction_ms=" in record
+        assert "typing_ms=" in record
+        assert "reaction_ms=" not in record
         assert "redis_ms=" in record
         assert "llm_ms=" in record
         assert "db_ms=" in record
         assert "reply_ms=" in record
-        assert "typing_ms=" in record
 
         # Verify privacy: no sensitive data in luka.metrics
         assert "5491112345678" not in record
