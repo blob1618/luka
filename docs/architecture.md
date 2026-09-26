@@ -56,8 +56,8 @@ decisiones de cada capa. El comportamiento visible para el usuario se describe e
   entrantes.
 - `app/services/telemetry.py`: fases y latencia por mensaje.
 - `app/api/whatsapp.py`: único cliente saliente. Normaliza teléfonos argentinos
-  `549...` → `54...`, construye payloads de texto, botones y listas, y envía la
-  reacción `⏳`.
+  `549...` → `54...`, construye payloads de texto, botones y listas, y gestiona
+  indicadores de escritura y reacciones.
 - `app/models/database.py`: engine, sesiones y todos los modelos SQLAlchemy.
 - `app/scheduler.py`: jobs periódicos de recordatorios y recordatorio proactivo.
 
@@ -79,7 +79,7 @@ sequenceDiagram
     W-->>M: 200 OK inmediato
     W->>B: add_task(_process_inbound_message_background)
     B->>B: telemetría [BACKGROUND_MESSAGE]
-    B->>M: reacción ⏳ (best-effort)
+    B->>M: typing indicator (best-effort)
     B->>R: claim atómico por message_id
     alt mensaje ya reclamado o completado
         R-->>B: sin claim → duplicado, sin respuesta visible
@@ -109,13 +109,14 @@ Puntos clave del flujo:
 - La deduplicación financiera es independiente: `FinanceService` consulta
   `whatsapp_message_id` antes de insertar y el modelo declara un índice único parcial.
   Un reenvío de Meta no duplica la fila y no genera una segunda respuesta visible.
-- La reacción `⏳` es una señal de mejor esfuerzo con timeout HTTP de 3 segundos. Su
-  falla se registra y no interrumpe el procesamiento.
+- El indicador de escritura (`typing indicator`) es una señal visual de mejor esfuerzo
+  despachada de forma asíncrona por `message_id`. Su fallo se registra y no interrumpe
+  el procesamiento ni la respuesta. WhatsApp gestiona su expiración (tras 25 s o al responder).
 - El LLM interpreta, pero el backend decide: ninguna escritura se confirma con
   `reply_text`. La confirmación se construye con el resultado del servicio de dominio
   después del commit.
 - Cada mensaje deja logs `[BACKGROUND_MESSAGE]` y `[METRICS]` con `message_id`, estado,
-  latencia total y las fases presentes entre `reaction_ms`, `redis_ms`, `llm_ms`,
+  latencia total y las fases presentes entre `typing_ms`, `redis_ms`, `llm_ms`,
   `db_ms` y `reply_ms`. No se registran cuerpos de mensajes, teléfonos completos,
   montos ni credenciales.
 - Se procesan mensajes de tipo `text` e `interactive` (`button_reply` / `list_reply`).

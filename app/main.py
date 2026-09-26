@@ -28,7 +28,6 @@ from app.api.whatsapp import (  # noqa: E402
     close_whatsapp_client,
     parse_interactive_reply,
     send_whatsapp_message,
-    send_whatsapp_reaction,
     send_whatsapp_typing_indicator,
 )
 from app.scheduler import start_scheduler  # noqa: E402
@@ -63,55 +62,15 @@ from app.services.webhook_idempotency import (  # noqa: E402
 # Cliente Redis global
 redis_client = None
 REDIS_CONNECT_TIMEOUT_SECONDS = 3
-_pending_reaction_tasks: set[asyncio.Task] = set()
-
-
-def _dispatch_whatsapp_reaction(
-    to_number: str,
-    message_id: str,
-    emoji: str = "⏳",
-) -> asyncio.Task:
-    """Despacha send_whatsapp_reaction en background, reteniendo referencia y manejando excepciones."""
-    async def _runner():
-        try:
-            sent = await send_whatsapp_reaction(
-                to_number=to_number,
-                message_id=message_id,
-                emoji=emoji,
-            )
-            if not sent:
-                logger.warning(
-                    "[BACKGROUND_MESSAGE] message_id=%s reaction_failed error=send_returned_false",
-                    message_id,
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "[BACKGROUND_MESSAGE] message_id=%s reaction_failed error=%s",
-                message_id,
-                type(exc).__name__,
-            )
-        finally:
-            current = asyncio.current_task()
-            if current is not None:
-                _pending_reaction_tasks.discard(current)
-
-    task = asyncio.create_task(_runner())
-    _pending_reaction_tasks.add(task)
-    task.add_done_callback(_pending_reaction_tasks.discard)
-    return task
+_pending_typing_tasks: set[asyncio.Task] = set()
 
 
 def _dispatch_whatsapp_typing_indicator(
     message_id: str,
-    *,
-    after: asyncio.Task,
 ) -> asyncio.Task:
-    """Despacha el typing indicator tras la reacción, sin bloquear el procesamiento."""
+    """Despacha el typing indicator en background, reteniendo referencia y manejando excepciones."""
     async def _runner():
         try:
-            await after
             sent = await send_whatsapp_typing_indicator(message_id)
             if not sent:
                 logger.warning(
@@ -129,11 +88,11 @@ def _dispatch_whatsapp_typing_indicator(
         finally:
             current = asyncio.current_task()
             if current is not None:
-                _pending_reaction_tasks.discard(current)
+                _pending_typing_tasks.discard(current)
 
     task = asyncio.create_task(_runner())
-    _pending_reaction_tasks.add(task)
-    task.add_done_callback(_pending_reaction_tasks.discard)
+    _pending_typing_tasks.add(task)
+    task.add_done_callback(_pending_typing_tasks.discard)
     return task
 
 
@@ -165,12 +124,12 @@ async def lifespan(app: FastAPI):
     finally:
         # Logica de apagado protegida
         try:
-            if _pending_reaction_tasks:
-                tasks = list(_pending_reaction_tasks)
+            if _pending_typing_tasks:
+                tasks = list(_pending_typing_tasks)
                 for task in tasks:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
-                _pending_reaction_tasks.clear()
+                _pending_typing_tasks.clear()
         finally:
             try:
                 await close_whatsapp_client()
@@ -390,17 +349,8 @@ async def _process_inbound_message_background(message: dict, redis_instance) -> 
             sender_phone = message.get("from")
             text_body = message.get("text", {}).get("body", "")
             if sender_phone and whatsapp_message_id:
-                with track_phase("reaction"):
-                    reaction_task = _dispatch_whatsapp_reaction(
-                        to_number=sender_phone,
-                        message_id=whatsapp_message_id,
-                        emoji="⏳",
-                    )
                 with track_phase("typing"):
-                    _dispatch_whatsapp_typing_indicator(
-                        whatsapp_message_id,
-                        after=reaction_task,
-                    )
+                    _dispatch_whatsapp_typing_indicator(whatsapp_message_id)
             status = await process_text_message_once(
                 redis_client=redis_instance,
                 sender_phone=sender_phone,
@@ -419,17 +369,8 @@ async def _process_inbound_message_background(message: dict, redis_instance) -> 
                 finish_message_telemetry(status="ignored_invalid_interactive")
                 return
             if interactive_reply.sender_phone and interactive_reply.message_id:
-                with track_phase("reaction"):
-                    reaction_task = _dispatch_whatsapp_reaction(
-                        to_number=interactive_reply.sender_phone,
-                        message_id=interactive_reply.message_id,
-                        emoji="⏳",
-                    )
                 with track_phase("typing"):
-                    _dispatch_whatsapp_typing_indicator(
-                        interactive_reply.message_id,
-                        after=reaction_task,
-                    )
+                    _dispatch_whatsapp_typing_indicator(interactive_reply.message_id)
             status = await process_interactive_message_once(
                 redis_client=redis_instance,
                 interactive_reply=interactive_reply,
