@@ -7,7 +7,13 @@ import secrets
 from dataclasses import dataclass
 from typing import Any
 
-from app.api.whatsapp import WhatsAppImage, WhatsAppList, WhatsAppReplyButtons, WhatsAppText
+from app.api.whatsapp import (
+    WhatsAppCTAURL,
+    WhatsAppImage,
+    WhatsAppList,
+    WhatsAppReplyButtons,
+    WhatsAppText,
+)
 from app.services.conversation import ConversationHistoryService
 from app.services.telemetry import track_phase
 
@@ -112,6 +118,8 @@ def _format_single_message_text(reply: Any) -> str | None:
         return reply
     if isinstance(reply, WhatsAppText):
         return reply.body
+    if isinstance(reply, WhatsAppCTAURL):
+        return f"{reply.body}\nBotón: {reply.display_text}"
     if isinstance(reply, WhatsAppImage):
         return reply.caption or "Grafico financiero enviado."
     if isinstance(reply, WhatsAppReplyButtons):

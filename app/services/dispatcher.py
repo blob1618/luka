@@ -52,7 +52,11 @@ from app.services.compensation import (
     CompensationApplyResult,
     CompensationProposal,
 )
-from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkService
+from app.services.dashboard_link import (
+    DashboardLinkDecision,
+    DashboardLinkService,
+    dashboard_link_message,
+)
 from app.services.financial_education import FinancialEducationService
 from app.services.finance import (
     FinanceService,
@@ -779,14 +783,6 @@ def _onboarding_invitation_reply(registration_url: str, ttl_minutes: int) -> str
         "Para usar Luka, primero registrate y vinculá este WhatsApp:\n\n"
         f"{registration_url}\n\n"
         f"El enlace vence en {ttl_minutes} minutos."
-    )
-
-
-def _dashboard_link_reply(login_url: str, ttl_minutes: int) -> str:
-    return (
-        "Accedé a tu dashboard acá:\n\n"
-        f"{login_url}\n\n"
-        f"El enlace vence en {ttl_minutes} minutos y sólo se puede usar una vez."
     )
 
 
@@ -2313,11 +2309,13 @@ async def _dispatch_incoming_message(
     # ------------------------------------------------------------------
     if text_body.strip().lower() == "/link":
         dashboard_link_result = DashboardLinkService.generate_or_reuse(sender_phone)
+        reply_message = None
         if dashboard_link_result.decision == DashboardLinkDecision.SEND_LINK:
-            reply_text = _dashboard_link_reply(
+            reply_message = dashboard_link_message(
                 dashboard_link_result.login_url,
                 dashboard_link_result.link_ttl_minutes,
             )
+            reply_text = reply_message.body
             event_key = "dashboard.link.sent"
             event_variables = {
                 "login_url": dashboard_link_result.login_url,
@@ -2340,6 +2338,7 @@ async def _dispatch_incoming_message(
             service_invoked="dashboard_link",
             event_key=event_key,
             event_variables=event_variables,
+            reply_message=reply_message,
         )
 
     # Track last message time for 24h window

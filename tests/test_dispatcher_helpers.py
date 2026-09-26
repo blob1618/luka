@@ -8,7 +8,6 @@ from app.services.dispatcher import (
     _category_deleted_reply,
     _category_hint_reply,
     _category_not_found_reply,
-    _dashboard_link_reply,
     _extract_concept_from_text,
     _format_amount,
     _format_categories_list,
@@ -27,6 +26,7 @@ from app.services.dispatcher import (
     _validate_reminder_concept,
 )
 from app.services.finance import MovementRegistrationResult
+from app.services.dashboard_link import dashboard_link_message
 from app.services.reminder import ReminderListResult, ReminderResult
 
 
@@ -331,9 +331,10 @@ class TestInvitationAndDashboardReplies:
         assert "30 minutos" in reply
 
     def test_dashboard_link(self):
-        reply = _dashboard_link_reply("https://example.com/login", 15)
-        assert "https://example.com/login" in reply
-        assert "15 minutos" in reply
+        message = dashboard_link_message("https://example.com/login", 15)
+        assert message.url == "https://example.com/login"
+        assert "https://" not in message.body
+        assert "15 minutos" in message.body
 
 
 class TestConceptExtraction:

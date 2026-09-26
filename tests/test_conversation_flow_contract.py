@@ -69,6 +69,13 @@ def test_valid_text_is_normalized():
     assert definition["nodes"][0]["terminal"] is True
 
 
+def test_dashboard_link_body_respects_cta_limit():
+    with pytest.raises(ConversationFlowDefinitionInvalid):
+        validate_flow_definition("dashboard.link.sent", text_definition("x" * 1025))
+    validate_flow_definition("dashboard.link.sent", text_definition("x" * 1024))
+    validate_flow_definition("onboarding.invitation", text_definition("x" * 1025))
+
+
 def test_valid_allowed_action_is_accepted():
     definition = validate_flow_definition(
         "category.confirmation_required",

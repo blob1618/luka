@@ -12,9 +12,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.api.whatsapp import WhatsAppReplyButtons
+from app.api.whatsapp import WhatsAppCTAURL, WhatsAppReplyButtons
 from app.models.database import Base, LimiteCategoria, MovimientoFinanciero
 from app.services.conversation import (
+    ConversationService,
     LastRegisteredMovement,
     PendingMovementCategoryChange,
 )
@@ -256,6 +257,12 @@ class TestLinkCommand:
 
         assert "dashboard" in result.reply_text.lower() or "login" in result.reply_text.lower()
         assert result.service_invoked == "dashboard_link"
+        assert isinstance(result.reply_message, WhatsAppCTAURL)
+        assert result.reply_message.url == self.make_link_result().login_url
+        assert result.reply_message.display_text == "Abrir dashboard"
+        assert "15 minutos" in result.reply_message.body
+        assert "https://" not in result.reply_message.body
+        assert await ConversationService.get_pending_conversation_flow("12345") is None
 
     @pytest.mark.asyncio
     async def test_link_command_case_insensitive_with_spaces(self):

@@ -8,6 +8,7 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from sqlalchemy.exc import IntegrityError
 
+from app.api.whatsapp import WhatsAppCTAURL
 from app.models.database import DashboardLoginLink, SessionLocal, Usuario
 from app.services.onboarding import (
     DEFAULT_REGISTRATION_URL,
@@ -21,6 +22,29 @@ DEFAULT_LOGIN_URL = "http://localhost:8000/login"
 DEFAULT_LINK_TTL_MINUTES = 10
 DEFAULT_RESEND_COOLDOWN_SECONDS = 60
 DEFAULT_MAX_RESENDS = 3
+
+
+def dashboard_link_message(
+    login_url: str,
+    ttl_minutes: int,
+    *,
+    body: str | None = None,
+) -> WhatsAppCTAURL:
+    """Present the backend-issued link as a terminal URL button."""
+    default_body = (
+        "🔐 Tu acceso personal al dashboard de Luka.\n\n"
+        "Tocá el botón para ingresar.\n\n"
+        f"⏱️ Tenés {ttl_minutes} minutos para utilizarlo. "
+        "El enlace funciona una sola vez."
+    )
+    if body is not None:
+        # The link belongs in the button even when the published copy includes it.
+        body = body.replace(login_url, "").strip()
+    return WhatsAppCTAURL(
+        body=body or default_body,
+        display_text="Abrir dashboard",
+        url=login_url,
+    )
 
 
 class DashboardLinkDecision(str, Enum):

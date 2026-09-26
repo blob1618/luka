@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import TypeAlias
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -47,6 +48,13 @@ class WhatsAppSendResult:
 @dataclass(frozen=True)
 class WhatsAppText:
     body: str
+
+
+@dataclass(frozen=True)
+class WhatsAppCTAURL:
+    body: str
+    display_text: str
+    url: str
 
 
 @dataclass(frozen=True)
@@ -94,7 +102,7 @@ class WhatsAppList:
 
 
 OutboundWhatsAppMessage: TypeAlias = (
-    WhatsAppText | WhatsAppImage | WhatsAppReplyButtons | WhatsAppList
+    WhatsAppText | WhatsAppImage | WhatsAppReplyButtons | WhatsAppList | WhatsAppCTAURL
 )
 
 
@@ -189,6 +197,31 @@ def build_whatsapp_payload(
     if isinstance(message, WhatsAppText):
         _bounded_text(message.body, field="body", minimum=1, maximum=4096)
         return {**base, "type": "text", "text": {"body": message.body}}
+    if isinstance(message, WhatsAppCTAURL):
+        _bounded_text(message.body, field="body", minimum=1, maximum=1024)
+        _bounded_text(message.display_text, field="display_text", minimum=1, maximum=20)
+        parsed = urlsplit(message.url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or any(char.isspace() for char in message.url)
+        ):
+            raise ValueError("CTA URL must be an absolute HTTP or HTTPS URL")
+        return {
+            **base,
+            "type": "interactive",
+            "interactive": {
+                "type": "cta_url",
+                "body": {"text": message.body},
+                "action": {
+                    "name": "cta_url",
+                    "parameters": {
+                        "display_text": message.display_text,
+                        "url": message.url,
+                    },
+                },
+            },
+        }
     if isinstance(message, WhatsAppReplyButtons):
         return {**base, "type": "interactive", "interactive": _buttons_payload(message)}
     if isinstance(message, WhatsAppList):
