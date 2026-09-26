@@ -9,12 +9,47 @@ from app.services.webhook_idempotency import (
     process_interactive_message_once,
     process_text_message_once,
 )
-from app.api.whatsapp import InboundInteractiveReply, WhatsAppImage, WhatsAppText
+from app.api.whatsapp import (
+    InboundInteractiveReply,
+    WhatsAppCTAURL,
+    WhatsAppImage,
+    WhatsAppText,
+)
 from app.services.conversation import ConversationHistoryService
 
 from tests.conftest import FakeRedis
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.asyncio
+async def test_dashboard_button_is_sent_once_and_history_omits_access_token():
+    message = WhatsAppCTAURL(
+        "Tu acceso personal vence en 10 minutos.",
+        "Abrir dashboard",
+        "https://example.com/login?token=private-access-token",
+    )
+    process = AsyncMock(return_value=SimpleNamespace(reply_message=message))
+    send = AsyncMock(return_value=True)
+    kwargs = dict(
+        redis_client=FakeRedis(),
+        sender_phone="541111111111",
+        text_body="/link",
+        whatsapp_message_id="wamid.dashboard-cta",
+        process_message=process,
+        send_message=send,
+    )
+    with patch.object(
+        ConversationHistoryService, "append_exchange", AsyncMock()
+    ) as append:
+        assert await process_text_message_once(**kwargs) == "completed"
+        assert await process_text_message_once(**kwargs) == "duplicate"
+    send.assert_awaited_once_with("541111111111", message)
+    process.assert_awaited_once()
+    append.assert_awaited_once()
+    history_text = append.await_args.args[3]
+    assert "Abrir dashboard" in history_text
+    assert "private-access-token" not in history_text
 
 
 @pytest.mark.asyncio

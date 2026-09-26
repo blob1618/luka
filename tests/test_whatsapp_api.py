@@ -5,6 +5,7 @@ import pytest_asyncio
 
 from app.api.whatsapp import (
     InboundInteractiveReply,
+    WhatsAppCTAURL,
     WhatsAppImage,
     WhatsAppList,
     WhatsAppListRow,
@@ -54,6 +55,43 @@ def test_template_payload_is_preserved():
         {"type": "text", "text": "Luz"},
         {"type": "text", "text": "17/09"},
     ]
+
+
+def test_cta_url_payload_opens_the_exact_backend_link():
+    url = "https://example.com/login?token=one-use-token"
+    payload = build_whatsapp_payload(
+        "5491123456789",
+        WhatsAppCTAURL("Tu acceso vence en 10 minutos.", "Abrir dashboard", url),
+    )
+    assert payload == {
+        "messaging_product": "whatsapp",
+        "to": "541123456789",
+        "type": "interactive",
+        "interactive": {
+            "type": "cta_url",
+            "body": {"text": "Tu acceso vence en 10 minutos."},
+            "action": {
+                "name": "cta_url",
+                "parameters": {"display_text": "Abrir dashboard", "url": url},
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        WhatsAppCTAURL("x" * 1025, "Abrir dashboard", "https://example.com"),
+        WhatsAppCTAURL("Acceso", "x" * 21, "https://example.com"),
+        WhatsAppCTAURL("Acceso", "Abrir dashboard", "/login"),
+        WhatsAppCTAURL("Acceso", "Abrir dashboard", "javascript:alert(1)"),
+        WhatsAppCTAURL("Acceso", "Abrir dashboard", "https://"),
+        WhatsAppCTAURL("Acceso", "Abrir dashboard", "https://example.com/a b"),
+    ],
+)
+def test_invalid_cta_url_payload_is_rejected(message):
+    with pytest.raises(ValueError):
+        build_whatsapp_payload("541123456789", message)
 
 
 def test_reply_button_payload_uses_opaque_ids():

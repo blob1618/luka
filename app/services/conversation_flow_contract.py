@@ -291,6 +291,15 @@ def validate_flow_definition(
         ) from exc
 
     issues = _semantic_issues(definition, policy)
+    if event_key == "dashboard.link.sent":
+        for index, node in enumerate(definition.nodes):
+            if len(node.body) > 1024:
+                issues.append(
+                    FlowValidationIssue(
+                        f"nodes.{index}.body",
+                        "el mensaje con enlace admite como maximo 1024 caracteres",
+                    )
+                )
     if issues:
         raise ConversationFlowDefinitionInvalid(issues)
     return definition.model_dump(mode="json", exclude_none=True)

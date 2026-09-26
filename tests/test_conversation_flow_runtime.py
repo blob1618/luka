@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.api.whatsapp import WhatsAppReplyButtons, WhatsAppText
+from app.api.whatsapp import WhatsAppCTAURL, WhatsAppReplyButtons, WhatsAppText
 from app.models.database import Base
 from app.services import conversation_flow
 from app.services.conversation import (
@@ -129,7 +129,9 @@ async def test_terminal_event_renders_without_pending_state(session_factory, flo
     create_and_publish(
         session_factory,
         event_key="dashboard.link.sent",
-        definition=terminal_definition("Entrá en {login_url}"),
+        definition=terminal_definition(
+            "Tu acceso:\n{login_url}\nVence en {ttl_minutes} minutos."
+        ),
     )
 
     message = await ConversationFlowRuntime.render_event(
@@ -138,7 +140,11 @@ async def test_terminal_event_renders_without_pending_state(session_factory, flo
         variables={"login_url": "https://example.com/safe", "ttl_minutes": 10},
     )
 
-    assert message == WhatsAppText("Entrá en https://example.com/safe")
+    assert message == WhatsAppCTAURL(
+        body="Tu acceso:\n\nVence en 10 minutos.",
+        display_text="Abrir dashboard",
+        url="https://example.com/safe",
+    )
     assert flow_state == {}
 
 

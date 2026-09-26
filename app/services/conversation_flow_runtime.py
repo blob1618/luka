@@ -30,6 +30,7 @@ from app.services.conversation_flow_contract import (
     ConversationFlowDefinitionInvalid,
     validate_flow_definition,
 )
+from app.services.dashboard_link import dashboard_link_message
 
 
 INTERACTION_UNAVAILABLE_REPLY = (
@@ -161,6 +162,12 @@ class ConversationFlowRuntime:
         definition = validate_flow_definition(flow.event_key, version.definition)
         node = cls._node(definition, node_id)
         message = cls._message(version, node, variables)
+        if flow.event_key == "dashboard.link.sent":
+            message = dashboard_link_message(
+                variables["login_url"],
+                int(variables["ttl_minutes"]),
+                body=message.body,
+            )
         build_whatsapp_payload("0", message)
 
         if node["type"] == "text":

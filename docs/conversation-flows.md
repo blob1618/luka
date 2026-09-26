@@ -113,6 +113,17 @@ describen en `database.md`.
 - `reply_button`: cuerpo y opciones mostradas como botones de respuesta.
 - `list`: cuerpo, etiqueta del botón de apertura, secciones y opciones.
 
+Para `dashboard.link.sent`, el nodo sigue siendo un único texto terminal editable
+desde el panel, de hasta 1024 caracteres. Al responder `/link`, el backend lo
+presenta con un botón nativo de URL **Abrir dashboard**. El destino siempre es
+el `login_url` generado por `DashboardLinkService`; si el cuerpo incluye esa URL,
+se omite del texto visible para mostrarla únicamente como destino del botón.
+Se recomienda escribir el cuerpo sin `{login_url}`, conservando `{ttl_minutes}`
+y la aclaración de uso único. Sin una versión publicada, `/link` también envía
+el botón con el texto predeterminado. No se guarda estado interactivo en Redis
+ni el token del botón en la memoria conversacional. Onboarding mantiene su
+presentación actual.
+
 Reglas:
 
 - Una opción navega a `next_node` o emite una `action` permitida, pero no ambas.
