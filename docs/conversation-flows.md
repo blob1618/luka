@@ -134,6 +134,15 @@ el botón con el texto predeterminado. No se guarda estado interactivo en Redis
 ni el token del botón en la memoria conversacional. Onboarding puede optar por
 un nodo `url_button` con `{registration_url}` desde el panel.
 
+La consulta de movimientos que supera los cinco resultados y tiene filtro de
+fechas emite `movements.query_result`. Su texto ya incluye los movimientos, el
+total y el vencimiento, sin exponer la URL. En el administrador, configurá un
+nodo `url_button` con cuerpo `{summary}`, destino `{dashboard_url}` y la etiqueta
+del botón deseada. El backend fija ese destino al enlace personal que acaba de
+generar; un nodo `text` también se presenta como botón en este evento. Sin una
+versión publicada, se usa **Abrir dashboard**. El límite de cuerpo es 1024
+caracteres, como en `/link`.
+
 Reglas:
 
 - Una opción navega a `next_node` o emite una `action` permitida, pero no ambas.

@@ -170,6 +170,13 @@ class ConversationFlowRuntime:
                 body=message.body,
                 button_label=node["url_button_label"],
             )
+        if flow.event_key == "movements.query_result":
+            message = dashboard_link_message(
+                variables["dashboard_url"],
+                int(variables["ttl_minutes"]),
+                body=message.body,
+                button_label=node["url_button_label"],
+            )
         build_whatsapp_payload("0", message)
 
         if node["type"] in {"text", "url_button"}:

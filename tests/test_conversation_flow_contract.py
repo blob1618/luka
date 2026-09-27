@@ -76,6 +76,30 @@ def test_dashboard_link_body_respects_cta_limit():
     validate_flow_definition("onboarding.invitation", text_definition("x" * 1025))
 
 
+def test_movement_query_dashboard_button_uses_generated_url():
+    event = next(
+        item for item in available_contract()["events"]
+        if item["event_key"] == "movements.query_result"
+    )
+    assert event["url_button"]["url_variable"] == "dashboard_url"
+    definition = text_definition("{summary}")
+    normalized = validate_flow_definition("movements.query_result", definition)
+    assert normalized["nodes"][0]["url_button_label"] == "Abrir dashboard"
+
+    button = {
+        "start_node": "done",
+        "nodes": [{
+            "id": "done", "type": "url_button", "body": "{summary}",
+            "terminal": True, "url_button_label": "Ver período",
+            "url": "https://example.com/login",
+        }],
+    }
+    with pytest.raises(ConversationFlowDefinitionInvalid):
+        validate_flow_definition("movements.query_result", button)
+    button["nodes"][0]["url"] = "{dashboard_url}"
+    validate_flow_definition("movements.query_result", button)
+
+
 def test_valid_allowed_action_is_accepted():
     definition = validate_flow_definition(
         "category.confirmation_required",

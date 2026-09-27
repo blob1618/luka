@@ -153,6 +153,34 @@ async def test_terminal_event_renders_without_pending_state(
 
 
 @pytest.mark.asyncio
+async def test_movement_query_flow_renders_custom_dashboard_button(session_factory, flow_state):
+    create_and_publish(
+        session_factory,
+        event_key="movements.query_result",
+        definition={
+            "start_node": "done",
+            "nodes": [{
+                "id": "done", "type": "url_button", "terminal": True,
+                "body": "{summary}", "url_button_label": "Ver período",
+                "url": "{dashboard_url}",
+            }],
+        },
+    )
+    url = "https://example.com/login?token=secret"
+    message = await ConversationFlowRuntime.render_event(
+        sender_phone="5411", event_key="movements.query_result",
+        variables={
+            "summary": "📋 Tus movimientos.\n" + url,
+            "dashboard_url": url, "ttl_minutes": 10,
+        },
+    )
+    assert message == WhatsAppCTAURL(
+        body="📋 Tus movimientos.", display_text="Ver período", url=url
+    )
+    assert flow_state == {}
+
+
+@pytest.mark.asyncio
 async def test_interactive_event_stores_pinned_version(session_factory, flow_state):
     published = create_and_publish(
         session_factory,

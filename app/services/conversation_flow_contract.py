@@ -261,7 +261,10 @@ EVENT_POLICIES: dict[str, EventPolicy] = {
         frozenset({"cancel_pending_operation"}),
     ),
     "budget.result": EventPolicy(frozenset({"summary"})),
-    "movements.query_result": EventPolicy(frozenset({"summary"})),
+    "movements.query_result": EventPolicy(
+        frozenset({"summary", "dashboard_url", "ttl_minutes"}),
+        terminal_only=True,
+    ),
     "conversation.context_lost": EventPolicy(),
     "conversation.cancelled": EventPolicy(),
 }
@@ -308,7 +311,7 @@ def validate_flow_definition(
 
     issues = _semantic_issues(definition, policy)
     for index, node in enumerate(definition.nodes):
-        if event_key == "dashboard.link.sent":
+        if event_key in {"dashboard.link.sent", "movements.query_result"}:
             if isinstance(node, TextNode) and node.url_button_label is None:
                 node.url_button_label = DEFAULT_DASHBOARD_BUTTON_LABEL
             if len(node.body) > 1024:
@@ -319,7 +322,7 @@ def validate_flow_definition(
                     )
                 )
         if isinstance(node, TextNode) and node.url_button_label is not None:
-            if event_key != "dashboard.link.sent" and not isinstance(
+            if event_key not in {"dashboard.link.sent", "movements.query_result"} and not isinstance(
                 node, URLButtonNode
             ):
                 issues.append(
@@ -341,6 +344,13 @@ def validate_flow_definition(
                     FlowValidationIssue(
                         f"nodes.{index}.url",
                         "el acceso al dashboard debe usar {login_url}",
+                    )
+                )
+            if event_key == "movements.query_result" and node.url != "{dashboard_url}":
+                issues.append(
+                    FlowValidationIssue(
+                        f"nodes.{index}.url",
+                        "la consulta debe usar {dashboard_url}",
                     )
                 )
             variable = re.fullmatch(r"\{([A-Za-z_]\w*)\}", node.url)
@@ -387,12 +397,15 @@ def available_contract() -> dict[str, Any]:
                     {
                         "url_button": {
                             "default_label": DEFAULT_DASHBOARD_BUTTON_LABEL,
-                            "url_variable": "login_url",
+                            "url_variable": (
+                                "login_url" if event_key == "dashboard.link.sent"
+                                else "dashboard_url"
+                            ),
                             "max_label_length": 20,
                             "max_body_length": 1024,
                         }
                     }
-                    if event_key == "dashboard.link.sent"
+                    if event_key in {"dashboard.link.sent", "movements.query_result"}
                     else {}
                 ),
             }

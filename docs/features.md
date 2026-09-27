@@ -123,8 +123,8 @@ procesa en silencio para no repetir una confirmación ya enviada.
 - Muestra como máximo cinco movimientos y aclara cuántos hay en total cuando hay más.
   Los movimientos anulados no aparecen.
 - Si hay más resultados que los mostrados y la consulta tiene filtro de fechas, se
-  adjunta un enlace de acceso al dashboard conservando el período, cuando el usuario
-  está vinculado.
+  ofrece un botón **Abrir dashboard** con el acceso personal y el período conservado,
+  cuando el usuario está vinculado. El enlace no aparece en el texto.
 - Los comandos `/movimientos` y `/egresos` ejecutan la consulta directamente. Si el
   pedido es ambiguo, Luka pide aclaración antes de responder.
 - `/link` genera (o reutiliza) un enlace mágico de acceso al dashboard para usuarios ya

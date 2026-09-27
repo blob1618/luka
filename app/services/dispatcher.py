@@ -1983,7 +1983,7 @@ async def _handle_budget_compensation(sender_phone: str, extracted_data: dict) -
 def _format_query_movements_reply(
     result: MovementQueryResult,
     filters: dict[str, Any],
-    dashboard_link_url: str | None = None,
+    has_dashboard_link: bool = False,
     link_ttl_minutes: int = 10,
 ) -> str:
     if result.status == "user_not_found":
@@ -2029,17 +2029,22 @@ def _format_query_movements_reply(
         sign = "+" if mov.tipo == "ingreso" else "-"
         date_str = mov.fecha_movimiento.strftime("%d/%m/%Y")
         desc = mov.descripcion or mov.tipo.capitalize()
-        cat_suffix = f" ({mov.categoria_nombre})" if mov.categoria_nombre and not category_name else ""
+        category_label = mov.categoria_nombre
+        if has_dashboard_link:
+            if len(desc) > 90:
+                desc = desc[:89].rstrip() + "…"
+            if category_label and len(category_label) > 35:
+                category_label = category_label[:34].rstrip() + "…"
+        cat_suffix = f" ({category_label})" if category_label and not category_name else ""
         lines.append(f"• {date_str} - {desc}: {sign}${_format_amount(mov.cantidad)} {mov.moneda}{cat_suffix}")
 
     if result.total_found > len(movements_to_display):
         lines.append("")
         lines.append(f"Mostrando los últimos {len(movements_to_display)} de {result.total_found} movimientos.")
 
-    if dashboard_link_url:
+    if has_dashboard_link:
         lines.append("")
         lines.append("🔗 *Ver este período en tu dashboard:*")
-        lines.append(dashboard_link_url)
         lines.append(f"_(El enlace vence en {link_ttl_minutes} minutos y sólo se puede usar una vez)_")
 
     return "\n".join(lines)
@@ -2135,12 +2140,27 @@ async def _handle_query_movements(sender_phone: str, extracted_data: dict) -> st
             print(f"[DASHBOARD_LINK_QUERY] Controlled error: {type(exc).__name__}: {exc}")
             dashboard_link_url = None
 
-    return _format_query_movements_reply(
+    reply = _format_query_movements_reply(
         result,
         filters,
-        dashboard_link_url=dashboard_link_url,
+        has_dashboard_link=bool(dashboard_link_url),
         link_ttl_minutes=link_ttl_minutes,
     )
+    if dashboard_link_url:
+        # CTA URL bodies are limited to 1024 characters by WhatsApp.
+        if len(reply) > 1024:
+            footer = f"\n\n_(El enlace vence en {link_ttl_minutes} minutos y sólo se puede usar una vez)_"
+            reply = reply[: 1023 - len(footer)].rstrip() + "…" + footer
+        extracted_data["_conversation_event_key"] = "movements.query_result"
+        extracted_data["_conversation_event_variables"] = {
+            "summary": reply,
+            "dashboard_url": dashboard_link_url,
+            "ttl_minutes": link_ttl_minutes,
+        }
+        extracted_data["_conversation_reply_message"] = dashboard_link_message(
+            dashboard_link_url, link_ttl_minutes, body=reply
+        )
+    return reply
 
 
 def _current_month_period(today: date) -> tuple[date, date]:
@@ -2351,7 +2371,12 @@ async def _dispatch_incoming_message(
         if command == "/egresos":
             query["movement_type"] = "egreso"
         reply = await _handle_query_movements(sender_phone, query)
-        return DispatchResult(reply, service_invoked="finance", intent="query_movements")
+        return DispatchResult(
+            reply, service_invoked="finance", intent="query_movements",
+            event_key=query.pop("_conversation_event_key", None),
+            event_variables=query.pop("_conversation_event_variables", {}),
+            reply_message=query.pop("_conversation_reply_message", None),
+        )
 
     if await ConversationService.is_awaiting_movement_category_change(sender_phone):
         pending_change = (
@@ -3277,6 +3302,7 @@ async def _dispatch_incoming_message(
             "_conversation_event_variables",
             {},
         ),
+        reply_message=extracted_data.pop("_conversation_reply_message", None),
     )
 
 

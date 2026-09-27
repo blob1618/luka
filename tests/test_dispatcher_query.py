@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkResult
+from app.api.whatsapp import WhatsAppCTAURL
 from app.services.dispatcher import (
     _format_query_movements_reply,
     _handle_query_movements,
@@ -88,12 +89,22 @@ class TestFormatQueryMovementsReply:
         movements = [make_movement(descripcion=f"Gasto {i}") for i in range(5)]
         res = MovementQueryResult(status="ok", message="ok", movements=movements, total_found=10)
         link = "http://localhost:8000/login?token=xyz123&date_from=2026-09-01&date_to=2026-09-07"
-        text = _format_query_movements_reply(res, {}, dashboard_link_url=link, link_ttl_minutes=10)
+        text = _format_query_movements_reply(res, {}, has_dashboard_link=True, link_ttl_minutes=10)
 
         assert "Mostrando los últimos 5 de 10 movimientos." in text
         assert "🔗 *Ver este período en tu dashboard:*" in text
-        assert link in text
+        assert link not in text
         assert "vence en 10 minutos" in text
+
+    def test_dashboard_button_body_keeps_five_long_movements_within_limit(self):
+        movements = [
+            make_movement(descripcion=f"Gasto {i} " + "x" * 500, categoria="y" * 200)
+            for i in range(5)
+        ]
+        res = MovementQueryResult(status="ok", message="ok", movements=movements, total_found=28)
+        text = _format_query_movements_reply(res, {}, has_dashboard_link=True)
+        assert all(f"Gasto {i}" in text for i in range(5))
+        assert len(text) <= 1024
 
 
 class TestHandleQueryMovements:
@@ -209,7 +220,11 @@ class TestHandleQueryMovements:
             )
             assert "Mostrando los últimos 5 de 8 movimientos." in reply
             assert "🔗 *Ver este período en tu dashboard:*" in reply
-            assert expected_url in reply
+            assert expected_url not in reply
+            assert extracted["_conversation_event_variables"]["dashboard_url"] == expected_url
+            assert extracted["_conversation_reply_message"] == WhatsAppCTAURL(
+                body=reply, display_text="Abrir dashboard", url=expected_url
+            )
 
     @pytest.mark.asyncio
     async def test_handle_query_movements_does_not_call_link_when_total_lte_displayed(self):

@@ -14,6 +14,7 @@ import app.services.dashboard_link as dashboard_link_module
 import app.services.dispatcher as dispatcher_module
 import app.services.finance as finance_module
 import app.services.onboarding as onboarding_module
+from app.api.whatsapp import WhatsAppCTAURL
 from app.main import app
 from app.models.database import (
     Base,
@@ -482,21 +483,24 @@ class TestWebhookQueryMovementsIntegration:
 
             mock_send.assert_called_once()
             _, reply = mock_send.call_args[0]
+            assert isinstance(reply, WhatsAppCTAURL)
 
             # Verificación del texto de movimientos y contador
-            assert "Mostrando los últimos 5 de 8 movimientos." in reply
+            assert "Mostrando los últimos 5 de 8 movimientos." in reply.body
 
             # Verificación del enlace web ofrecido
-            assert "🔗 *Ver este período en tu dashboard:*" in reply
-            assert "https://example.com/login?token=" in reply
-            assert "date_from=2026-08-30" in reply
-            assert "date_to=2026-09-07" in reply
-            assert "_(El enlace vence en 10 minutos y sólo se puede usar una vez)_" in reply
+            assert "🔗 *Ver este período en tu dashboard:*" in reply.body
+            assert "https://example.com/login?token=" in reply.url
+            assert "date_from=2026-08-30" in reply.url
+            assert "date_to=2026-09-07" in reply.url
+            assert "_(El enlace vence en 10 minutos y sólo se puede usar una vez)_" in reply.body
+            assert reply.display_text == "Abrir dashboard"
+            assert reply.url not in reply.body
 
             # Validación de seguridad: no expone identificadores sensibles
-            assert str(user.id) not in reply
-            assert str(linked_auth_id) not in reply
-            assert "5491100000001" not in reply
+            assert str(user.id) not in reply.body
+            assert str(linked_auth_id) not in reply.body
+            assert "5491100000001" not in reply.body
 
     def test_webhook_query_movements_no_link_when_total_found_lte_displayed(self, db_context):
         """No ofrece enlace al dashboard cuando total_found <= cantidad_mostrada (<= 5)."""
