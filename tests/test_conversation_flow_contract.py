@@ -249,4 +249,91 @@ def test_contract_exposes_only_closed_registry():
     event_keys = {event["event_key"] for event in contract["events"]}
 
     assert "movement.registered" in event_keys
-    assert contract["node_types"] == ["text", "reply_button", "list"]
+    assert contract["node_types"] == ["text", "reply_button", "list", "url_button"]
+
+
+def test_dashboard_button_contract_and_default():
+    policy = next(
+        event
+        for event in available_contract()["events"]
+        if event["event_key"] == "dashboard.link.sent"
+    )
+    assert policy["url_button"]["url_variable"] == "login_url"
+    definition = validate_flow_definition(
+        "dashboard.link.sent", text_definition("Accedé al dashboard")
+    )
+    assert (
+        definition["nodes"][0]["url_button_label"]
+        == policy["url_button"]["default_label"]
+    )
+
+
+@pytest.mark.parametrize("label", ["", " " * 3, "x" * 21])
+def test_dashboard_rejects_invalid_button_label(label):
+    definition = text_definition("Accedé al dashboard")
+    definition["nodes"][0]["url_button_label"] = label
+    with pytest.raises(ConversationFlowDefinitionInvalid):
+        validate_flow_definition("dashboard.link.sent", definition)
+
+
+def test_url_button_label_is_not_allowed_on_other_events():
+    definition = text_definition("No se pudo ingresar")
+    definition["nodes"][0]["url_button_label"] = "Abrir dashboard"
+    with pytest.raises(ConversationFlowDefinitionInvalid):
+        validate_flow_definition("dashboard.link.error", definition)
+
+
+def link_definition(url, label="Abrir enlace"):
+    return {
+        "start_node": "link",
+        "nodes": [
+            {
+                "id": "link",
+                "type": "url_button",
+                "body": "Tocá el botón para continuar.",
+                "url_button_label": label,
+                "url": url,
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "event_key,url",
+    [
+        ("onboarding.invitation", "{registration_url}"),
+        ("dashboard.link.sent", "{login_url}"),
+        ("onboarding.error", "https://example.com/ayuda?a=1&b=2"),
+        ("category.confirmation_required", "https://example.com/categorias"),
+    ],
+)
+def test_url_button_is_available_across_events(event_key, url):
+    definition = validate_flow_definition(event_key, link_definition(url))
+    assert definition["nodes"][0]["terminal"] is True
+    assert definition["nodes"][0]["url"] == url
+
+
+@pytest.mark.parametrize(
+    "event_key,url",
+    [
+        ("onboarding.invitation", "{login_url}"),
+        ("onboarding.invitation", "{ttl_minutes}"),
+        ("onboarding.error", "javascript:alert(1)"),
+        ("onboarding.error", "//example.com"),
+        ("onboarding.error", "https://"),
+        ("onboarding.error", "https://example.com/bad path"),
+        ("onboarding.error", "https://example.com/{unknown}"),
+        ("dashboard.link.sent", "https://example.com/another-login"),
+    ],
+)
+def test_url_button_rejects_invalid_or_unavailable_destination(event_key, url):
+    with pytest.raises(ConversationFlowDefinitionInvalid):
+        validate_flow_definition(event_key, link_definition(url))
+
+
+@pytest.mark.parametrize("label", ["", "   ", "x" * 21])
+def test_generic_url_button_rejects_invalid_label(label):
+    with pytest.raises(ConversationFlowDefinitionInvalid):
+        validate_flow_definition(
+            "onboarding.error", link_definition("https://example.com", label)
+        )

@@ -112,24 +112,34 @@ describen en `database.md`.
 - `text`: cuerpo de texto y finalización obligatoria del recorrido configurable.
 - `reply_button`: cuerpo y opciones mostradas como botones de respuesta.
 - `list`: cuerpo, etiqueta del botón de apertura, secciones y opciones.
+- `url_button`: cuerpo de hasta 1024 caracteres, `url_button_label` de hasta
+  20 caracteres y `url`. Es terminal y no espera una respuesta de WhatsApp.
 
-Para `dashboard.link.sent`, el nodo sigue siendo un único texto terminal editable
-desde el panel, de hasta 1024 caracteres. Al responder `/link`, el backend lo
-presenta con un botón nativo de URL **Abrir dashboard**. El destino siempre es
+El botón de enlace está disponible en todos los eventos y también puede ser
+el destino final de una transición. `url` admite una dirección HTTP/HTTPS fija
+o una variable completa habilitada por el evento cuyo nombre termina en `_url`,
+como `{registration_url}`. No admite plantillas parciales de URL. El contrato
+expone estas variables en `url_variables`; el destino dinámico se vuelve a
+validar al construir el mensaje saliente.
+
+Para `dashboard.link.sent`, se admite un único mensaje terminal de texto o
+`url_button`, de hasta 1024 caracteres. Al responder `/link`, el backend lo
+presenta con un botón nativo de URL. Su texto es editable (`url_button_label`),
+con **Abrir dashboard** como valor predeterminado. El destino siempre es
 el `login_url` generado por `DashboardLinkService`; si el cuerpo incluye esa URL,
-se omite del texto visible para mostrarla únicamente como destino del botón.
+el nodo de texto la omite para mostrarla únicamente como destino del botón.
 Se recomienda escribir el cuerpo sin `{login_url}`, conservando `{ttl_minutes}`
 y la aclaración de uso único. Sin una versión publicada, `/link` también envía
 el botón con el texto predeterminado. No se guarda estado interactivo en Redis
-ni el token del botón en la memoria conversacional. Onboarding mantiene su
-presentación actual.
+ni el token del botón en la memoria conversacional. Onboarding puede optar por
+un nodo `url_button` con `{registration_url}` desde el panel.
 
 Reglas:
 
 - Una opción navega a `next_node` o emite una `action` permitida, pero no ambas.
 - Un nodo terminal no declara opciones.
 - Los eventos marcados como `terminal_only` (por ejemplo `/link`, onboarding y
-  el cierre de movimientos) admiten un único nodo `text`, para no dejar al
+  el cierre de movimientos) admiten un único nodo `text` o `url_button`, para no dejar al
   usuario atrapado en un recorrido después del resultado.
 
 ## Validación obligatoria antes de publicar
@@ -141,14 +151,15 @@ Antes de publicar, el backend comprueba:
 - identificadores de nodo y opción únicos;
 - todas las transiciones apuntan a nodos existentes;
 - todos los nodos son alcanzables desde el inicial;
-- todas las ramas finalizan en un nodo de texto terminal o en una acción;
+- todas las ramas finalizan en un mensaje terminal (texto o enlace) o en una acción;
 - las variables usadas están permitidas para el `event_key` y son
   identificadores simples, sin formato ni conversión;
 - las acciones están permitidas para el `event_key`;
 - textos, encabezados, pies, botones, secciones y filas respetan el contrato
   vigente de WhatsApp Cloud API (longitudes y cantidades máximas);
-- la definición no contiene funciones, código, consultas, URLs internas ni
-  instrucciones de persistencia.
+- la definición no contiene funciones, código, consultas ni instrucciones de
+  persistencia; las URLs fijas se permiten únicamente en `url` del botón de enlace,
+  y el backend no realiza peticiones a esas direcciones.
 
 ## Eventos iniciales
 

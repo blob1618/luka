@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.api.whatsapp import WhatsAppCTAURL
 from app.models.database import DashboardLoginLink, SessionLocal, Usuario
+from app.services.conversation_flow_contract import DEFAULT_DASHBOARD_BUTTON_LABEL
 from app.services.onboarding import (
     DEFAULT_REGISTRATION_URL,
     _non_negative_int_from_env,
@@ -29,6 +30,7 @@ def dashboard_link_message(
     ttl_minutes: int,
     *,
     body: str | None = None,
+    button_label: str = DEFAULT_DASHBOARD_BUTTON_LABEL,
 ) -> WhatsAppCTAURL:
     """Present the backend-issued link as a terminal URL button."""
     default_body = (
@@ -42,7 +44,7 @@ def dashboard_link_message(
         body = body.replace(login_url, "").strip()
     return WhatsAppCTAURL(
         body=body or default_body,
-        display_text="Abrir dashboard",
+        display_text=button_label,
         url=login_url,
     )
 

@@ -7,6 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.whatsapp import (
     OutboundWhatsAppMessage,
+    WhatsAppCTAURL,
     WhatsAppList,
     WhatsAppListRow,
     WhatsAppListSection,
@@ -162,15 +163,16 @@ class ConversationFlowRuntime:
         definition = validate_flow_definition(flow.event_key, version.definition)
         node = cls._node(definition, node_id)
         message = cls._message(version, node, variables)
-        if flow.event_key == "dashboard.link.sent":
+        if flow.event_key == "dashboard.link.sent" and node["type"] == "text":
             message = dashboard_link_message(
                 variables["login_url"],
                 int(variables["ttl_minutes"]),
                 body=message.body,
+                button_label=node["url_button_label"],
             )
         build_whatsapp_payload("0", message)
 
-        if node["type"] == "text":
+        if node["type"] in {"text", "url_button"}:
             await cls._clear_if_present(sender_phone)
         else:
             await ConversationService.set_pending_conversation_flow(
@@ -202,6 +204,15 @@ class ConversationFlowRuntime:
         body = cls._render_text(node["body"], variables)
         if node_type == "text":
             return WhatsAppText(body)
+        if node_type == "url_button":
+            url = node["url"]
+            if url.startswith("{"):
+                url = cls._render_text(url, variables)
+            return WhatsAppCTAURL(
+                body=body,
+                display_text=cls._render_text(node["url_button_label"], variables),
+                url=url,
+            )
         if node_type == "reply_button":
             return WhatsAppReplyButtons(
                 body=body,

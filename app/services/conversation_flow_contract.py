@@ -2,8 +2,12 @@ from dataclasses import dataclass
 import re
 from string import Formatter
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+
+DEFAULT_DASHBOARD_BUTTON_LABEL = "Abrir dashboard"
 
 
 class StrictModel(BaseModel):
@@ -54,6 +58,14 @@ class TextNode(StrictModel):
     type: Literal["text"]
     body: str = Field(min_length=1, max_length=4096)
     terminal: Literal[True] = True
+    url_button_label: str | None = Field(default=None, min_length=1, max_length=20)
+
+
+class URLButtonNode(TextNode):
+    type: Literal["url_button"]
+    body: str = Field(min_length=1, max_length=1024)
+    url_button_label: str = Field(min_length=1, max_length=20)
+    url: str = Field(min_length=1, max_length=2048)
 
 
 class ReplyButtonNode(StrictModel):
@@ -103,7 +115,7 @@ class ListNode(StrictModel):
 
 
 FlowNode = Annotated[
-    TextNode | ReplyButtonNode | ListNode,
+    TextNode | URLButtonNode | ReplyButtonNode | ListNode,
     Field(discriminator="type"),
 ]
 
@@ -274,7 +286,11 @@ def validate_flow_definition(
     policy = EVENT_POLICIES.get(event_key)
     if policy is None:
         raise ConversationFlowDefinitionInvalid(
-            [FlowValidationIssue("event_key", "el evento no esta habilitado por el backend")]
+            [
+                FlowValidationIssue(
+                    "event_key", "el evento no esta habilitado por el backend"
+                )
+            ]
         )
 
     try:
@@ -291,8 +307,10 @@ def validate_flow_definition(
         ) from exc
 
     issues = _semantic_issues(definition, policy)
-    if event_key == "dashboard.link.sent":
-        for index, node in enumerate(definition.nodes):
+    for index, node in enumerate(definition.nodes):
+        if event_key == "dashboard.link.sent":
+            if isinstance(node, TextNode) and node.url_button_label is None:
+                node.url_button_label = DEFAULT_DASHBOARD_BUTTON_LABEL
             if len(node.body) > 1024:
                 issues.append(
                     FlowValidationIssue(
@@ -300,6 +318,57 @@ def validate_flow_definition(
                         "el mensaje con enlace admite como maximo 1024 caracteres",
                     )
                 )
+        if isinstance(node, TextNode) and node.url_button_label is not None:
+            if event_key != "dashboard.link.sent" and not isinstance(
+                node, URLButtonNode
+            ):
+                issues.append(
+                    FlowValidationIssue(
+                        f"nodes.{index}.url_button_label",
+                        "este evento no admite un boton de enlace",
+                    )
+                )
+            elif not node.url_button_label.strip():
+                issues.append(
+                    FlowValidationIssue(
+                        f"nodes.{index}.url_button_label",
+                        "el texto del boton no puede estar vacio",
+                    )
+                )
+        if isinstance(node, URLButtonNode):
+            if event_key == "dashboard.link.sent" and node.url != "{login_url}":
+                issues.append(
+                    FlowValidationIssue(
+                        f"nodes.{index}.url",
+                        "el acceso al dashboard debe usar {login_url}",
+                    )
+                )
+            variable = re.fullmatch(r"\{([A-Za-z_]\w*)\}", node.url)
+            if variable:
+                if variable.group(1) not in _url_variables(policy):
+                    issues.append(
+                        FlowValidationIssue(
+                            f"nodes.{index}.url",
+                            "la variable de enlace no esta permitida para el evento",
+                        )
+                    )
+            else:
+                try:
+                    parsed = urlsplit(node.url)
+                    valid = (
+                        parsed.scheme in {"http", "https"}
+                        and parsed.hostname
+                        and not any(char.isspace() or char in "{}" for char in node.url)
+                    )
+                except ValueError:
+                    valid = False
+                if not valid:
+                    issues.append(
+                        FlowValidationIssue(
+                            f"nodes.{index}.url",
+                            "usa una URL HTTP/HTTPS completa o una variable de enlace permitida",
+                        )
+                    )
     if issues:
         raise ConversationFlowDefinitionInvalid(issues)
     return definition.model_dump(mode="json", exclude_none=True)
@@ -313,11 +382,30 @@ def available_contract() -> dict[str, Any]:
                 "variables": sorted(policy.variables),
                 "actions": sorted(policy.actions),
                 "terminal_only": policy.terminal_only,
+                "url_variables": sorted(_url_variables(policy)),
+                **(
+                    {
+                        "url_button": {
+                            "default_label": DEFAULT_DASHBOARD_BUTTON_LABEL,
+                            "url_variable": "login_url",
+                            "max_label_length": 20,
+                            "max_body_length": 1024,
+                        }
+                    }
+                    if event_key == "dashboard.link.sent"
+                    else {}
+                ),
             }
             for event_key, policy in sorted(EVENT_POLICIES.items())
         ],
-        "node_types": ["text", "reply_button", "list"],
+        "node_types": ["text", "reply_button", "list", "url_button"],
     }
+
+
+def _url_variables(policy: EventPolicy) -> frozenset[str]:
+    return frozenset(
+        variable for variable in policy.variables if variable.endswith("_url")
+    )
 
 
 def _semantic_issues(
@@ -329,13 +417,12 @@ def _semantic_issues(
     option_ids: set[str] = set()
 
     if policy.terminal_only and (
-        len(definition.nodes) != 1
-        or not isinstance(definition.nodes[0], TextNode)
+        len(definition.nodes) != 1 or not isinstance(definition.nodes[0], TextNode)
     ):
         issues.append(
             FlowValidationIssue(
                 "nodes",
-                "el evento es terminal y solo admite un nodo de texto",
+                "el evento es terminal y solo admite un mensaje de texto o boton de enlace",
             )
         )
 
@@ -396,7 +483,7 @@ def _semantic_issues(
             issues.append(
                 FlowValidationIssue(
                     f"nodes.{node_id}",
-                    "todas las ramas deben finalizar en texto terminal o accion",
+                    "todas las ramas deben finalizar en un mensaje terminal o accion",
                 )
             )
     return issues
@@ -413,6 +500,8 @@ def _options(node: FlowNode) -> list[TargetOption]:
 def _text_fields(definition: FlowDefinition):
     for node_index, node in enumerate(definition.nodes):
         yield f"nodes.{node_index}.body", node.body
+        if isinstance(node, URLButtonNode):
+            yield f"nodes.{node_index}.url_button_label", node.url_button_label
         if isinstance(node, (ReplyButtonNode, ListNode)):
             if node.header:
                 yield f"nodes.{node_index}.header", node.header
