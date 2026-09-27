@@ -92,9 +92,7 @@ def create_and_publish(session_factory, *, event_key, definition):
 def terminal_definition(body):
     return {
         "start_node": "done",
-        "nodes": [
-            {"id": "done", "type": "text", "body": body, "terminal": True}
-        ],
+        "nodes": [{"id": "done", "type": "text", "body": body, "terminal": True}],
     }
 
 
@@ -125,13 +123,19 @@ def navigation_definition(final_body):
 
 
 @pytest.mark.asyncio
-async def test_terminal_event_renders_without_pending_state(session_factory, flow_state):
+@pytest.mark.parametrize("button_label", [None, "Entrar a Luka", "x" * 20])
+async def test_terminal_event_renders_without_pending_state(
+    session_factory, flow_state, button_label
+):
+    definition = terminal_definition(
+        "Tu acceso:\n{login_url}\nVence en {ttl_minutes} minutos."
+    )
+    if button_label is not None:
+        definition["nodes"][0]["url_button_label"] = button_label
     create_and_publish(
         session_factory,
         event_key="dashboard.link.sent",
-        definition=terminal_definition(
-            "Tu acceso:\n{login_url}\nVence en {ttl_minutes} minutos."
-        ),
+        definition=definition,
     )
 
     message = await ConversationFlowRuntime.render_event(
@@ -142,7 +146,7 @@ async def test_terminal_event_renders_without_pending_state(session_factory, flo
 
     assert message == WhatsAppCTAURL(
         body="Tu acceso:\n\nVence en 10 minutos.",
-        display_text="Abrir dashboard",
+        display_text=button_label or "Abrir dashboard",
         url="https://example.com/safe",
     )
     assert flow_state == {}
@@ -330,3 +334,116 @@ async def test_missing_state_rejects_reply_without_action(flow_state):
 
     assert result.reply_text == INTERACTION_UNAVAILABLE_REPLY
     action_handler.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "event_key,url,variables,expected",
+    [
+        (
+            "onboarding.invitation",
+            "{registration_url}",
+            {"registration_url": "https://example.com/registro?token=local"},
+            "https://example.com/registro?token=local",
+        ),
+        (
+            "onboarding.error",
+            "https://example.com/ayuda?a=1&b=2",
+            {},
+            "https://example.com/ayuda?a=1&b=2",
+        ),
+        (
+            "dashboard.link.sent",
+            "{login_url}",
+            {"login_url": "https://example.com/login?token=local"},
+            "https://example.com/login?token=local",
+        ),
+    ],
+)
+async def test_generic_url_button_renders_terminal_message(
+    session_factory, flow_state, event_key, url, variables, expected
+):
+    create_and_publish(
+        session_factory,
+        event_key=event_key,
+        definition={
+            "start_node": "link",
+            "nodes": [
+                {
+                    "id": "link",
+                    "type": "url_button",
+                    "body": "Podés continuar.",
+                    "url_button_label": "Continuar",
+                    "url": url,
+                }
+            ],
+        },
+    )
+    message = await ConversationFlowRuntime.render_event(
+        sender_phone="5411", event_key=event_key, variables=variables
+    )
+    assert message == WhatsAppCTAURL(
+        body="Podés continuar.", display_text="Continuar", url=expected
+    )
+    assert flow_state == {}
+
+
+@pytest.mark.asyncio
+async def test_journey_can_end_in_url_button(session_factory, flow_state):
+    definition = navigation_definition("Información")
+    definition["nodes"][1] = {
+        "id": "detail",
+        "type": "url_button",
+        "body": "Consultá la ayuda.",
+        "url_button_label": "Ver ayuda",
+        "url": "https://example.com/ayuda",
+    }
+    create_and_publish(
+        session_factory,
+        event_key="category.confirmation_required",
+        definition=definition,
+    )
+    initial = await ConversationFlowRuntime.render_event(
+        sender_phone="5411",
+        event_key="category.confirmation_required",
+        variables={"category": "Agua"},
+    )
+    result = await ConversationFlowRuntime.handle_reply(
+        sender_phone="5411",
+        option_id=initial.buttons[0].id,
+        reply_type="button_reply",
+        action_handler=AsyncMock(),
+    )
+    assert result.reply_message == WhatsAppCTAURL(
+        body="Consultá la ayuda.",
+        display_text="Ver ayuda",
+        url="https://example.com/ayuda",
+    )
+    assert flow_state == {}
+
+
+@pytest.mark.asyncio
+async def test_dynamic_url_is_checked_again_at_delivery(session_factory, flow_state):
+    create_and_publish(
+        session_factory,
+        event_key="onboarding.invitation",
+        definition={
+            "start_node": "link",
+            "nodes": [
+                {
+                    "id": "link",
+                    "type": "url_button",
+                    "body": "Continuar",
+                    "url_button_label": "Registrarme",
+                    "url": "{registration_url}",
+                }
+            ],
+        },
+    )
+    message = await ConversationFlowRuntime.render_event(
+        sender_phone="5411",
+        event_key="onboarding.invitation",
+        variables={"registration_url": "javascript:alert(1)"},
+    )
+    assert message is None
+    assert flow_state == {}
