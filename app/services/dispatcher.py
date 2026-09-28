@@ -46,6 +46,7 @@ from app.services.conversation import (
     RecentItems,
 )
 from app.services.conversation_flow_runtime import ConversationFlowRuntime
+from app.services.conversation_flow_contract import BUDGET_THRESHOLD_MESSAGE
 from app.services.budget import BudgetEvaluation, BudgetService, BudgetStatus
 from app.services.compensation import (
     BudgetCompensationService,
@@ -101,6 +102,7 @@ class DispatchResult:
     reply_message: OutboundWhatsAppMessage | None = None
     clear_memory: bool = False
     followup_messages: list[OutboundWhatsAppMessage] = field(default_factory=list)
+    budget_threshold_alerts: list[BudgetStatus] = field(default_factory=list)
     proposal_candidate_id: str | None = None
     proposal_delivery_mode: str | None = None  # "primary" or "followup"
 
@@ -1064,6 +1066,7 @@ async def _register_single_with_hint(
         result.movement_id,
     )
     budget_feedback = _budget_feedback_reply(evaluation)
+    extracted_data["_budget_threshold_alerts"] = _crossed_budget_thresholds([evaluation])
     # STK-187: Verificar propuesta de candidato recurrente si el movimiento es egreso
     if llm_result.get("movement_type", "egreso") == "egreso" and result.patron_hash and result.user_id:
         pending_cand = await asyncio.to_thread(
@@ -1175,6 +1178,7 @@ async def _register_multiop(
             registered_ids,
         )
         budget_feedback = _unique_budget_feedback(evaluations)
+        extracted_data["_budget_threshold_alerts"] = _crossed_budget_thresholds(evaluations)
         if budget_feedback:
             reply = f"{reply}\n\n" + "\n\n".join(budget_feedback)
         user_id = next(
@@ -1387,6 +1391,36 @@ def _budget_feedback_reply(evaluation: BudgetEvaluation) -> str:
     ):
         return ""
     return _budget_status_reply(budget)
+
+
+def _crossed_budget_thresholds(evaluations: list[BudgetEvaluation]) -> list[BudgetStatus]:
+    budgets = {}
+    for evaluation in evaluations:
+        if evaluation.status == "ok" and evaluation.crossed_80_percent and evaluation.budget:
+            budgets.setdefault(evaluation.budget.limit_id, evaluation.budget)
+    return list(budgets.values())
+
+
+async def _append_budget_threshold_alerts(sender_phone: str, result: DispatchResult) -> None:
+    alerts = []
+    for budget in result.budget_threshold_alerts:
+        variables = {
+            "category": budget.category_name,
+            "period": _limit_month_label(budget.period_start.month, budget.period_start.year),
+            "currency": budget.currency,
+            "limit_amount": _format_limit_amount(budget.limit_amount),
+            "spent_amount": _format_limit_amount(budget.spent_amount),
+            "remaining_amount": _format_limit_amount(budget.remaining_amount),
+            "percentage": str(budget.percentage),
+            "threshold": "80",
+        }
+        configured = await ConversationFlowRuntime.render_event(
+            sender_phone=sender_phone,
+            event_key="budget.threshold_crossed",
+            variables=variables,
+        )
+        alerts.append(configured or WhatsAppText(BUDGET_THRESHOLD_MESSAGE.format(**variables)))
+    result.followup_messages[0:0] = alerts
 
 
 def _unique_budget_feedback(evaluations: list[BudgetEvaluation]) -> list[str]:
@@ -3303,6 +3337,7 @@ async def _dispatch_incoming_message(
             {},
         ),
         reply_message=extracted_data.pop("_conversation_reply_message", None),
+        budget_threshold_alerts=extracted_data.pop("_budget_threshold_alerts", []),
     )
 
 
@@ -3412,6 +3447,7 @@ async def process_incoming_message(
             result.proposal_candidate_id = cand_id
             result.proposal_delivery_mode = "followup"
 
+    await _append_budget_threshold_alerts(sender_phone, result)
     return result
 
 
@@ -3635,6 +3671,8 @@ async def process_incoming_interactive_reply(
         )
         if configured is not None:
             result.reply_message = configured
+    if isinstance(result, DispatchResult):
+        await _append_budget_threshold_alerts(sender_phone, result)
     return result
 
 
@@ -3757,9 +3795,17 @@ async def _confirm_pending_category_action(sender_phone: str) -> DispatchResult:
             "description": pending.description,
         },
     )
+    budget_threshold_alerts = []
+    if result.status == "registered":
+        evaluation = await asyncio.to_thread(BudgetService.evaluate_movement, result.movement_id)
+        budget_feedback = _budget_feedback_reply(evaluation)
+        if budget_feedback:
+            reply_text += f"\n\n{budget_feedback}"
+        budget_threshold_alerts = _crossed_budget_thresholds([evaluation])
     return DispatchResult(
         reply_text=reply_text,
         service_invoked="finance",
+        budget_threshold_alerts=budget_threshold_alerts,
         event_key=("movement.registered" if result.status == "registered" else None),
         event_variables={
             "movement_id": result.movement_id or "",

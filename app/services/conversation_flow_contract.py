@@ -157,6 +157,15 @@ class EventPolicy:
     terminal_only: bool = False
 
 
+BUDGET_THRESHOLD_MESSAGE = (
+    "⚠️ *Alerta de presupuesto — {category} · {period}*\n"
+    "Ya usaste el {threshold} % o más de tu límite mensual.\n"
+    "Gastaste ${spent_amount} {currency} de ${limit_amount} {currency} "
+    "({percentage}% usado).\n"
+    "Te quedan ${remaining_amount} {currency}."
+)
+
+
 EVENT_POLICIES: dict[str, EventPolicy] = {
     "onboarding.invitation": EventPolicy(
         frozenset({"registration_url", "ttl_minutes"}),
@@ -261,6 +270,13 @@ EVENT_POLICIES: dict[str, EventPolicy] = {
         frozenset({"cancel_pending_operation"}),
     ),
     "budget.result": EventPolicy(frozenset({"summary"})),
+    "budget.threshold_crossed": EventPolicy(
+        frozenset({
+            "category", "period", "currency", "limit_amount", "spent_amount",
+            "remaining_amount", "percentage", "threshold",
+        }),
+        terminal_only=True,
+    ),
     "movements.query_result": EventPolicy(
         frozenset({"summary", "dashboard_url", "ttl_minutes"}),
         terminal_only=True,
@@ -393,6 +409,16 @@ def available_contract() -> dict[str, Any]:
                 "actions": sorted(policy.actions),
                 "terminal_only": policy.terminal_only,
                 "url_variables": sorted(_url_variables(policy)),
+                **({
+                    "label": "Alerta de presupuesto al cruzar el 80 %",
+                    "default_definition": {
+                        "start_node": "alert",
+                        "nodes": [{
+                            "id": "alert", "type": "text",
+                            "body": BUDGET_THRESHOLD_MESSAGE, "terminal": True,
+                        }],
+                    },
+                } if event_key == "budget.threshold_crossed" else {}),
                 **(
                     {
                         "url_button": {

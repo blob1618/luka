@@ -475,3 +475,40 @@ async def test_dynamic_url_is_checked_again_at_delivery(session_factory, flow_st
     )
     assert message is None
     assert flow_state == {}
+
+
+@pytest.mark.asyncio
+async def test_published_budget_alert_preserves_registration_buttons(session_factory, flow_state):
+    create_and_publish(
+        session_factory,
+        event_key="movement.registered",
+        definition={
+            "start_node": "registered",
+            "nodes": [{
+                "id": "registered", "type": "reply_button", "body": "Registré {description}.",
+                "options": [{"id": "change", "title": "Cambiar categoría", "action": "request_category_change"}],
+            }],
+        },
+    )
+    create_and_publish(
+        session_factory, event_key="budget.threshold_crossed",
+        definition=terminal_definition("⚠️ {category}: {percentage}% de ${limit_amount} {currency}."),
+    )
+    primary = await ConversationFlowRuntime.render_event(
+        sender_phone="5411", event_key="movement.registered",
+        variables={"description": "pan", "movement_id": str(uuid.uuid4())},
+    )
+    pending = flow_state["5411"]
+    alert = await ConversationFlowRuntime.render_event(
+        sender_phone="5411", event_key="budget.threshold_crossed",
+        variables={"category": "pan", "percentage": "80.0", "limit_amount": "30.000,00", "currency": "ARS"},
+    )
+
+    assert alert == WhatsAppText("⚠️ pan: 80.0% de $30.000,00 ARS.")
+    assert flow_state["5411"] == pending
+    action = AsyncMock(return_value="change requested")
+    assert await ConversationFlowRuntime.handle_reply(
+        sender_phone="5411", option_id=primary.buttons[0].id,
+        reply_type="button_reply", action_handler=action,
+    ) == "change requested"
+    action.assert_awaited_once_with("request_category_change", pending.variables)

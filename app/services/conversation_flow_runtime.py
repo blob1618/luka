@@ -179,6 +179,9 @@ class ConversationFlowRuntime:
             )
         build_whatsapp_payload("0", message)
 
+        if flow.event_key == "budget.threshold_crossed":
+            # A supplementary alert must preserve the primary message's buttons.
+            return message
         if node["type"] in {"text", "url_button"}:
             await cls._clear_if_present(sender_phone)
         else:

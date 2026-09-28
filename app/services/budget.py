@@ -60,6 +60,7 @@ class BudgetEvaluation:
     has_limit: bool = False
     should_alert: bool = False
     budget: BudgetStatus | None = None
+    crossed_80_percent: bool = False
 
 
 class BudgetService:
@@ -386,6 +387,28 @@ class BudgetService:
                         should_alert=budget is not None and budget.state == "exceeded",
                         budget=budget,
                     )
+
+            movements_by_limit: dict[str, list[MovimientoFinanciero]] = {}
+            for movement in movements:
+                evaluation = evaluations.get(str(movement.id))
+                if evaluation is not None and evaluation.budget is not None:
+                    movements_by_limit.setdefault(
+                        evaluation.budget.limit_id, []
+                    ).append(movement)
+
+            for same_limit_movements in movements_by_limit.values():
+                evaluation = evaluations[str(same_limit_movements[0].id)]
+                budget = evaluation.budget
+                if budget is None or budget.limit_amount <= 0:
+                    continue
+                spent_before = budget.spent_amount - sum(
+                    (Decimal(str(movement.cantidad)) for movement in same_limit_movements),
+                    Decimal("0"),
+                )
+                threshold = budget.limit_amount * Decimal("0.80")
+                if spent_before < threshold <= budget.spent_amount:
+                    for movement in same_limit_movements:
+                        evaluations[str(movement.id)].crossed_80_percent = True
 
             return [evaluations[str(value)] for value in parsed_ids]
         except Exception as exc:

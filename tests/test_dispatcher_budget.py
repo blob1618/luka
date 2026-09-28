@@ -11,7 +11,19 @@ from app.services.budget import (
     BudgetStatus,
     BudgetStatusResult,
 )
-from app.services.dispatcher import _handle_budget_query, _register_single_with_hint
+from app.services.dispatcher import (
+    DispatchResult,
+    _crossed_budget_thresholds,
+    _handle_budget_query,
+    _register_single_with_hint,
+    _confirm_pending_category_action,
+    process_incoming_message,
+    process_incoming_interactive_reply,
+)
+from app.services.conversation import PendingMovement
+from app.api.whatsapp import WhatsAppReplyButton, WhatsAppReplyButtons, WhatsAppText
+from app.services.webhook_idempotency import process_text_message_once
+from tests.conftest import FakeRedis
 from app.services.finance import MovementRegistrationResult
 
 
@@ -263,3 +275,151 @@ async def test_registered_expense_always_appends_matching_budget_status(status, 
         )
 
     assert expected in reply
+
+
+@pytest.mark.asyncio
+async def test_registered_expense_collects_80_percent_alert_separately():
+    movement_id = str(uuid.uuid4())
+    movement = {
+        "intent": "expense",
+        "movement_type": "egreso",
+        "amount": 7000,
+        "currency": "ARS",
+        "description": "pan francés",
+        "category": "pan",
+    }
+    status = budget_status(
+        category="pan", limit="30000", spent="24000", remaining="6000",
+        percentage="80.0",
+    )
+    with (
+        patch(
+            "app.services.dispatcher.FinanceService.register_movement_with_category",
+            return_value=MovementRegistrationResult(
+                status="registered", message="ok", movement_id=movement_id,
+                user_id=str(uuid.uuid4()),
+            ),
+        ),
+        patch(
+            "app.services.dispatcher.BudgetService.evaluate_movement",
+            return_value=BudgetEvaluation(
+                status="ok", message="evaluated", movement_id=movement_id,
+                has_limit=True, budget=status, crossed_80_percent=True,
+            ),
+        ),
+        patch(
+            "app.services.dispatcher.ConversationService.set_last_movement",
+            new_callable=AsyncMock,
+        ),
+    ):
+        reply = await _register_single_with_hint(
+            "5491111111111", "wamid.crossing", "compré pan por 7000",
+            movement, movement,
+        )
+
+    assert "80.0% usado" in reply
+    assert "⚠️" not in reply
+    assert movement["_budget_threshold_alerts"] == [status]
+
+
+def test_batch_of_expenses_warns_once_for_the_same_80_percent_crossing():
+    status = budget_status(
+        category="pan", limit="1000", spent="800", remaining="200",
+        percentage="80.0",
+    )
+    evaluations = [
+        BudgetEvaluation(
+            status="ok", message="evaluated", movement_id=str(uuid.uuid4()),
+            has_limit=True, budget=status, crossed_80_percent=True,
+        )
+        for _ in range(2)
+    ]
+
+    assert _crossed_budget_thresholds(evaluations) == [status]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("crossed,configured_alert", [(True, False), (True, True), (False, False)])
+async def test_budget_alert_is_sent_after_confirmation_once(crossed, configured_alert):
+    budget = budget_status(
+        category="pan", limit="30000", spent="24000", remaining="6000", percentage="80.0",
+    )
+    primary = WhatsAppReplyButtons(
+        "Registrado desde el flujo personalizado.",
+        (WhatsAppReplyButton("change", "Cambiar categoría"),),
+    )
+    alert = WhatsAppText("Aviso personalizado: pan llegó al 80 %.")
+    result = DispatchResult(
+        "Confirmación original.", event_key="movement.registered",
+        event_variables={"movement_id": str(uuid.uuid4())},
+        budget_threshold_alerts=[budget] if crossed else [],
+    )
+
+    async def render_event(**kwargs):
+        if kwargs["event_key"] == "movement.registered":
+            return primary
+        assert kwargs["event_key"] == "budget.threshold_crossed"
+        assert kwargs["variables"]["spent_amount"] == "24.000,00"
+        return alert if configured_alert else None
+
+    send = AsyncMock(return_value=True)
+    kwargs = dict(
+        redis_client=FakeRedis(), sender_phone="5491111111111",
+        text_body="compré 7000 de pan", whatsapp_message_id="wamid.budget-alert",
+        process_message=process_incoming_message, send_message=send,
+    )
+    with (
+        patch("app.services.dispatcher._dispatch_incoming_message", AsyncMock(return_value=result)),
+        patch("app.services.dispatcher.ConversationFlowRuntime.abandon", AsyncMock()),
+        patch("app.services.dispatcher.ConversationFlowRuntime.render_event", AsyncMock(side_effect=render_event)),
+    ):
+        assert await process_text_message_once(**kwargs) == "completed"
+        assert await process_text_message_once(**kwargs) == "duplicate"
+
+    messages = [call.args[1] for call in send.await_args_list]
+    assert messages[0] == primary
+    assert len(messages) == (2 if crossed else 1)
+    if crossed:
+        if configured_alert:
+            assert messages[1] == alert
+        else:
+            assert isinstance(messages[1], WhatsAppText)
+            assert "Alerta de presupuesto" in messages[1].body
+            assert "80 % o más" in messages[1].body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["registered", "duplicate", "persistence_error"])
+async def test_category_confirmation_alert_requires_successful_new_registration(status):
+    pending = PendingMovement(
+        "5491111111111", "wamid.category", "compré pan por 7000",
+        "egreso", Decimal("7000"), "ARS", "pan francés", "pan",
+    )
+    budget = budget_status(spent="800", remaining="200", percentage="80.0")
+    evaluation = BudgetEvaluation(
+        "ok", "evaluated", has_limit=True, budget=budget, crossed_80_percent=True,
+    )
+    with (
+        patch("app.services.dispatcher.ConversationService.get_pending_movement", AsyncMock(return_value=pending)),
+        patch("app.services.dispatcher.FinanceService.register_movement_with_category", return_value=MovementRegistrationResult(
+            status, "ok", movement_id=str(uuid.uuid4()),
+        )),
+        patch("app.services.dispatcher.BudgetService.evaluate_movement", return_value=evaluation) as evaluate,
+    ):
+        result = await _confirm_pending_category_action(pending.sender_phone)
+
+    if status != "registered":
+        evaluate.assert_not_called()
+        assert result.budget_threshold_alerts == []
+        return
+    assert result.budget_threshold_alerts == [budget]
+    with (
+        patch("app.services.dispatcher.ConversationFlowRuntime.handle_reply", AsyncMock(return_value=result)),
+        patch("app.services.dispatcher.ConversationFlowRuntime.render_event", AsyncMock(return_value=None)),
+    ):
+        result = await process_incoming_interactive_reply(
+            sender_phone=pending.sender_phone, option_id="flow.category.confirm", reply_type="button_reply",
+        )
+    assert "Registré tu egreso" in result.reply_text
+    assert len(result.followup_messages) == 1
+    assert "Alerta de presupuesto" in result.followup_messages[0].body

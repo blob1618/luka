@@ -91,9 +91,14 @@ procesa en silencio para no repetir una confirmación ya enviada.
   muestra el estado de consumo: una categoría o todos los presupuestos del período.
 - El consumo se calcula desde los egresos persistidos con categoría, moneda coincidente,
   fecha dentro del período y no anulados. No se persisten saldos derivados.
-- Al registrar un egreso categorizado o al cambiar su categoría, el backend evalúa el
-  presupuesto y agrega una alerta con consumido y exceso si se superó el tope. No existe
-  un job periódico de alertas.
+- Al registrar un egreso categorizado, el backend evalúa el presupuesto. Si el
+  acumulado pasa de menos del 80 % a 80 % o más, agrega una alerta preventiva
+  una sola vez por ese cruce, como mensaje separado después de la confirmación
+  del registro. Su contenido se administra con el evento `budget.threshold_crossed`.
+  El estado del presupuesto se muestra después de
+  cada registro; si se alcanza o supera el tope, muestra el aviso correspondiente.
+  Al cambiar la categoría de un movimiento, recalcula y muestra el estado.
+  No existe un job periódico de alertas.
 - La edición y la eliminación de límites admiten selección múltiple (por mes, por
   nombres de meses o «ambos») y se ejecutan en una sola transacción. Si algún límite no
   coincide, no se elimina ninguno.
