@@ -65,7 +65,9 @@ class ConversationFlowRuntime:
                 sender_phone=sender_phone,
                 flow=flow,
                 version=flow.published,
-                node_id=flow.published.definition["start_node"],
+                node_id=flow.published.definition.get("event_nodes", {}).get(
+                    event_key, flow.published.definition["start_node"]
+                ),
                 variables=normalized_variables,
             )
         except (

@@ -205,6 +205,63 @@ backend; no se admiten URLs libres dentro de textos ni acciones.
 
 ## Respuestas interactivas
 
+### Creación y edición de límites: un único recorrido
+
+Elegí **Crear y editar límites · recorrido completo** (`limit.creation`) al crear
+un flujo. El editor carga todas sus etapas en una sola definición: consulta,
+inicio, datos faltantes, confirmación de año, creación, actualización y
+cancelación. La categoría nueva se deriva al subflujo compartido. Un solo borrador y una sola publicación
+actualizan el conjunto.
+
+El botón **Crear límite** ejecuta `start_limit`, inicia una solicitud vacía y
+emite `limit.started`: **“🎯 Indicá categoría, monto y mes para crear tu límite.”**
+No reutiliza datos de la operación anterior. Si la respuesta está incompleta,
+`limit.missing_data` pide únicamente el dato faltante mediante `{missing_field}`.
+
+La definición contiene `event_nodes`, que asigna cada resultado del dominio a
+su mensaje. Cada mensaje conserva las variables y acciones permitidas por su
+propio evento. Las confirmaciones ejecutan acciones; no pueden saltar a un
+mensaje de éxito. El dispatcher decide el resultado y confirma sólo tras
+persistir. Los avisos de presupuesto alcanzado o superado se envían aparte.
+
+El mapa muestra mensajes de **Luka**, respuestas del **usuario** (texto o botón)
+y flechas hacia los resultados posibles. Cada mensaje y respuesta ocupa una
+caja independiente; el zoom permite explorar las ramas. Las cancelaciones
+siguen disponibles pero sus cajas y flechas se omiten del mapa. Los ejemplos de texto se editan en `response_examples` y se guardan con
+el resto del flujo; son ilustrativos, no reglas de coincidencia literal. El
+reconocimiento de datos, confirmaciones y cancelaciones sigue en el dispatcher.
+Errores de interpretación o persistencia conservan la respuesta segura del
+backend y nunca llegan al mensaje de éxito.
+
+Las rutas admitidas se publican en el contrato desde `limit_flow_journey.py`.
+No se permiten dos flujos publicados que atiendan la misma etapa: hay que
+retirar los flujos individuales antes de publicar el recorrido completo, o
+viceversa. Retirarlos conserva su historial. No hay cambios de esquema de BD.
+
+### Subflujo compartido: Crear categoría
+
+`category.confirmation_required` es un recurso independiente y reutilizado por
+movimientos y límites. Se edita/publica una sola vez. Su mensaje usa `{category}`
+y sus botones ejecutan `confirm_category` o `reject_category`. El recorrido de
+límites muestra una única referencia **Crear categoría**; tocarla abre el editor
+compartido. Ya no existe el evento duplicado `limit.category_confirmation` ni
+la acción `confirm_limit_category`.
+
+La operación pendiente en Redis identifica al llamador y conserva sus datos.
+Al confirmar, `CategoryCreationService.confirm` crea o reactiva la categoría
+para ese usuario y devuelve nombre/ID. Después el dispatcher continúa el límite
+o el movimiento usando la categoría existente, sin volver a crearla. El servicio
+de creación puede invocarse independientemente de esos dos llamadores.
+
+La misma continuación procesa confirmaciones por texto y botones. Rechazar
+cancela la operación pendiente. Un error de creación conserva el contexto y no
+registra la operación. Si la categoría se creó pero falló la operación posterior,
+la respuesta lo aclara; al reintentar se reutiliza la categoría existente. Las
+publicaciones del subflujo afectan a ambos llamadores y los botones consumidos
+no vuelven a ejecutar la operación.
+
+### Validación de respuestas
+
 El identificador enviado a WhatsApp es un token opaco derivado de la versión
 publicada, el nodo y la opción. Al recibir `button_reply` o `list_reply`, el
 backend verifica:

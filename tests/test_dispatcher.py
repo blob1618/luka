@@ -598,9 +598,12 @@ class TestFinancialMovement:
             description="semillas",
             inferred_category="Jardinería de prueba",
         )
+        from app.services.finance import CategoryResult
+        await ConversationService.set_pending_movement("12345", pending)
         register = MagicMock(return_value=registered_result())
 
         with (
+            patch("app.services.dispatcher.CategoryCreationService.confirm", return_value=CategoryResult("created", "ok", category_name=pending.inferred_category)),
             patch(
                 "app.services.dispatcher.ConversationService.get_pending_movement",
                 new_callable=AsyncMock,
@@ -620,7 +623,7 @@ class TestFinancialMovement:
         assert result.service_invoked == "finance"
         assert result.event_key == "movement.registered"
         assert "Registré tu egreso" in result.reply_text
-        assert register.call_args.kwargs["category_creation_confirmed"] is True
+        assert register.call_args.kwargs["create_category_if_missing"] is False
         clear_state.assert_awaited_once_with("12345")
 
     @pytest.mark.asyncio

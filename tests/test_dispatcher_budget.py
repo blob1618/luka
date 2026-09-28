@@ -16,7 +16,7 @@ from app.services.dispatcher import (
     _crossed_budget_thresholds,
     _handle_budget_query,
     _register_single_with_hint,
-    _confirm_pending_category_action,
+    _resume_movement_after_category,
     process_incoming_message,
     process_incoming_interactive_reply,
 )
@@ -406,7 +406,7 @@ async def test_category_confirmation_alert_requires_successful_new_registration(
         )),
         patch("app.services.dispatcher.BudgetService.evaluate_movement", return_value=evaluation) as evaluate,
     ):
-        result = await _confirm_pending_category_action(pending.sender_phone)
+        result = await _resume_movement_after_category(pending.sender_phone)
 
     if status != "registered":
         evaluate.assert_not_called()

@@ -8,8 +8,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.services.conversation import LastCreatedLimit, PendingLimit, PendingLimitDelete
-from app.services.dispatcher import process_incoming_message
+from app.services.conversation import ConversationService, LastCreatedLimit, PendingLimit, PendingLimitDelete
+from app.services.finance import CategoryResult
+from app.services.dispatcher import DispatchResult, process_incoming_message
 from app.services.limit import LimitBatchResult, LimitResult
 from app.services.onboarding import OnboardingDecision, OnboardingResult
 
@@ -481,7 +482,7 @@ class TestLimitMultiTurn:
         ):
             result = await process_incoming_message("12345", "si")
 
-        assert result.service_invoked == "conversation"
+        assert result.service_invoked == "limit"
         assert "Registré tu límite para" in result.reply_text
         assert "Transporte" in result.reply_text
         assert "80.000,00" in result.reply_text
@@ -528,7 +529,7 @@ class TestLimitMultiTurn:
         ):
             result = await process_incoming_message("12345", "si")
 
-        assert result.service_invoked == "conversation"
+        assert result.service_invoked == "limit"
         assert "Registré tu límite para" in result.reply_text
         assert "Fiestas" in result.reply_text
         mock_clear.assert_awaited_once()
@@ -1068,7 +1069,7 @@ class TestLimitCategoryConfirmation:
                 "poné un límite de 300000 para ropa",
             )
 
-        assert "¿Querés crearla y aplicar el límite?" in result.reply_text
+        assert "¿Querés crearla?" in result.reply_text
         assert set_pending.await_args.kwargs["step"] == (
             "awaiting_limit_category_confirmation"
         )
@@ -1083,7 +1084,9 @@ class TestLimitCategoryConfirmation:
             year=2026,
             currency="ARS",
         )
+        await ConversationService.set_pending_limit("12345", pending, step="awaiting_limit_category_confirmation")
         with (
+            patch("app.services.dispatcher.CategoryCreationService.confirm", return_value=CategoryResult("created", "ok", category_name=pending.category)),
             limit_flow_patches(
                 awaiting_limit_category=True,
                 llm={"intent": "confirm_limit", "reply_text": "dale"},
@@ -1105,7 +1108,7 @@ class TestLimitCategoryConfirmation:
             result = await process_incoming_message("12345", "sí")
 
         assert "Registré tu límite" in result.reply_text
-        assert create_limit.call_args.kwargs["allow_category_creation"] is True
+        assert create_limit.call_args.kwargs["allow_category_creation"] is False
 
     @pytest.mark.asyncio
     async def test_creala_authorizes_dynamic_category_creation(self):
@@ -1117,7 +1120,9 @@ class TestLimitCategoryConfirmation:
             year=2026,
             currency="ARS",
         )
+        await ConversationService.set_pending_limit("12345", pending, step="awaiting_limit_category_confirmation")
         with (
+            patch("app.services.dispatcher.CategoryCreationService.confirm", return_value=CategoryResult("created", "ok", category_name=pending.category)),
             limit_flow_patches(
                 awaiting_limit_category=True,
                 llm={"intent": "out_of_scope", "reply_text": ""},
@@ -1143,7 +1148,7 @@ class TestLimitCategoryConfirmation:
             result = await process_incoming_message("12345", "creala")
 
         assert "Registré tu límite" in result.reply_text
-        assert create_limit.call_args.kwargs["allow_category_creation"] is True
+        assert create_limit.call_args.kwargs["allow_category_creation"] is False
 
     @pytest.mark.asyncio
     async def test_alternative_category_keeps_pending_limit_data(self):
@@ -1155,7 +1160,9 @@ class TestLimitCategoryConfirmation:
             year=2026,
             currency="ARS",
         )
+        await ConversationService.set_pending_limit("12345", pending, step="awaiting_limit_category_confirmation")
         with (
+            patch("app.services.dispatcher.CategoryCreationService.confirm", return_value=CategoryResult("created", "ok", category_name=pending.category)),
             limit_flow_patches(
                 awaiting_limit_category=True,
                 llm={"intent": "out_of_scope", "reply_text": ""},
@@ -1198,7 +1205,9 @@ class TestLimitCategoryConfirmation:
             year=2026,
             currency="ARS",
         )
+        await ConversationService.set_pending_limit("12345", pending, step="awaiting_limit_category_confirmation")
         with (
+            patch("app.services.dispatcher.CategoryCreationService.confirm", return_value=CategoryResult("created", "ok", category_name=pending.category)),
             limit_flow_patches(
                 awaiting_limit_category=True,
                 llm={"intent": "greeting", "reply_text": "hola"},
@@ -1235,7 +1244,9 @@ class TestLimitCategoryConfirmation:
             "reply_text": "No he podido analizar tu mensaje en este momento.",
             "error": "HTTPStatusError: 429 Too Many Requests",
         }
+        await ConversationService.set_pending_limit("12345", pending, step="awaiting_limit_category_confirmation")
         with (
+            patch("app.services.dispatcher.CategoryCreationService.confirm", return_value=CategoryResult("created", "ok", category_name=pending.category)),
             limit_flow_patches(
                 awaiting_limit_category=True,
                 llm=llm_error,
@@ -1269,7 +1280,7 @@ class TestLimitIntentCorrections:
             patch(
                 "app.services.dispatcher._handle_list_limits",
                 new_callable=AsyncMock,
-                return_value="lista",
+                return_value=DispatchResult("lista", service_invoked="limit"),
             ) as list_limits,
         ):
             result = await process_incoming_message("12345", "límites")
@@ -1325,7 +1336,7 @@ class TestLimitIntentCorrections:
             patch(
                 "app.services.dispatcher._handle_change_limit",
                 new_callable=AsyncMock,
-                return_value="actualizado",
+                return_value=DispatchResult("actualizado", service_invoked="limit"),
             ) as change_limit,
         ):
             result = await process_incoming_message(

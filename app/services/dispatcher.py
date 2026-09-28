@@ -71,6 +71,7 @@ from app.services.intent_routing import (
     normalize_movement_action,
     references_recent_limit,
 )
+from app.services.category_creation import CategoryCreationService
 from app.services.limit import LimitService
 from app.services.llm import LLMService
 from app.services.chart_service import generate_chart, choice_patch
@@ -184,8 +185,8 @@ def _movement_category_change_button(
 
 def _category_confirmation_reply(category_name: str) -> str:
     return (
-        f"📁 Detecté la categoría *{category_name}*. "
-        "¿Confirmás que es correcta? Respondé 'sí' para confirmar o decime la categoría correcta."
+        f"📁 No tenés la categoría *{category_name}*. "
+        "¿Querés crearla? Respondé 'sí' o indicá otra categoría."
     )
 
 
@@ -1671,10 +1672,20 @@ async def _handle_create_limit(
     last_limit: LastCreatedLimit | None = None,
     edit: bool | None = None,
     allow_category_creation: bool = False,
-) -> str:
+) -> DispatchResult:
     """Crea o edita un límite de gasto, orquestando los pasos multi-turno."""
     if edit is None:
         edit = last_limit is not None
+
+    def reply(text, event_key=None, **variables):
+        return DispatchResult(
+            reply_text=text,
+            service_invoked="limit",
+            intent="change_limit" if edit else "create_limit",
+            raw_llm_response=extracted_data,
+            event_key=event_key,
+            event_variables=variables,
+        )
 
     with track_phase("db"):
         result = await asyncio.to_thread(
@@ -1699,13 +1710,20 @@ async def _handle_create_limit(
             ),
         )
         await ConversationService.clear_state(sender_phone)
-        reply = _limit_registered_reply(
-            result.category_name,
-            result.amount,
-            result.month,
-            result.year,
-            result.currency or "ARS",
-            edit=edit,
+        response = reply(
+            _limit_registered_reply(
+                result.category_name,
+                result.amount,
+                result.month,
+                result.year,
+                result.currency or "ARS",
+                edit=edit,
+            ),
+            f"limit.{result.status}",
+            category=result.category_name,
+            amount=_format_limit_amount(result.amount),
+            currency=result.currency or "ARS",
+            period=_limit_month_label(result.month, result.year),
         )
         budget_result = await asyncio.to_thread(
             BudgetService.get_status_for_limit,
@@ -1713,8 +1731,12 @@ async def _handle_create_limit(
         )
         if budget_result.status == "ok" and budget_result.budget is not None:
             if budget_result.budget.state in {"reached", "exceeded"}:
-                reply += f"\n\n{_budget_status_reply(budget_result.budget)}"
-        return reply
+                # Keep budget warnings visible even when the configured success
+                # message replaces the default reply.
+                response.followup_messages.append(
+                    WhatsAppText(_budget_status_reply(budget_result.budget))
+                )
+        return response
 
     if result.status == "needs_year_confirmation":
         pending = PendingLimit(
@@ -1732,7 +1754,11 @@ async def _handle_create_limit(
             pending,
             step="awaiting_limit_year_confirmation",
         )
-        return _year_confirmation_reply(result.proposed_month, result.proposed_year)
+        return reply(
+            _year_confirmation_reply(result.proposed_month, result.proposed_year),
+            "limit.year_confirmation",
+            year=result.proposed_year,
+        )
 
     if result.status == "needs_category_confirmation":
         pending = PendingLimit(
@@ -1750,9 +1776,10 @@ async def _handle_create_limit(
             pending,
             step="awaiting_limit_category_confirmation",
         )
-        return (
-            f"No tenés la categoría {result.category_name}. "
-            "¿Querés crearla y aplicar el límite?"
+        return reply(
+            _category_confirmation_reply(result.category_name),
+            "category.confirmation_required",
+            category=result.category_name,
         )
 
     if result.status in ("needs_category", "needs_amount", "needs_month"):
@@ -1778,27 +1805,42 @@ async def _handle_create_limit(
             pending,
             step="awaiting_limit_data",
         )
-        return _limit_missing_reply(result)
+        if not edit and all(
+            extracted_data.get(key) is None
+            for key in ("limit_category", "limit_amount", "limit_month")
+        ):
+            from app.services.limit_flow_journey import LIMIT_START_MESSAGE
+
+            return reply(LIMIT_START_MESSAGE, "limit.started")
+        return reply(
+            _limit_missing_reply(result),
+            "limit.missing_data",
+            missing_field={
+                "needs_category": "la categoría",
+                "needs_amount": "el monto máximo",
+                "needs_month": "el mes",
+            }[result.status],
+        )
 
     if result.status == "user_not_found":
-        return "No encontré una cuenta vinculada a este WhatsApp."
+        return reply("No encontré una cuenta vinculada a este WhatsApp.")
     if result.status == "persistence_error":
-        return "Hubo un problema guardando tu límite. Intentá nuevamente en unos minutos."
+        return reply("Hubo un problema guardando tu límite. Intentá nuevamente en unos minutos.")
     if result.status == "invalid_category":
-        return "Esa categoría no pertenece a tu lista ni a las categorías disponibles."
+        return reply("Esa categoría no pertenece a tu lista ni a las categorías disponibles.")
     if result.status in {"invalid_month", "invalid_year", "invalid_currency"}:
-        return "El mes, año o moneda del límite no es válido. ¿Podés revisarlo?"
+        return reply("El mes, año o moneda del límite no es válido. ¿Podés revisarlo?")
     if result.status == "expired_period":
-        return "No puedo crear un límite para un período que ya terminó."
+        return reply("No puedo crear un límite para un período que ya terminó.")
     if result.status == "stale_context":
         await ConversationService.clear_last_limit(sender_phone)
-        return "Ese límite ya no existe. Podés crear uno nuevo indicando categoría y monto."
+        return reply("Ese límite ya no existe. Podés crear uno nuevo indicando categoría y monto.")
     if result.status == "conflict":
-        return "Ya existe un límite para esa categoría, mes y moneda."
-    return "No pude procesar tu solicitud de límite."
+        return reply("Ya existe un límite para esa categoría, mes y moneda.")
+    return reply("No pude procesar tu solicitud de límite.")
 
 
-async def _change_limit_candidate(sender_phone: str, candidate: dict, data: dict) -> str:
+async def _change_limit_candidate(sender_phone: str, candidate: dict, data: dict) -> DispatchResult:
     last_limit = LastCreatedLimit(
         limit_id=candidate["limit_id"], sender_phone=sender_phone,
         category_name=candidate["category"], amount=Decimal(candidate["amount"]),
@@ -1817,13 +1859,13 @@ async def _change_limit_candidate(sender_phone: str, candidate: dict, data: dict
         await ConversationService.set_recent_items(
             sender_phone, RecentItems("limit", [candidate])
         )
-        return "¿Qué querés modificar de ese límite?"
+        return DispatchResult("¿Qué querés modificar de ese límite?", service_invoked="limit")
     return await _handle_create_limit(sender_phone, patch, last_limit=last_limit)
 
 
 async def _handle_change_limit(
     sender_phone: str, extracted_data: dict, text_body: str = ""
-) -> str:
+) -> DispatchResult:
     """Edit an explicitly selected existing limit or a recent unambiguous one."""
     reference = extracted_data.get("reference")
     reference = reference if isinstance(reference, dict) else {}
@@ -1858,7 +1900,7 @@ async def _handle_change_limit(
         source_month = recent.items[0].get("month")
         source_year = recent.items[0].get("year")
     if not category:
-        return "¿Qué límite querés modificar? Indicame la categoría."
+        return DispatchResult("¿Qué límite querés modificar? Indicame la categoría.", service_invoked="limit")
     try:
         candidates = await asyncio.to_thread(
             LimitService.find_limit_candidates, sender_phone, category=category,
@@ -1866,30 +1908,30 @@ async def _handle_change_limit(
         )
     except Exception as exc:
         print(f"[LIMIT_SELECTION] {type(exc).__name__}")
-        return "No pude consultar tus límites. Intentá nuevamente."
+        return DispatchResult("No pude consultar tus límites. Intentá nuevamente.", service_invoked="limit")
     if not candidates:
-        return f"No encontré un límite vigente de {category}."
+        return DispatchResult(f"No encontré un límite vigente de {category}.", service_invoked="limit")
     logger.info("limit_resolution intent=change_limit reference=category candidates=%s",
                 len(candidates))
     if len(candidates) > 1:
         await ConversationService.set_pending_selection(
             sender_phone, PendingSelection("change_limit", "limit", candidates, extracted_data)
         )
-        return _limit_selection_reply(category, candidates)
+        return DispatchResult(_limit_selection_reply(category, candidates), service_invoked="limit")
     return await _change_limit_candidate(sender_phone, candidates[0], extracted_data)
 
 
-async def _handle_list_limits(sender_phone: str) -> str:
+async def _handle_list_limits(sender_phone: str) -> DispatchResult:
     from app.models.database import SessionLocal, Usuario
 
     session = SessionLocal()
     try:
         user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
         if user is None:
-            return "No encontré tu cuenta."
+            return DispatchResult("No encontré tu cuenta.", service_invoked="limit")
         result = await asyncio.to_thread(LimitService.list_limits, user.id)
         if result.status == "error":
-            return "Hubo un problema consultando tus límites."
+            return DispatchResult("Hubo un problema consultando tus límites.", service_invoked="limit")
         await ConversationService.set_recent_items(
             sender_phone,
             RecentItems("limit", [
@@ -1899,10 +1941,14 @@ async def _handle_list_limits(sender_phone: str) -> str:
                 for entry in result.limits if entry.id
             ]),
         )
-        return _limit_list_reply(result)
+        summary = _limit_list_reply(result)
+        return DispatchResult(
+            summary, service_invoked="limit", intent="list_limits",
+            event_key="limit.listed", event_variables={"summary": summary},
+        )
     except Exception as exc:
         print(f"[LIMIT_LIST] Error: {type(exc).__name__}: {exc}")
-        return "Hubo un problema consultando tus límites."
+        return DispatchResult("Hubo un problema consultando tus límites.", service_invoked="limit")
     finally:
         session.close()
 
@@ -2536,10 +2582,9 @@ async def _dispatch_incoming_message(
             )
         if len(selected) == 1 and pending_selection.entity == "limit":
             await ConversationService.clear_pending_selection(sender_phone)
-            reply = await _change_limit_candidate(
+            return await _change_limit_candidate(
                 sender_phone, selected[0], pending_selection.changes
             )
-            return DispatchResult(reply, service_invoked="limit", intent="change_limit")
         if explicit_new_request and not selected:
             await ConversationService.clear_pending_selection(sender_phone)
             pending_selection = None
@@ -2747,17 +2792,17 @@ async def _dispatch_incoming_message(
             return DispatchResult(
                 reply_text="Listo, no creé ningún límite de gasto.",
                 service_invoked="conversation",
+                event_key="limit.cancelled",
             )
         if intent == "confirm_limit" or (
             intent in ("out_of_scope", "greeting") and _is_confirm_request(text_body)
         ):
-            reply_text = await _handle_create_limit(
+            return await _handle_create_limit(
                 sender_phone,
                 _limit_base_data(pending),
                 last_limit=_last_limit_from_pending(pending),
                 edit=pending.is_edit,
             )
-            return DispatchResult(reply_text=reply_text, service_invoked="conversation")
         # El mensaje no responde la confirmación de año (saludo, gasto, otro tema):
         # el flujo del límite quedó abandonado. Limpiar el estado para que no
         # secuestre los mensajes siguientes y procesar normalmente (fall-through).
@@ -2766,70 +2811,36 @@ async def _dispatch_incoming_message(
     # ----------------------------------------------------------
     # Multi-turn: confirmar creación de categoría canónica
     # ----------------------------------------------------------
-    is_awaiting_limit_category = (
-        await ConversationService.is_awaiting_limit_category_confirmation(sender_phone)
-    )
-
-    if is_awaiting_limit_category:
-        pending = await ConversationService.get_pending_limit(sender_phone)
-        if pending is None:
-            await ConversationService.clear_state(sender_phone)
-            return DispatchResult(
-                reply_text="Se perdió el contexto. Podés volver a crear el límite.",
-                service_invoked="conversation",
-            )
+    category_state = await ConversationService.get_state(sender_phone)
+    if category_state.step in {"awaiting_limit_category_confirmation", "awaiting_category_confirmation"}:
         extracted_data = await extract_message_once()
         if extracted_data.get("intent") == "reset_context":
             return await _handle_reset_context(sender_phone)
         if extracted_data.get("error"):
-            return DispatchResult(
-                reply_text=extracted_data.get("reply_text") or (
-                    "No he podido analizar tu mensaje en este momento."
-                ),
-                raw_llm_response=extracted_data,
-                service_invoked="llm",
-                intent=extracted_data.get("intent", "out_of_scope"),
-            )
-        intent = extracted_data.get("intent", "out_of_scope")
-        if intent == "reject_limit" or _is_cancel_request(text_body):
-            await ConversationService.clear_state(sender_phone)
-            return DispatchResult(
-                reply_text="Listo, no creé la categoría ni el límite.",
-                service_invoked="conversation",
-            )
-        if intent in {"confirm_limit", "confirm_category"} or (
-            _is_category_creation_confirmation(text_body)
-        ):
-            reply_text = await _handle_create_limit(
-                sender_phone,
-                _limit_base_data(pending),
-                last_limit=_last_limit_from_pending(pending),
-                edit=pending.is_edit,
-                allow_category_creation=True,
-            )
-            return DispatchResult(reply_text=reply_text, service_invoked="conversation")
-        alternative_category = (
-            extracted_data.get("limit_category")
-            or _extract_category_alternative(text_body)
-        )
-        if (
-            isinstance(alternative_category, str)
-            and alternative_category.strip()
-            and alternative_category.strip().casefold()
-            != (pending.category or "").strip().casefold()
-        ):
-            replacement_data = _limit_base_data(pending)
-            replacement_data["limit_category"] = alternative_category.strip()
-            reply_text = await _handle_create_limit(
-                sender_phone,
-                replacement_data,
-                last_limit=_last_limit_from_pending(pending),
-                edit=pending.is_edit,
-            )
-            return DispatchResult(
-                reply_text=reply_text,
-                service_invoked="conversation",
-            )
+            return DispatchResult(extracted_data.get("reply_text") or "No pude interpretar tu respuesta. Volvé a enviarla.", service_invoked="llm", raw_llm_response=extracted_data)
+        intent = extracted_data.get("intent")
+        if intent in {"reject_limit", "reject_category"} or _is_cancel_request(text_body):
+            return await _reject_pending_category_action(sender_phone)
+        if intent in {"confirm_limit", "confirm_category"} or _is_category_creation_confirmation(text_body):
+            return await _confirm_pending_category_action(sender_phone)
+        alternative = extracted_data.get("limit_category") or extracted_data.get("category") or _extract_category_alternative(text_body)
+        if alternative and not _is_financial_movement(extracted_data) and intent in {"create_limit", "change_limit", "expense", "out_of_scope", "greeting"}:
+            if category_state.pending_limit:
+                pending = category_state.pending_limit
+                data = _limit_base_data(pending)
+                data["limit_category"] = alternative.strip()
+                return await _handle_create_limit(sender_phone, data, last_limit=_last_limit_from_pending(pending), edit=pending.is_edit)
+            pending = category_state.pending_movement
+            if pending:
+                data = {**pending.llm_result_extra, "category": alternative.strip()}
+                await ConversationService.clear_state(sender_phone)
+                text = await _register_single_with_hint(sender_phone, pending.whatsapp_message_id, pending.original_text, data, data)
+                return DispatchResult(
+                    text, service_invoked="finance",
+                    event_key=data.pop("_conversation_event_key", None),
+                    event_variables=data.pop("_conversation_event_variables", {}),
+                    budget_threshold_alerts=data.pop("_budget_threshold_alerts", []),
+                )
         await ConversationService.clear_state(sender_phone)
 
     # ----------------------------------------------------------
@@ -2846,11 +2857,20 @@ async def _dispatch_incoming_message(
             extracted_data = await extract_message_once()
             if extracted_data.get("intent") == "reset_context":
                 return await _handle_reset_context(sender_phone)
+            if extracted_data.get("error"):
+                return DispatchResult(
+                    reply_text="No pude interpretar tu respuesta. Volvé a enviarme el dato del límite.",
+                    raw_llm_response=extracted_data,
+                    service_invoked="llm",
+                )
             intent = extracted_data.get("intent", "out_of_scope")
 
             if intent == "reject_limit" or _is_cancel_request(text_body):
                 await ConversationService.clear_state(sender_phone)
-                reply_text = "Listo, cancelé la configuración del límite de gasto."
+                return DispatchResult(
+                    reply_text="Listo, cancelé la configuración del límite de gasto.",
+                    service_invoked="limit", event_key="limit.cancelled",
+                )
             else:
                 base = _limit_base_data(pending)
                 if base["limit_category"] is None:
@@ -2867,7 +2887,7 @@ async def _dispatch_incoming_message(
                     base["limit_month"] = extracted_data.get("limit_month")
                 if extracted_data.get("limit_year") is not None:
                     base["limit_year"] = extracted_data.get("limit_year")
-                reply_text = await _handle_create_limit(
+                return await _handle_create_limit(
                     sender_phone,
                     base,
                     last_limit=_last_limit_from_pending(pending),
@@ -3107,16 +3127,13 @@ async def _dispatch_incoming_message(
     # Manejar intents
     # ----------------------------------------------------------
     if intent == "create_limit":
-        reply_text = await _handle_create_limit(sender_phone, extracted_data)
-        service_invoked = "limit"
+        return await _handle_create_limit(sender_phone, extracted_data)
 
     elif intent == "change_limit":
-        reply_text = await _handle_change_limit(sender_phone, extracted_data, text_body)
-        service_invoked = "limit"
+        return await _handle_change_limit(sender_phone, extracted_data, text_body)
 
     elif intent == "list_limits":
-        reply_text = await _handle_list_limits(sender_phone)
-        service_invoked = "limit"
+        return await _handle_list_limits(sender_phone)
 
     elif intent == "delete_limit":
         reply_text = await _handle_delete_limit(sender_phone, extracted_data)
@@ -3681,6 +3698,21 @@ async def _handle_configured_action(
     action: str,
     variables: dict[str, str] | None = None,
 ) -> DispatchResult:
+    if action == "start_limit":
+        # This action carries no amount/category from the button. Collect fresh
+        # input through the same pending-limit state used by natural language.
+        await ConversationService.clear_state(sender_phone)
+        return await _handle_create_limit(sender_phone, {})
+    if action in {"reject_category", "cancel_pending_operation"}:
+        state = await ConversationService.get_state(sender_phone)
+        if state.step in {"awaiting_category_confirmation", "awaiting_limit_category_confirmation"}:
+            return await _reject_pending_category_action(sender_phone)
+    if action in {"cancel_pending_operation", "reject_limit"} and await ConversationService.get_pending_limit(sender_phone):
+        await ConversationService.clear_state(sender_phone)
+        return DispatchResult(
+            reply_text="Listo, cancelé la configuración del límite. No guardé cambios.",
+            service_invoked="limit", event_key="limit.cancelled",
+        )
     if action == "cancel_pending_operation":
         await ConversationService.clear_state(sender_phone)
         return DispatchResult(
@@ -3723,7 +3755,7 @@ async def _handle_configured_action(
         return await _confirm_pending_category_action(sender_phone)
     if action == "confirm_compensation":
         return await _confirm_pending_compensation_action(sender_phone)
-    if action in {"confirm_limit_year", "confirm_limit_category"}:
+    if action == "confirm_limit_year":
         return await _confirm_pending_limit_action(sender_phone, action)
     return DispatchResult(
         reply_text="Esa opción ya no está disponible. Escribime qué querés hacer.",
@@ -3731,7 +3763,39 @@ async def _handle_configured_action(
     )
 
 
+async def _reject_pending_category_action(sender_phone: str) -> DispatchResult:
+    state = await ConversationService.get_state(sender_phone)
+    await ConversationService.clear_state(sender_phone)
+    return DispatchResult(
+        "Listo, cancelé la operación pendiente.", service_invoked="category",
+        event_key="limit.cancelled" if state.pending_limit else "conversation.cancelled",
+    )
+
+
 async def _confirm_pending_category_action(sender_phone: str) -> DispatchResult:
+    state = await ConversationService.get_state(sender_phone)
+    pending_limit = state.pending_limit if state.step == "awaiting_limit_category_confirmation" else None
+    pending_movement = state.pending_movement if state.step == "awaiting_category_confirmation" else None
+    category = pending_limit.category if pending_limit else pending_movement.inferred_category if pending_movement else None
+    if not category:
+        return DispatchResult("Se perdió el contexto. Volvé a indicar qué querés hacer.", service_invoked="category")
+    result = await asyncio.to_thread(CategoryCreationService.confirm, sender_phone, category)
+    if result.status not in {"created", "already_exists"}:
+        return DispatchResult("No pude crear la categoría. Respondé 'sí' para reintentar o 'cancelar'.", service_invoked="category")
+    if pending_limit:
+        data = _limit_base_data(pending_limit)
+        data["limit_category"] = result.category_name
+        reply = await _handle_create_limit(sender_phone, data, last_limit=_last_limit_from_pending(pending_limit), edit=pending_limit.is_edit)
+    else:
+        pending_movement.inferred_category = result.category_name
+        await ConversationService.set_pending_movement(sender_phone, pending_movement)
+        reply = await _resume_movement_after_category(sender_phone)
+    if reply.event_key not in {"limit.created", "limit.updated", "movement.registered"}:
+        reply.reply_text = "La categoría ya está disponible. " + reply.reply_text
+    return reply
+
+
+async def _resume_movement_after_category(sender_phone: str) -> DispatchResult:
     pending = await ConversationService.get_pending_movement(sender_phone)
     if pending is None or not pending.inferred_category:
         return DispatchResult(
@@ -3749,8 +3813,7 @@ async def _confirm_pending_category_action(sender_phone: str) -> DispatchResult:
             currency=pending.currency,
             description=pending.description,
             category_name=pending.inferred_category,
-            create_category_if_missing=True,
-            category_creation_confirmed=True,
+            create_category_if_missing=False,
             fecha_movimiento=resolve_relative_date(
                 pending.llm_result_extra.get("fecha"),
                 date.today(),  # noqa: DTZ011
@@ -3845,11 +3908,9 @@ async def _confirm_pending_limit_action(
             reply_text="Se perdió el contexto. Volvé a crear el límite.",
             service_invoked="conversation_flow",
         )
-    reply_text = await _handle_create_limit(
+    return await _handle_create_limit(
         sender_phone,
         _limit_base_data(pending),
         last_limit=_last_limit_from_pending(pending),
         edit=pending.is_edit,
-        allow_category_creation=(action == "confirm_limit_category"),
     )
-    return DispatchResult(reply_text=reply_text, service_invoked="limit")

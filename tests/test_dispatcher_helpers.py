@@ -116,7 +116,7 @@ class TestCategoryReplies:
     def test_confirmation(self):
         reply = _category_confirmation_reply("Comida")
         assert "Comida" in reply
-        assert "confirmar" in reply.lower()
+        assert "¿querés crearla?" in reply.lower()
 
     def test_deleted(self):
         reply = _category_deleted_reply("Comida")

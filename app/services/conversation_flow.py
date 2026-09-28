@@ -121,6 +121,9 @@ class ConversationFlowService:
     ) -> FlowSnapshot | None:
         session = (session_factory or SessionLocal)()
         try:
+            from app.services.limit_flow_journey import LIMIT_JOURNEY, LIMIT_STAGES
+
+            event_keys = [event_key, LIMIT_JOURNEY] if event_key in LIMIT_STAGES else [event_key]
             flow_id = (
                 session.query(ConversationFlow.id)
                 .join(
@@ -128,7 +131,7 @@ class ConversationFlowService:
                     ConversationFlowVersion.flow_id == ConversationFlow.id,
                 )
                 .filter(
-                    ConversationFlow.event_key == event_key,
+                    ConversationFlow.event_key.in_(event_keys),
                     ConversationFlow.status == "active",
                     ConversationFlowVersion.status == "published",
                 )
@@ -237,6 +240,24 @@ class ConversationFlowService:
             draft.definition = validate_flow_definition(
                 flow.event_key, draft.definition
             )
+
+            from app.services.limit_flow_journey import LIMIT_JOURNEY, LIMIT_STAGES
+
+            competing_events = (
+                list(LIMIT_STAGES) if flow.event_key == LIMIT_JOURNEY
+                else [LIMIT_JOURNEY] if flow.event_key in LIMIT_STAGES else []
+            )
+            if competing_events and session.query(ConversationFlow.id).join(
+                ConversationFlowVersion,
+                ConversationFlowVersion.flow_id == ConversationFlow.id,
+            ).filter(
+                ConversationFlow.event_key.in_(competing_events),
+                ConversationFlow.status == "active",
+                ConversationFlowVersion.status == "published",
+            ).first():
+                raise ConversationFlowConflict(
+                    "Retirá los flujos de límites anteriores antes de publicar el recorrido unificado (o viceversa)."
+                )
 
             published = cls._version_for_status(session, flow_id, "published")
             if published is not None:

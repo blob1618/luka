@@ -6,6 +6,13 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from app.services.category_creation import category_creation_definition
+
+from app.services.limit_flow_journey import (
+    LIMIT_JOURNEY, LIMIT_STAGES, LIMIT_TEXT_RESPONSES, LIMIT_ACTION_OUTCOMES, LIMIT_SUBFLOWS,
+    limit_journey_definition,
+)
+
 
 DEFAULT_DASHBOARD_BUTTON_LABEL = "Abrir dashboard"
 
@@ -127,6 +134,8 @@ class FlowDefinition(StrictModel):
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
     )
     nodes: list[FlowNode] = Field(min_length=1, max_length=100)
+    event_nodes: dict[str, str] = Field(default_factory=dict)
+    response_examples: dict[str, str] = Field(default_factory=dict)
 
 
 class CreateConversationFlowRequest(StrictModel):
@@ -167,6 +176,9 @@ BUDGET_THRESHOLD_MESSAGE = (
 
 
 EVENT_POLICIES: dict[str, EventPolicy] = {
+    LIMIT_JOURNEY: EventPolicy(),
+    "limit.started": EventPolicy(actions=frozenset({"cancel_pending_operation"})),
+    "limit.cancelled": EventPolicy(terminal_only=True),
     "onboarding.invitation": EventPolicy(
         frozenset({"registration_url", "ttl_minutes"}),
         terminal_only=True,
@@ -189,7 +201,7 @@ EVENT_POLICIES: dict[str, EventPolicy] = {
                 "category",
             }
         ),
-        frozenset({"request_category_change"}),
+        frozenset({"request_category_change", "start_limit"}),
     ),
     "movement.invalid_data": EventPolicy(
         frozenset({"reason"}),
@@ -247,19 +259,15 @@ EVENT_POLICIES: dict[str, EventPolicy] = {
             {"confirm_limit_year", "reject_limit", "cancel_pending_operation"}
         ),
     ),
-    "limit.category_confirmation": EventPolicy(
-        frozenset({"category"}),
-        frozenset(
-            {"confirm_limit_category", "reject_limit", "cancel_pending_operation"}
-        ),
-    ),
     "limit.created": EventPolicy(
-        frozenset({"category", "amount", "currency", "period"})
+        frozenset({"category", "amount", "currency", "period"}),
+        frozenset({"start_limit"}),
     ),
     "limit.updated": EventPolicy(
-        frozenset({"category", "amount", "currency", "period"})
+        frozenset({"category", "amount", "currency", "period"}),
+        frozenset({"start_limit"}),
     ),
-    "limit.listed": EventPolicy(frozenset({"summary"})),
+    "limit.listed": EventPolicy(frozenset({"summary"}), frozenset({"start_limit"})),
     "limit.deleted": EventPolicy(frozenset({"category", "period"})),
     "limit.bulk_deleted": EventPolicy(
         frozenset({"category", "periods", "count"}),
@@ -325,6 +333,12 @@ def validate_flow_definition(
             ]
         ) from exc
 
+    if event_key == LIMIT_JOURNEY:
+        return _validate_journey(definition)
+    if definition.event_nodes or definition.response_examples:
+        raise ConversationFlowDefinitionInvalid([
+            FlowValidationIssue("event_nodes", "las etapas pertenecen a un recorrido completo")
+        ])
     issues = _semantic_issues(definition, policy)
     for index, node in enumerate(definition.nodes):
         if event_key in {"dashboard.link.sent", "movements.query_result"}:
@@ -397,6 +411,34 @@ def validate_flow_definition(
                     )
     if issues:
         raise ConversationFlowDefinitionInvalid(issues)
+    return definition.model_dump(mode="json", exclude_none=True, exclude={"event_nodes", "response_examples"})
+
+
+def _validate_journey(definition: FlowDefinition) -> dict[str, Any]:
+    issues = []
+    if set(definition.event_nodes) != set(LIMIT_STAGES):
+        issues.append(FlowValidationIssue("event_nodes", "el recorrido debe incluir todas las etapas de límites"))
+    ids = [node.id for node in definition.nodes]
+    if len(ids) != len(set(ids)) or set(ids) != set(definition.event_nodes.values()) or len(ids) != len(definition.event_nodes):
+        issues.append(FlowValidationIssue("nodes", "cada etapa debe tener un mensaje propio, sin duplicados"))
+    if definition.start_node != definition.event_nodes.get("limit.listed"):
+        issues.append(FlowValidationIssue("start_node", "el recorrido empieza en Tus límites"))
+    for event, node_id in definition.event_nodes.items():
+        node = next((n for n in definition.nodes if n.id == node_id), None)
+        if event not in LIMIT_STAGES or node is None:
+            continue
+        try:
+            validate_flow_definition(event, {"start_node": node_id, "nodes": [node.model_dump(exclude_none=True)]})
+        except ConversationFlowDefinitionInvalid as exc:
+            issues.extend(FlowValidationIssue(f"{event}.{i.path}", i.message) for i in exc.issues)
+        if any(option.next_node for option in _options(node)):
+            issues.append(FlowValidationIssue(event, "los resultados de una acción los determina Luka; usá una acción permitida"))
+    response_ids = {r["id"] for responses in LIMIT_TEXT_RESPONSES.values() for r in responses}
+    for key, example in definition.response_examples.items():
+        if key not in response_ids or not example.strip() or len(example) > 240:
+            issues.append(FlowValidationIssue("response_examples", "usá una respuesta reconocida y un ejemplo de hasta 240 caracteres"))
+    if issues:
+        raise ConversationFlowDefinitionInvalid(issues)
     return definition.model_dump(mode="json", exclude_none=True)
 
 
@@ -409,6 +451,19 @@ def available_contract() -> dict[str, Any]:
                 "actions": sorted(policy.actions),
                 "terminal_only": policy.terminal_only,
                 "url_variables": sorted(_url_variables(policy)),
+                **({
+                    "label": "Crear y editar límites · recorrido completo",
+                    "stages": LIMIT_STAGES,
+                    "text_responses": LIMIT_TEXT_RESPONSES,
+                    "action_outcomes": LIMIT_ACTION_OUTCOMES,
+                    "subflows": LIMIT_SUBFLOWS,
+                    "default_definition": limit_journey_definition(),
+                } if event_key == LIMIT_JOURNEY else {}),
+                **({
+                    "label": "Crear categoría · subflujo compartido",
+                    "default_definition": category_creation_definition(),
+                    "used_by": ["Crear y editar límites", "Registro de movimientos"],
+                } if event_key == "category.confirmation_required" else {}),
                 **({
                     "label": "Alerta de presupuesto al cruzar el 80 %",
                     "default_definition": {
