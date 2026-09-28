@@ -259,6 +259,39 @@ def test_evaluate_movement_alerts_only_when_exceeded(db_context):
     assert evaluations[0].budget.exceeded_amount == Decimal("100.0000000000")
 
 
+def test_warning_is_emitted_only_when_expense_crosses_80_percent(db_context):
+    session = db_context
+    user = create_user(session)
+    category = create_category(session, user, "pan")
+    create_budget(session, user, category, amount="30000")
+    create_movement(session, user, category, "17000")
+
+    crossing = create_movement(session, user, category, "7000")
+    at_80 = BudgetService.evaluate_movement(crossing.id)
+    assert at_80.budget.spent_amount == Decimal("24000.0000000000")
+    assert at_80.crossed_80_percent is True
+
+    later = create_movement(session, user, category, "500")
+    at_81 = BudgetService.evaluate_movement(later.id)
+    assert at_81.budget.spent_amount == Decimal("24500.0000000000")
+    assert at_81.crossed_80_percent is False
+
+
+def test_warning_crosses_80_percent_once_for_a_batch(db_context):
+    session = db_context
+    user = create_user(session)
+    category = create_category(session, user, "pan")
+    create_budget(session, user, category, amount="1000")
+    create_movement(session, user, category, "700")
+
+    first = create_movement(session, user, category, "50", movement_date=date(2026, 9, 5))
+    second = create_movement(session, user, category, "50", movement_date=date(2026, 9, 6))
+    evaluations = BudgetService.evaluate_movements([first.id, second.id])
+
+    assert all(item.crossed_80_percent for item in evaluations)
+    assert all(item.budget.spent_amount == Decimal("800.0000000000") for item in evaluations)
+
+
 def test_evaluate_non_expense_and_expense_without_limit(db_context):
     session = db_context
     user = create_user(session)

@@ -361,3 +361,16 @@ def test_generic_url_button_rejects_invalid_label(label):
         validate_flow_definition(
             "onboarding.error", link_definition("https://example.com", label)
         )
+
+
+def test_budget_threshold_alert_is_available_with_an_editable_default():
+    event = next(
+        item for item in available_contract()["events"]
+        if item["event_key"] == "budget.threshold_crossed"
+    )
+    assert event["label"] == "Alerta de presupuesto al cruzar el 80 %"
+    assert event["terminal_only"] is True
+    assert {"category", "spent_amount", "limit_amount", "percentage"} <= set(event["variables"])
+    validate_flow_definition("budget.threshold_crossed", event["default_definition"])
+    with pytest.raises(ConversationFlowDefinitionInvalid):
+        validate_flow_definition("budget.threshold_crossed", button_definition())

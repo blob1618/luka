@@ -382,3 +382,22 @@ migración y las variables anteriores estén confirmadas.
    `duplicate` y que no existe una segunda escritura ni una segunda respuesta.
 3. No fabricar ni modificar IDs en producción. La cobertura automatizada
    verifica que un ID desconocido o manipulado no ejecuta acciones.
+
+
+### Alerta preventiva de presupuesto
+
+El evento `budget.threshold_crossed` permite administrar la alerta que se envía
+como mensaje adicional después de confirmar un egreso cuyo acumulado cruza el
+80 % del límite. Aplica tanto al registro por texto como al registro completado
+mediante confirmación de categoría. Un registro con varios egresos genera como
+máximo una alerta por límite; los gastos posteriores que continúan sobre el
+umbral no repiten el aviso.
+
+En **Crear flujo**, elegí **Alerta de presupuesto al cruzar el 80 %**, personalizá
+el mensaje y publicalo. Variables disponibles: `{category}`, `{period}`,
+`{currency}`, `{limit_amount}`, `{spent_amount}`, `{remaining_amount}`,
+`{percentage}` y `{threshold}`. Los montos vienen formateados por el backend.
+El evento es terminal: su mensaje no abre una nueva interacción ni invalida los
+botones de la confirmación anterior. Sin una versión publicada se envía el
+texto predeterminado. El editor cambia la presentación; el umbral y la decisión
+de emitir la alerta permanecen en el backend.
