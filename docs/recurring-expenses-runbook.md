@@ -12,6 +12,9 @@ El ciclo de vida del subsistema opera de forma desacoplada entre dos componentes
 - **Frecuencia y Hora de Ejecución**: Diaria a las **03:00 AM** hora local de Argentina (`America/Argentina/Buenos_Aires`), programada en `app/scheduler.py` con `hour=3, minute=0`.
   > [!NOTE]
   > La hora está definida de forma fija en el scheduler (`hour=3, minute=0, timezone=ARGENTINA_TZ`). No existe variable de entorno `SCHEDULER_RECURRING_DETECTION_HOUR`.
+- **Prueba manual fuera de horario**: `RUN_RECURRING_DETECTION_ON_STARTUP=1` agrega una única ejecución del detector 45 segundos después de iniciar la aplicación. El valor debe ser exactamente `1`; cualquier otro valor mantiene esta corrida desactivada. El cron diario de las 03:00 permanece sin cambios.
+  > [!WARNING]
+  > Este disparador vuelve a programarse en cada reinicio mientras la variable conserve el valor `1` y recorre los usuarios elegibles. Usarlo sólo durante la prueba controlada y volverlo a `0` apenas se observe el resultado en logs. Ejecutar el detector crea o actualiza candidatos, pero no envía por sí solo una propuesta de WhatsApp: la propuesta se evalúa cuando el usuario registra luego un egreso que coincide con un candidato pendiente.
 - **Ventana Histórica Móvil (`lookback_months`)**: 4 meses calendario hacia atrás a partir del primer día del mes de cálculo (p. ej., para una corrida el 21 de septiembre de 2026, la ventana abarca desde el 1 de junio de 2026 inclusive).
 - **Criterio de Recurrencia**:
   - Mínimo 3 movimientos en meses consecutivos dentro de la ventana de análisis.
@@ -74,6 +77,7 @@ Los siguientes son los eventos efectivamente instrumentados y emitidos por el c�
 | Evento / Mensaje de Log | Módulo | Nivel | Significado y Formato |
 | --- | --- | --- | --- |
 | `[DAILY_DETECTION] Completado: creados=%d actualizados=%d` | `app.scheduler` | INFO | Resumen tras finalización exitosa del worker batch diario. |
+| `[DAILY_DETECTION] Corrida de prueba programada para dentro de %d segundos.` | `app.scheduler` | INFO | El disparador opt-in de inicio quedó programado; no confirma todavía la ejecución del batch. |
 | `[DAILY_DETECTION] Advisory lock 5354418701 ocupado; otro worker está en ejecución.` | `app.scheduler` | INFO | Omisión de ejecución por concurrencia (lock de PostgreSQL ocupado por otra instancia). |
 | `[DAILY_DETECTION_ERROR] %s: %s` | `app.scheduler` | ERROR | Excepción capturada durante la ejecución de la detección batch diaria. |
 | `[DAILY_DETECTION] Error al liberar advisory lock: %s` | `app.scheduler` | WARNING | Falla en `pg_advisory_unlock` en el bloque `finally`, desencadenando `invalidate()`. |

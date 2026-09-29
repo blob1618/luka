@@ -49,6 +49,7 @@ from app.scheduler import (
     _alert_day,
     _run_daily_recurring_detection_sync,
     check_reminders,
+    RECURRING_DETECTION_STARTUP_DELAY_SECONDS,
     reconcile_stranded_sending_claims,
     run_daily_recurring_detection,
     start_scheduler,
@@ -1548,6 +1549,18 @@ class TestSchedulerIntelligentReminders:
 # 6. Detección en background con coalescencia
 # ===========================================================================
 
+
+class _RecordingScheduler:
+    def __init__(self):
+        self.jobs = []
+
+    def add_job(self, func, trigger, **kwargs):
+        self.jobs.append((func, trigger, kwargs))
+
+    def start(self):
+        pass
+
+
 class TestSingleWorkerDailyDetection:
     @pytest.mark.asyncio
     async def test_sqlite_cron_job_claim_deduplication(self, monkeypatch):
@@ -1571,6 +1584,55 @@ class TestSingleWorkerDailyDetection:
         ).all()
         assert len(claims2) == 1
 
+    def test_startup_smoke_detection_is_scheduled_once_when_enabled(self, monkeypatch):
+        fixed_now = datetime(2026, 9, 29, 14, 0, 0, tzinfo=timezone.utc)
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+
+        fake_sched = _RecordingScheduler()
+        monkeypatch.setattr("app.scheduler.scheduler", fake_sched)
+        monkeypatch.setattr("app.scheduler.datetime", FixedDateTime)
+        monkeypatch.setenv("RUN_RECURRING_DETECTION_ON_STARTUP", "1")
+
+        start_scheduler()
+
+        detection_jobs = [
+            job for job in fake_sched.jobs
+            if job[0] == run_daily_recurring_detection
+        ]
+        assert len(detection_jobs) == 2
+
+        startup_jobs = [job for job in detection_jobs if job[1] == "date"]
+        assert len(startup_jobs) == 1
+        _, _, kwargs = startup_jobs[0]
+        assert kwargs["run_date"] == fixed_now + timedelta(
+            seconds=RECURRING_DETECTION_STARTUP_DELAY_SECONDS
+        )
+        assert kwargs["id"] == "recurring_detection_startup_once"
+        assert kwargs["replace_existing"] is True
+
+    @pytest.mark.parametrize("env_value", [None, "", "0", "true", "yes"])
+    def test_startup_smoke_detection_requires_exact_value_one(
+        self, monkeypatch, env_value
+    ):
+        fake_sched = _RecordingScheduler()
+        monkeypatch.setattr("app.scheduler.scheduler", fake_sched)
+        if env_value is None:
+            monkeypatch.delenv("RUN_RECURRING_DETECTION_ON_STARTUP", raising=False)
+        else:
+            monkeypatch.setenv("RUN_RECURRING_DETECTION_ON_STARTUP", env_value)
+
+        start_scheduler()
+
+        startup_jobs = [
+            job for job in fake_sched.jobs
+            if job[0] == run_daily_recurring_detection and job[1] == "date"
+        ]
+        assert startup_jobs == []
+
     def test_cron_and_logical_date_in_argentina_timezone(self, monkeypatch):
         """Cron y fecha lógica se calculan en zona horaria de Argentina."""
         session_factory = _make_db()
@@ -1578,18 +1640,9 @@ class TestSingleWorkerDailyDetection:
         monkeypatch.setattr("app.scheduler.SessionLocal", session_factory)
 
         # 1. Verificar configuración del scheduler para detección diaria en ARGENTINA_TZ
-        class FakeScheduler:
-            def __init__(self):
-                self.jobs = []
-
-            def add_job(self, func, trigger, **kwargs):
-                self.jobs.append((func, trigger, kwargs))
-
-            def start(self):
-                pass
-
-        fake_sched = FakeScheduler()
+        fake_sched = _RecordingScheduler()
         monkeypatch.setattr("app.scheduler.scheduler", fake_sched)
+        monkeypatch.delenv("RUN_RECURRING_DETECTION_ON_STARTUP", raising=False)
         start_scheduler()
 
         detection_jobs = [j for j in fake_sched.jobs if j[0] == run_daily_recurring_detection]
