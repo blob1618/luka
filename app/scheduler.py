@@ -614,8 +614,8 @@ def _run_daily_recurring_detection_sync(as_of_date: date | None = None) -> None:
     dialect_name = bind.dialect.name
     if dialect_name == "postgresql":
         # Advisory lock key canónico: 5354418701
-        # Pinea la conexión física del pool para garantizar que acquire, commits
-        # internos de detect_candidates() y unlock ejecuten sobre el mismo backend PID.
+        # Pinea la conexión física del pool para garantizar que acquire y unlock
+        # ejecuten sobre el mismo backend PID.
         with bind.connect() as lock_conn:
             lock_acquired = lock_conn.execute(
                 text("SELECT pg_try_advisory_lock(5354418701)")
@@ -623,6 +623,12 @@ def _run_daily_recurring_detection_sync(as_of_date: date | None = None) -> None:
             if not lock_acquired:
                 logger.info("[DAILY_DETECTION] Advisory lock 5354418701 ocupado; otro worker está en ejecución.")
                 return
+
+            # El SELECT anterior inicia una transacción implícita. Cerrarla antes de
+            # enlazar la Session evita join_transaction_mode=rollback_only, que haría
+            # que session.commit() no propagase el COMMIT. El advisory lock es de
+            # sesión y permanece retenido hasta pg_advisory_unlock o el cierre físico.
+            lock_conn.commit()
 
             session = SessionLocal(bind=lock_conn)
             try:

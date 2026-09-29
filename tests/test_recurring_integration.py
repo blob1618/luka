@@ -15,6 +15,7 @@ Valida el ciclo de vida completo integrado de gastos recurrentes:
 
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 import uuid
 from zoneinfo import ZoneInfo
@@ -495,6 +496,75 @@ class TestSecurityAndConversationalSafety:
 class TestAdvisoryLockRollbackRecovery:
     """Escenario 7: Regresión de liberación de lock y gestión de pool en PostgreSQL."""
 
+    def test_postgres_path_commits_writes_before_connection_cleanup(self, monkeypatch):
+        """La escritura del batch debe sobrevivir al cierre de la conexión pineada."""
+        lock_state = {"held": False}
+
+        def try_lock(_key):
+            if lock_state["held"]:
+                return 0
+            lock_state["held"] = True
+            return 1
+
+        def unlock(_key):
+            was_held = lock_state["held"]
+            lock_state["held"] = False
+            return int(was_held)
+
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        raw_connection = engine.raw_connection()
+        try:
+            raw_connection.driver_connection.create_function(
+                "pg_try_advisory_lock", 1, try_lock
+            )
+            raw_connection.driver_connection.create_function(
+                "pg_advisory_unlock", 1, unlock
+            )
+        finally:
+            raw_connection.close()
+
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE transaction_probe (value INTEGER NOT NULL)"
+            )
+
+        # Fuerza únicamente la rama PostgreSQL; el Connection y las transacciones
+        # siguen siendo reales para reproducir join_transaction_mode=rollback_only.
+        engine.dialect.name = "postgresql"
+        factory = sessionmaker(bind=engine)
+        monkeypatch.setattr("app.scheduler.SessionLocal", factory)
+
+        def write_probe(session, as_of_date=None):
+            assert lock_state["held"] is True
+            session.connection().exec_driver_sql(
+                "INSERT INTO transaction_probe (value) VALUES (1)"
+            )
+            return SimpleNamespace(
+                metrics=SimpleNamespace(
+                    candidates_created=1,
+                    candidates_updated=0,
+                )
+            )
+
+        monkeypatch.setattr(
+            "app.services.recurring_expense.RecurringExpenseService.run_daily_detection",
+            write_probe,
+        )
+
+        _run_daily_recurring_detection_sync(as_of_date=date(2026, 9, 29))
+
+        with engine.connect() as connection:
+            persisted = connection.exec_driver_sql(
+                "SELECT COUNT(*) FROM transaction_probe"
+            ).scalar_one()
+
+        assert persisted == 1
+        assert lock_state["held"] is False
+
     def _build_mock_pool(self):
         global_locks = {}
 
@@ -530,6 +600,9 @@ class TestAdvisoryLockRollbackRecovery:
                 return type("Result", (), {"scalar": lambda s: None})()
 
             def rollback(self):
+                self.in_aborted_transaction = False
+
+            def commit(self):
                 self.in_aborted_transaction = False
 
             def invalidate(self):
