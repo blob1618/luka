@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 WHATSAPP_WINDOW_HOURS = 24
 ARGENTINA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
+RECURRING_DETECTION_STARTUP_DELAY_SECONDS = 45
 PROACTIVE_PROMPT_TEXT = "👋 ¡Ey! ¿Tuviste algún gasto hoy que no registraste? Contame y lo anoto. (Si no querés estos avisos, pedime que no te escriba más.)"
 
 
@@ -760,6 +761,21 @@ def start_scheduler():
         minutes=5,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
     )
+    if os.getenv("RUN_RECURRING_DETECTION_ON_STARTUP") == "1":
+        scheduler.add_job(
+            run_daily_recurring_detection,
+            "date",
+            run_date=(
+                datetime.now(timezone.utc)
+                + timedelta(seconds=RECURRING_DETECTION_STARTUP_DELAY_SECONDS)
+            ),
+            id="recurring_detection_startup_once",
+            replace_existing=True,
+        )
+        logger.info(
+            "[DAILY_DETECTION] Corrida de prueba programada para dentro de %d segundos.",
+            RECURRING_DETECTION_STARTUP_DELAY_SECONDS,
+        )
     scheduler.add_job(
         run_daily_recurring_detection,
         "cron",
