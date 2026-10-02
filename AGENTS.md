@@ -64,6 +64,13 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 
 ## Verificar cambios
 
+### Pull Requests de historias de usuario
+
+- Trabajar cada historia de usuario en una rama asociada a su tarea de Jira y abrir un PR antes de integrarla a `main`.
+- Antes de crear el PR, leer `.github/pull_request_template.md` y completar sus secciones con hechos verificables. Dejar como «Pendiente» cualquier hito o criterio que aún no se comprobó.
+- El autor del PR mantiene su descripción actualizada cuando aparecen nuevas evidencias, incluso después del merge. Solo registrar un criterio como aceptado cuando la persona designada para validarlo deje su conclusión explícita, con fecha y enlace, en el PR o en Jira.
+- Quien integra a `main` verifica el despliegue de Render y aporta la fecha y evidencia al autor del PR. No inferir una prueba real en WhatsApp de los resultados del simulador.
+
 - Durante el desarrollo, ejecutar primero el ciclo rápido:
 
 ```bash
