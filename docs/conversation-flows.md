@@ -11,7 +11,7 @@ ya sabe producir. No reemplaza al dispatcher, no introduce un menú principal y
 no permite crear reglas de negocio desde el panel.
 
 1. El usuario puede solicitar cualquier operación soportada en cualquier
-   momento mediante lenguaje natural o comandos existentes como `/link`.
+   momento mediante lenguaje natural.
 2. El dispatcher y los servicios de dominio conservan la autoridad para decidir
    la intención, validar datos, persistir cambios y determinar el resultado.
 3. Un mensaje administrable se resuelve después de obtener un evento seguro del
@@ -27,7 +27,7 @@ Flujo de decisión:
 
 ```text
 mensaje entrante
-  -> onboarding y comandos globales
+  -> onboarding y clasificación global de acceso
   -> estado de dominio pendiente, si existe
   -> clasificación y normalización de intent
   -> servicio de dominio
@@ -123,14 +123,15 @@ expone estas variables en `url_variables`; el destino dinámico se vuelve a
 validar al construir el mensaje saliente.
 
 Para `dashboard.link.sent`, se admite un único mensaje terminal de texto o
-`url_button`, de hasta 1024 caracteres. Al responder `/link`, el backend lo
-presenta con un botón nativo de URL. Su texto es editable (`url_button_label`),
+`url_button`, de hasta 1024 caracteres. Cuando el LLM clasifica una solicitud
+natural como `dashboard_link`, el backend la presenta con un botón nativo de URL.
+Su texto es editable (`url_button_label`),
 con **Abrir dashboard** como valor predeterminado. El destino siempre es
 el `login_url` generado por `DashboardLinkService`; si el cuerpo incluye esa URL,
 el nodo de texto la omite para mostrarla únicamente como destino del botón.
 Se recomienda escribir el cuerpo sin `{login_url}`, conservando `{ttl_minutes}`
-y la aclaración de uso único. Sin una versión publicada, `/link` también envía
-el botón con el texto predeterminado. No se guarda estado interactivo en Redis
+y la aclaración de uso único. Sin una versión publicada, también se envía el
+botón con el texto predeterminado. No se guarda estado interactivo en Redis
 ni el token del botón en la memoria conversacional. Onboarding puede optar por
 un nodo `url_button` con `{registration_url}` desde el panel.
 
@@ -141,15 +142,15 @@ nodo `url_button` con cuerpo `{summary}`, destino `{dashboard_url}` y la etiquet
 del botón deseada. El backend fija ese destino al enlace personal que acaba de
 generar; un nodo `text` también se presenta como botón en este evento. Sin una
 versión publicada, se usa **Abrir dashboard**. El límite de cuerpo es 1024
-caracteres, como en `/link`.
+caracteres.
 
 Reglas:
 
 - Una opción navega a `next_node` o emite una `action` permitida, pero no ambas.
 - Un nodo terminal no declara opciones.
-- Los eventos marcados como `terminal_only` (por ejemplo `/link`, onboarding y
-  el cierre de movimientos) admiten un único nodo `text` o `url_button`, para no dejar al
-  usuario atrapado en un recorrido después del resultado.
+- Los eventos marcados como `terminal_only` (por ejemplo, acceso al dashboard,
+  onboarding y cierre de movimientos) admiten un único nodo `text` o `url_button`,
+  para no dejar al usuario atrapado en un recorrido después del resultado.
 
 ## Validación obligatoria antes de publicar
 
@@ -291,7 +292,7 @@ El estado dinámico en Redis (`conversation_flow:<whatsapp_id>`) contiene
 
 Reglas de convivencia:
 
-1. `/link` y toda respuesta terminal finalizan sin crear estado dinámico.
+1. `dashboard_link` y toda respuesta terminal finalizan sin crear estado dinámico.
 2. Una selección interactiva válida continúa el recorrido fijado.
 3. `cancelar` limpia el estado dinámico.
 4. Un mensaje de texto libre distinto limpia sólo el recorrido dinámico y vuelve
@@ -408,7 +409,7 @@ migración y las variables anteriores estén confirmadas.
 ### 1. Texto terminal y routing libre
 
 1. Publicar una presentación de texto para `dashboard.link.sent`.
-2. Enviar `/link` desde el número controlado.
+2. Enviar «quiero entrar al panel avanzado» desde el número controlado.
 3. Confirmar que llega un único enlace válido y que no queda interacción
    pendiente.
 4. Enviar inmediatamente `hoy gasté 3000 pesos en agua`.
@@ -429,8 +430,8 @@ migración y las variables anteriores estén confirmadas.
 1. Publicar una nueva versión del mismo evento usando una lista.
 2. Iniciar el recorrido y comprobar que la lista llega con títulos y filas.
 3. En una ejecución, seleccionar una fila válida y confirmar la transición.
-4. En otra ejecución, no seleccionar la lista: enviar `/link` u otra operación
-   libre y confirmar que el dispatcher procesa la nueva operación normalmente.
+4. En otra ejecución, no seleccionar la lista: pedir «pasame mi dashboard» u otra
+   operación libre y confirmar que el dispatcher procesa la nueva operación normalmente.
 
 ### 4. Seguridad e idempotencia
 

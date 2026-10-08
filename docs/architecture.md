@@ -25,9 +25,9 @@ decisiones de cada capa. El comportamiento visible para el usuario se describe e
   `/admin/conversation-flows*` (protegidos por `FLOW_ADMIN_API_KEY`) y health. En el
   `lifespan` inicializa el cliente Redis global y arranca el scheduler.
 - `app/services/dispatcher.py`: orquesta el mensaje entrante. Verifica onboarding y
-  comandos, resuelve estados multi-turno, llama al LLM, normaliza el intent, deriva al
-  servicio de dominio y construye la respuesta segura. No persiste datos financieros
-  por sí mismo.
+  prioridades globales, resuelve estados multi-turno, llama al LLM, normaliza el
+  intent, deriva al servicio de dominio y construye la respuesta segura. No persiste
+  datos financieros por sí mismo.
 - `app/services/llm.py`: fachada de interpretación. Carga el prompt, delega en el
   provider activo y normaliza la respuesta estructurada.
 - `app/services/llm_contract.py`: normalización del JSON del proveedor y resolución de
@@ -42,7 +42,7 @@ decisiones de cada capa. El comportamiento visible para el usuario se describe e
   recordatorio proactivo.
 - `app/services/onboarding.py`: invitaciones de vinculación para WhatsApp desconocidos.
 - `app/services/dashboard_link.py`: enlaces mágicos de acceso al dashboard para
-  usuarios ya vinculados (comando `/link`).
+  usuarios ya vinculados cuando el LLM clasifica `dashboard_link`.
 - `app/services/conversation.py`: estado multi-turno, contexto acotado y memoria
   conversacional en Redis.
 - `app/services/conversation_flow.py`, `conversation_flow_contract.py` y
@@ -115,6 +115,8 @@ Puntos clave del flujo:
 - El LLM interpreta, pero el backend decide: ninguna escritura se confirma con
   `reply_text`. La confirmación se construye con el resultado del servicio de dominio
   después del commit.
+- El candidato a acceso al dashboard se clasifica antes de consumir estados pendientes.
+  El LLM devuelve solo `dashboard_link`; `DashboardLinkService` genera URL y token.
 - Cada mensaje deja logs `[BACKGROUND_MESSAGE]` y `[METRICS]` con `message_id`, estado,
   latencia total y las fases presentes entre `typing_ms`, `redis_ms`, `llm_ms`,
   `db_ms` y `reply_ms`. No se registran cuerpos de mensajes, teléfonos completos,
@@ -132,7 +134,8 @@ Puntos clave del flujo:
 - El LLM solo puede devolver intents del registro cerrado de `LLMService`. Un intent
   desconocido se convierte en `out_of_scope`.
 - No se persisten como movimientos los intents `greeting`, `out_of_scope`, `reminder`,
-  `budget_query`, `expense_summary`, `query_movements`, `movement_chart`, `create_reminder`,
+  `budget_query`, `expense_summary`, `dashboard_link`, `query_movements`,
+  `movement_chart`, `create_reminder`,
   `list_reminders`, `update_reminder`, `pause_reminder`, `activate_reminder`,
   `delete_reminder`, `enable_proactive_reminders`, `disable_proactive_reminders`,
   `confirm_category`, `reject_category`, `delete_category`, `list_categories`,
@@ -207,6 +210,7 @@ usa `gunicorn -w 1`).
   `proactivo_habilitado`, `whatsapp_id`, ventana de 24h abierta y sin movimientos
   vigentes de hoy. `proactivo_ultimo_envio` se reclama antes de enviar para garantizar
   como máximo un aviso diario y se libera si el envío falla.
+- Un pedido de acceso al dashboard también refresca `ultimo_mensaje` y reabre esa ventana.
 
 ## Acceso a datos
 
