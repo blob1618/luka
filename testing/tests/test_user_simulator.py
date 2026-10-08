@@ -44,6 +44,24 @@ class TestCreateUser:
         sim = UserSimulator(in_memory_db["SessionLocal"])
         assert sim.get_user("9999999999") is None
 
+    def test_created_user_is_linked_for_the_dashboard(self, in_memory_db):
+        sim = UserSimulator(in_memory_db["SessionLocal"])
+        user = sim.create_test_user("5491100001111", "María Test")
+
+        assert user.auth_user_id is not None
+
+    def test_existing_unlinked_user_gets_linked(self, in_memory_db):
+        session = in_memory_db["SessionLocal"]()
+        session.add(Usuario(nombre="María", email="maria@test.luka", whatsapp_id="5491100002222"))
+        session.commit()
+        session.close()
+
+        sim = UserSimulator(in_memory_db["SessionLocal"])
+        user = sim.create_test_user("5491100002222", "María")
+
+        assert user.auth_user_id is not None
+        assert sim.get_user("5491100002222").auth_user_id == user.auth_user_id
+
 
 class TestSyncTestUser:
     def test_registered_crea_el_usuario(self, in_memory_db):
