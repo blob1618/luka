@@ -321,7 +321,9 @@ async def test_delete_named_movement_after_listing(conversation_db, monkeypatch)
             {"intent": "delete_movement", "reference": {"description": "verduras"}},
         ]),
     )
-    listed = await process_incoming_message(user.whatsapp_id, "/movimientos")
+    listed = await process_incoming_message(
+        user.whatsapp_id, "mostrame mis movimientos"
+    )
     removed = await process_incoming_message(user.whatsapp_id, "Borrá el movimiento de verduras")
     assert "verduras" in listed.reply_text
     assert "Eliminé verduras" in removed.reply_text
@@ -330,7 +332,7 @@ async def test_delete_named_movement_after_listing(conversation_db, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_slash_movement_queries_bypass_llm_and_list_correct_type(conversation_db, monkeypatch):
+async def test_natural_movement_queries_list_all_and_only_expenses(conversation_db, monkeypatch):
     session, user, _ = conversation_db
     for kind, description in (("egreso", "ventilador"), ("ingreso", "sueldo")):
         session.add(MovimientoFinanciero(
@@ -338,13 +340,22 @@ async def test_slash_movement_queries_bypass_llm_and_list_correct_type(conversat
             descripcion=description, fecha_movimiento=date(2026, 9, 17), origen="whatsapp_text",
         ))
     session.commit()
-    llm = AsyncMock(return_value={"intent": "out_of_scope", "reply_text": "¿Qué querés registrar?"})
+    llm = AsyncMock(
+        side_effect=[
+            {"intent": "query_movements", "movement_type": None},
+            {"intent": "query_movements", "movement_type": "egreso"},
+        ]
+    )
     monkeypatch.setattr(dispatcher_module.LLMService, "process_message", llm)
-    all_reply = await process_incoming_message(user.whatsapp_id, "/movimientos")
-    expense_reply = await process_incoming_message(user.whatsapp_id, "/egresos")
+    all_reply = await process_incoming_message(
+        user.whatsapp_id, "mostrame mis movimientos"
+    )
+    expense_reply = await process_incoming_message(
+        user.whatsapp_id, "mostrame solo mis egresos"
+    )
     assert "ventilador" in all_reply.reply_text and "sueldo" in all_reply.reply_text
     assert "ventilador" in expense_reply.reply_text and "sueldo" not in expense_reply.reply_text
-    llm.assert_not_awaited()
+    assert llm.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -357,10 +368,17 @@ async def test_delete_last_two_shown_movements_atomically(conversation_db, monke
             fecha_movimiento=date(2026, 9, 17 - index), origen="whatsapp_text",
         ))
     session.commit()
-    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", AsyncMock(
-        return_value={"intent": "out_of_scope"}
-    ))
-    await process_incoming_message(user.whatsapp_id, "/movimientos")
+    monkeypatch.setattr(
+        dispatcher_module.LLMService,
+        "process_message",
+        AsyncMock(
+            side_effect=[
+                {"intent": "query_movements", "movement_type": None},
+                {"intent": "out_of_scope"},
+            ]
+        ),
+    )
+    await process_incoming_message(user.whatsapp_id, "mostrame mis movimientos")
     shown_ids = [item["id"] for item in state["recent"].items]
     reply = await process_incoming_message(user.whatsapp_id, "Borrá los últimos dos")
     assert "Eliminé 2 movimientos" in reply.reply_text
@@ -380,10 +398,17 @@ async def test_delete_two_named_movements_even_if_llm_references_one(conversatio
             fecha_movimiento=date(2026, 9, 17), origen="whatsapp_text",
         ))
     session.commit()
-    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", AsyncMock(
-        return_value={"intent": "out_of_scope"}
-    ))
-    await process_incoming_message(user.whatsapp_id, "/movimientos")
+    monkeypatch.setattr(
+        dispatcher_module.LLMService,
+        "process_message",
+        AsyncMock(
+            side_effect=[
+                {"intent": "query_movements", "movement_type": None},
+                {"intent": "out_of_scope"},
+            ]
+        ),
+    )
+    await process_incoming_message(user.whatsapp_id, "mostrame mis movimientos")
     reply = await process_incoming_message(user.whatsapp_id, "Borrá ventilador y tv")
     assert "Eliminé 2 movimientos" in reply.reply_text
     session.expire_all()
