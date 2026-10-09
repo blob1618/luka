@@ -397,7 +397,11 @@ async def test_render_failure_does_not_save_or_send_a_partial_chart(chart_db):
         ),
         (
             "Gráfico de egresos comparados con ingresos para ocio",
-            {"chart_categories": ["Ocio"]},
+            {
+                "chart_categories": ["Ocio"],
+                "date_from": "2026-09-01",
+                "date_to": "2026-09-30",
+            },
         ),
     ],
 )
