@@ -496,14 +496,16 @@ def test_find_existing_limit_and_delete_shown_pair_atomically(db_context):
     user = create_user(session)
     food = create_category(session, user.id, "Comida")
     transport = create_category(session, user.id, "Transporte")
-    create_limit(session, user.id, food.id, 40000, 9, 2026)
-    create_limit(session, user.id, food.id, 40000, 10, 2026)
-    create_limit(session, user.id, transport.id, 20000, 10, 2026)
+    today = date.today()
+    following = date(today.year + (today.month == 12), today.month % 12 + 1, 1)
+    create_limit(session, user.id, food.id, 40000, today.month, today.year)
+    create_limit(session, user.id, food.id, 40000, following.month, following.year)
+    create_limit(session, user.id, transport.id, 20000, following.month, following.year)
 
     candidates = LimitService.find_limit_candidates(
-        user.whatsapp_id, category="Comida", today=date(2026, 9, 17)
+        user.whatsapp_id, category="Comida", today=today
     )
-    assert [item["month"] for item in candidates] == [9, 10]
+    assert [item["month"] for item in candidates] == [today.month, following.month]
     deleted = LimitService.delete_limits_by_ids(user.whatsapp_id, candidates)
     assert deleted.status == "deleted"
     assert len(deleted.deleted) == 2
