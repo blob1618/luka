@@ -258,3 +258,63 @@ Para Release 1, el acceso financiero es mediado por backend:
 No se permite que un dashboard consulte directamente los movimientos financieros de Supabase en esta etapa. El backend debe aplicar autorización y filtrar siempre por el usuario correspondiente.
 
 La migración base declara `ENABLE ROW LEVEL SECURITY` para las tablas protegidas que ya lo tenían. `20260911011601_protect_movimientos_financieros.sql` corrige las diferencias detectadas en la tabla financiera central: habilita RLS y agrega los índices de deduplicación y consulta que faltaban. No se agregan policies públicas; el backend usa un rol con `BYPASSRLS`. El estado efectivo debe volver a verificarse cuando una migración toque permisos o RLS.
+
+
+## STK-237: Modelo y Migracion de Billetera (Multi-Wallet por Moneda)
+
+### Contrato de Datos
+- **Entidad `billetera` (singular)**:
+  - `id`: UUID clave primaria (`gen_random_uuid()` en SQL / `uuid.uuid4` en ORM).
+  - `usuario_id`: UUID foreign key obligatoria a `usuario.id`.
+  - `nombre`: Texto no vacio (`CHECK (trim(nombre) <> '')`).
+  - `moneda`: Texto exacto sin normalizacion ni whitelist (respeta codigos historicos y espacios).
+  - `creado_en`: Timestamp con zona horaria (`TIMESTAMPTZ NOT NULL DEFAULT now()`).
+  - Restriccion de unicidad compuesta: `UNIQUE (id, usuario_id, moneda)` utilizada como destino de integridad referencial.
+  - Restriccion de unicidad por nombre normalizado: `UNIQUE INDEX (usuario_id, moneda, lower(trim(nombre)))` impidiendo nombres duplicados por usuario y moneda.
+  - Multiples billeteras permitidas para la misma moneda (con distinto nombre).
+  - Sin saldo materializado ni relaciones ORM redundantes que generen conflictos de propiedad.
+- **Relacion en `movimientos_financieros`**:
+  - `billetera_id`: UUID `NOT NULL` en el contrato final.
+  - Clave foranea compuesta `(billetera_id, usuario_id, moneda)` referenciando `billetera(id, usuario_id, moneda)`, garantizando que un movimiento pertenezca estrictamente a la billetera de su mismo usuario y en su misma moneda.
+  - Indice en `billetera_id` (`movimientos_financieros_billetera_id_idx`).
+  - Sin alteraciones a campos financieros previos, tipos, defaults ni triggers.
+
+### Migracion de Base de Datos
+- Archivo: `supabase/migrations/20261006234640_add_wallets_stk237.sql`.
+- Transaccion atomica `BEGIN ... COMMIT` con bloqueo exclusivo (`LOCK TABLE public.movimientos_financieros IN ACCESS EXCLUSIVE MODE`).
+- RLS habilitada (`ALTER TABLE public.billetera ENABLE ROW LEVEL SECURITY`) y permisos revocados a `PUBLIC`, `anon` y `authenticated` (`REVOKE ALL`).
+- Backfill determinista:
+  1. Adicion de columna temporal `billetera_id UUID` (nullable).
+  2. Snapshot temporal por ID de todos los registros preexistentes usando `to_jsonb(m) - 'billetera_id'`.
+  3. Creacion de billetera `'Inicial'` por cada pareja exacta `(usuario_id, moneda)` presente en movimientos (incluyendo movimientos anulados y codigos de moneda con espacios o vacios). Los usuarios sin movimientos no reciben registros historicos inventados.
+  4. Actualizacion exclusiva de `billetera_id` hacia la billetera correspondiente.
+  5. Comparacion estricta post-backfill: aborta y revierte si se detecta cualquier discrepancia entre el snapshot y los datos actuales o si queda algun `billetera_id` nulo.
+  6. Aplicacion de `NOT NULL`, foreign key compuesta e indice.
+
+### Pasos de Ensayo Exclusivamente Desechable
+1. Contar con una base PostgreSQL local desechable de Supabase migrada exactamente hasta `20260921045538` (sin aplicar `20261006234640`).
+2. Ejecutar el arnes de pruebas con comando explicito de confirmacion:
+   ```bash
+   psql -h 127.0.0.1 -p 54322 -U postgres -d postgres -v disposable_confirm=STK237_SYNTHETIC -f supabase/tests/stk237_wallets.sql
+   ```
+3. El arnes valida que la base este limpia de movimientos previos, inserta fixtures sinteticos deterministas, toma snapshot de todas las columnas, ejecuta la migracion via `\i`, valida la preservacion bidireccional via `EXCEPT`, comprueba join exacto por usuario y moneda, prueba rechazos de integridad y valida la denegacion efectiva de RLS/privilegios con `SET LOCAL ROLE` para roles anon y authenticated.
+4. Queda estrictamente prohibido ejecutar estos ensayos sobre bases remotas, productivas o compartidas.
+
+### Limites de Evidencias
+- Los tests unitarios en SQLite (`tests/test_wallet_model.py`) validan los modelos ORM y restricciones referenciales en memoria, pero SQLite no emula el tipo `Numeric` de PostgreSQL ni RLS.
+- En este entorno no se declara haber probado el motor PostgreSQL en vivo; el arnes SQL ha sido preparado pero no ejecutado por este agente. La validacion real depende de la ejecucion aislada del arnes en la base desechable por parte de Codex/CI.
+
+### Condicion de NO LISTO PARA MERGE/ACTIVACION
+- El candidato puede compartirse como PR borrador. El contrato final `NOT NULL` no es compatible con un backend anterior que omita `billetera_id`; no activar la migracion por separado ni volver al escritor anterior.
+- El nucleo de servicio **STK-238** esta implementado localmente. Siguen pendientes el ensayo PostgreSQL, la integracion conversacional **STK-239**, la convergencia **STK-240** y la decision de activacion coordinada antes de integrar a `main`.
+
+
+## STK-238: Wallet Service Contract & Resolution
+
+- **Resolution Statuses**: `selected`, `needs_wallet_creation`, `needs_wallet_selection`, `invalid_selection`, `currency_mismatch`, `user_not_found`, `persistence_error`.
+- **Parameters**: `session` (current transaction), `user_id` (required), `currency` (optional, default `ARS`), `wallet_id` (optional explicit UUID).
+- **Inference & Defaults**: Missing currency with explicit wallet infers wallet currency. Explicit currency mismatch with wallet returns `currency_mismatch`. Foreign or nonexistent wallet returns `invalid_selection` without leaking metadata.
+- **Selection Semantics**: Exactly 1 compatible wallet auto-selects. Zero compatible wallets returns `needs_wallet_creation`. Multiple compatible wallets returns `needs_wallet_selection` without saving or auto-creating.
+- **Balances Contract**: SQL `SUM` aggregated across active movements (`anulado_en IS NULL`) grouped by wallet and movement type. Empty wallets return 0 balance. No artificial 5-wallet limit; arithmetic verified via localcontext.
+- **Precision & Storage**: SQLite `Numeric` limits scale in testing; PostgreSQL migration pending. Floating-point conversions avoided; legacy LLM float loss unresolved.
+- **Status**: DRAFT, NOT READY FOR MERGE/ACTIVATION. PostgreSQL evidence, STK-239 conversational integration and STK-240 convergence/activation remain pending. Sharing a draft does not authorize production deployment.

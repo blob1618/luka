@@ -1,5 +1,6 @@
 import uuid
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import create_engine
@@ -10,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 import app.services.finance as finance_module
 from app.models.database import (
     Base,
+    Billetera,
     Categoria,
     LimiteCategoria,
     MovimientoFinanciero,
@@ -48,6 +50,13 @@ def create_user(session, whatsapp_id="5491111111111"):
         whatsapp_id=whatsapp_id,
     )
     session.add(user)
+    session.commit()
+    wallet = Billetera(
+        usuario_id=user.id,
+        nombre="Fixture",
+        moneda="ARS",
+    )
+    session.add(wallet)
     session.commit()
     return user
 
@@ -411,12 +420,26 @@ class FakeQuery:
         return self
 
     def first(self):
+        if isinstance(self.result, list):
+            return self.result[0] if self.result else None
         return self.result
+
+    def all(self):
+        if self.result is None:
+            return []
+        if isinstance(self.result, list):
+            return self.result
+        return [self.result]
 
 
 class IntegrityErrorSession:
-    def __init__(self, user):
+    def __init__(self, user, wallet=None):
         self.user = user
+        self.wallet = wallet or type(
+            "FakeWallet",
+            (),
+            {"id": uuid.uuid4(), "usuario_id": user.id, "moneda": "ARS", "nombre": "Fixture"},
+        )()
         self.added = []
         self.rollback_called = False
         self.closed = False
@@ -424,6 +447,8 @@ class IntegrityErrorSession:
     def query(self, model):
         if model is Usuario:
             return FakeQuery(self.user)
+        if model is Billetera:
+            return FakeQuery([self.wallet])
         return FakeQuery(None)
 
     def add(self, movement):
@@ -442,9 +467,21 @@ class IntegrityErrorSession:
 def test_register_movement_integrity_error_rechecks_and_returns_duplicate(monkeypatch):
     user_id = uuid.uuid4()
     movement_id = uuid.uuid4()
+    wallet_id = uuid.uuid4()
     user = type("User", (), {"id": user_id})()
-    duplicate = type("Duplicate", (), {"id": movement_id, "usuario_id": user_id})()
-    fake_session = IntegrityErrorSession(user)
+    wallet = type("FakeWallet", (), {"id": wallet_id, "usuario_id": user_id, "moneda": "ARS", "nombre": "Fixture"})()
+    duplicate = type(
+        "Duplicate",
+        (),
+        {
+            "id": movement_id,
+            "usuario_id": user_id,
+            "billetera_id": wallet_id,
+            "moneda": "ARS",
+            "cantidad": Decimal("1500"),
+        },
+    )()
+    fake_session = IntegrityErrorSession(user, wallet)
     duplicate_checks = iter([None, duplicate])
 
     monkeypatch.setattr(finance_module, "SessionLocal", lambda: fake_session)
@@ -590,6 +627,7 @@ def test_delete_category_sets_movements_to_null(db_context):
     # Crear movimiento con esa categoría
     mov = MovimientoFinanciero(
         usuario_id=user.id,
+        billetera_id=session.query(Billetera).filter(Billetera.usuario_id == user.id, Billetera.moneda == "ARS").first().id,
         categoria_id=cat.id,
         tipo="egreso",
         cantidad=1500,
@@ -647,12 +685,16 @@ def test_get_categories_with_totals_with_movements(db_context):
 
     # Egreso en Comida
     session.add(MovimientoFinanciero(
-        usuario_id=user.id, categoria_id=cat1.id,
+        usuario_id=user.id,
+        billetera_id=session.query(Billetera).filter(Billetera.usuario_id == user.id, Billetera.moneda == "ARS").first().id,
+        categoria_id=cat1.id,
         tipo="egreso", cantidad=5000, moneda="ARS", descripcion="super",
     ))
     # Ingreso en Sueldo
     session.add(MovimientoFinanciero(
-        usuario_id=user.id, categoria_id=cat2.id,
+        usuario_id=user.id,
+        billetera_id=session.query(Billetera).filter(Billetera.usuario_id == user.id, Billetera.moneda == "ARS").first().id,
+        categoria_id=cat2.id,
         tipo="ingreso", cantidad=250000, moneda="ARS", descripcion="sueldo",
     ))
     session.commit()
@@ -800,6 +842,7 @@ def test_update_movement_category_uses_active_owned_category(db_context):
     category = create_category(session, user.id, nombre="Comida")
     movement = MovimientoFinanciero(
         usuario_id=user.id,
+        billetera_id=session.query(Billetera).filter(Billetera.usuario_id == user.id, Billetera.moneda == "ARS").first().id,
         categoria_id=category.id,
         tipo="egreso",
         cantidad=1500,
@@ -926,7 +969,9 @@ def test_movement_reference_treats_wildcards_as_literal(db_context):
     user = create_user(session)
     for description in ("50% descuento", "pizza"):
         session.add(MovimientoFinanciero(
-            usuario_id=user.id, tipo="egreso", cantidad=1000,
+            usuario_id=user.id,
+            billetera_id=session.query(Billetera).filter(Billetera.usuario_id == user.id, Billetera.moneda == "ARS").first().id,
+            tipo="egreso", cantidad=1000,
             moneda="ARS", descripcion=description,
         ))
     session.commit()
