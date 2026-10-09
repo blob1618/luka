@@ -496,7 +496,7 @@ class TestChatLogic:
                 prompt_path="prompt.md",
                 redis_state={"step": "none"},
             )
-            reply, debug, image_pngs = await _process_message(
+            reply, debug, image_pngs, cta_urls = await _process_message(
                 "Gasté 5000", config, "5491187654321"
             )
 
@@ -504,6 +504,7 @@ class TestChatLogic:
         assert debug["service_log"] == "finance"
         assert debug["redis_state"]["step"] == "none"
         assert image_pngs == []
+        assert cta_urls == []
         assert mock_send.await_args.kwargs["phone"] == "5491187654321"
 
     @pytest.mark.asyncio
@@ -528,12 +529,13 @@ class TestChatLogic:
                 prompt_path="prompt.md",
                 redis_state=None,
             )
-            reply, debug, image_pngs = await _process_message(
+            reply, debug, image_pngs, cta_urls = await _process_message(
                 "test", config, "5491112345678"
             )
 
         assert debug["service_log"] == "unknown"
         assert image_pngs == []
+        assert cta_urls == []
 
     def test_bot_avatar_returns_bytes(self):
         from testing.components.chat import bot_avatar
@@ -602,6 +604,60 @@ class TestChatLogic:
 
         chat_st.image.assert_called_once()
 
+    def test_render_chat_existing_cta_renders_link_button(self, mock_st):
+        from testing.components.chat import render_chat
+
+        chat_st = mock_st["chat"]
+        config = make_config(
+            make_session(messages=[
+                {
+                    "role": "assistant",
+                    "content": "🔐 Tu acceso personal al dashboard de Luka.",
+                    "debug": {},
+                    "cta_urls": [
+                        ("Abrir dashboard", "http://localhost:8000/login?token=abc"),
+                    ],
+                }
+            ])
+        )
+        chat_st.chat_input.return_value = None
+        chat_st.chat_message.return_value.__enter__ = MagicMock(return_value=None)
+        chat_st.chat_message.return_value.__exit__ = MagicMock(return_value=False)
+
+        render_chat(config)
+
+        chat_st.link_button.assert_called_once_with(
+            "Abrir dashboard", "http://localhost:8000/login?token=abc"
+        )
+
+    def test_render_chat_nueva_respuesta_agrega_el_cta_a_la_sesion(self, mock_st):
+        from testing.components.chat import render_chat
+
+        chat_st = mock_st["chat"]
+        config = make_config(make_session())
+        chat_st.chat_input.return_value = "pasame mi dashboard"
+        chat_st.chat_message.return_value.__enter__ = MagicMock(return_value=None)
+        chat_st.chat_message.return_value.__exit__ = MagicMock(return_value=False)
+        chat_st.spinner.return_value.__enter__ = MagicMock(return_value=None)
+        chat_st.spinner.return_value.__exit__ = MagicMock(return_value=False)
+
+        with patch(
+            "testing.components.chat._process_message",
+            new_callable=AsyncMock,
+            return_value=(
+                "🔐 Tu acceso personal al dashboard de Luka.",
+                {"latency_ms": 1.0},
+                None,
+                [("Abrir dashboard", "http://localhost:8000/login?token=abc")],
+            ),
+        ):
+            render_chat(config)
+
+        assert config.active_session().messages[1]["cta_urls"] == [
+            ("Abrir dashboard", "http://localhost:8000/login?token=abc")
+        ]
+        chat_st.link_button.assert_called_once()
+
 
 class TestRenderChat:
     def test_render_chat_sin_sesion_activa_avisa(self, mock_st):
@@ -643,7 +699,7 @@ class TestRenderChat:
             patch(
                 "testing.components.chat._process_message",
                 new_callable=AsyncMock,
-                return_value=("respuesta", {"latency_ms": 1.0}, None),
+                return_value=("respuesta", {"latency_ms": 1.0}, None, None),
             ),
         ):
             render_chat(config)
@@ -669,7 +725,7 @@ class TestRenderChat:
             patch(
                 "testing.components.chat._process_message",
                 new_callable=AsyncMock,
-                return_value=("respuesta", {"latency_ms": 1.0}, None),
+                return_value=("respuesta", {"latency_ms": 1.0}, None, None),
             ) as mock_process,
         ):
             render_chat(config)
@@ -715,7 +771,7 @@ class TestRenderChat:
             patch(
                 "testing.components.chat._process_message",
                 new_callable=AsyncMock,
-                return_value=("", {"latency_ms": 1.0}, None),
+                return_value=("", {"latency_ms": 1.0}, None, None),
             ),
         ):
             render_chat(config)
@@ -740,6 +796,7 @@ class TestRenderChat:
                 return_value=(
                     "No he podido analizar tu mensaje en este momento.",
                     {"raw_json": {"intent": "out_of_scope", "error": "RuntimeError: API timeout"}},
+                    None,
                     None,
                 ),
             ),
@@ -782,7 +839,7 @@ class TestRenderChat:
             patch(
                 "testing.components.chat._process_message",
                 new_callable=AsyncMock,
-                return_value=("l1\nl2", {"latency_ms": 1.0}, None),
+                return_value=("l1\nl2", {"latency_ms": 1.0}, None, None),
             ),
         ):
             render_chat(config)
