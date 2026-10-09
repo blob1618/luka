@@ -159,6 +159,7 @@ class TestRecurringIntegratedLifecycle:
 
         monkeypatch.setattr("app.services.dispatcher.SessionLocal", SessionLocal)
         monkeypatch.setattr("app.services.finance.SessionLocal", SessionLocal)
+        monkeypatch.setattr("app.services.budget.SessionLocal", SessionLocal)
         monkeypatch.setattr("app.models.database.SessionLocal", SessionLocal)
         monkeypatch.setattr(
             "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
@@ -211,9 +212,13 @@ class TestRecurringIntegratedLifecycle:
         assert rec.dias_anticipacion == 3
         assert rec.dia_del_mes == 10
 
-        # 5. Ejecución del scheduler en fecha de alerta (3 días antes del día 10 = día 7)
-        # Próximo vencimiento: 2026-10-10 -> Alerta: 2026-10-07
-        fake_now = datetime(2026, 10, 7, 12, 0, tzinfo=ARGENTINA_TZ)
+        # 5. Ejecución del scheduler en fecha de alerta (3 días antes del día 10)
+        # El período se toma a 2 meses de hoy para que el gasto recién registrado
+        # (con fecha real) no suppresses la alerta y el test no dependa del mes.
+        today = date.today()
+        period_index = today.year * 12 + today.month + 1
+        due = date(period_index // 12, period_index % 12 + 1, 10)
+        fake_now = datetime(due.year, due.month, 7, 12, 0, tzinfo=ARGENTINA_TZ)
         monkeypatch.setattr("app.scheduler.SessionLocal", SessionLocal)
 
         monkeypatch.setenv("WHATSAPP_REMINDER_TEMPLATE_NAME", "reminder_notice")
@@ -235,7 +240,7 @@ class TestRecurringIntegratedLifecycle:
         ).first()
         assert aviso is not None
         assert aviso.estado == "sent"
-        assert aviso.periodo == "2026-10"
+        assert aviso.periodo == due.strftime("%Y-%m")
         assert len(sent_messages) == 1
         assert sent_messages[0]["recipient"] == phone
 

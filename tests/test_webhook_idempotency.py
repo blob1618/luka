@@ -34,7 +34,7 @@ async def test_dashboard_button_is_sent_once_and_history_omits_access_token():
     kwargs = dict(
         redis_client=FakeRedis(),
         sender_phone="541111111111",
-        text_body="/link",
+        text_body="quiero entrar al panel avanzado",
         whatsapp_message_id="wamid.dashboard-cta",
         process_message=process,
         send_message=send,

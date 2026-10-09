@@ -130,10 +130,11 @@ procesa en silencio para no repetir una confirmación ya enviada.
 - Si hay más resultados que los mostrados y la consulta tiene filtro de fechas, se
   ofrece un botón **Abrir dashboard** con el acceso personal y el período conservado,
   cuando el usuario está vinculado. El enlace no aparece en el texto.
-- Los comandos `/movimientos` y `/egresos` ejecutan la consulta directamente. Si el
-  pedido es ambiguo, Luka pide aclaración antes de responder.
-- `/link` genera (o reutiliza) un enlace mágico de acceso al dashboard para usuarios ya
-  vinculados, con vencimiento corto y un solo uso.
+- Las consultas se piden en lenguaje natural, por ejemplo «mostrame mis movimientos» o
+  «mostrame solo mis egresos». Si el pedido es ambiguo, Luka pide aclaración.
+- Los pedidos en lenguaje natural para abrir, ver o recibir acceso al dashboard generan
+  (o reutilizan) un enlace mágico para usuarios vinculados, con vencimiento corto y un
+  solo uso.
 
 ## Gráficos de movimientos en WhatsApp
 
@@ -146,7 +147,7 @@ procesa en silencio para no repetir una confirmación ya enviada.
 
 - Un pedido explícito de gráfico o diagrama por categoría usa `movement_chart` y devuelve
   una imagen PNG en el mismo chat. Los pedidos genéricos de resumen siguen siendo texto y
-  `/link` continúa reservado para abrir el dashboard.
+  los pedidos de acceso al dashboard se clasifican por separado como `dashboard_link`.
 - El formato predeterminado es barras; torta/pastel/circular selecciona el formato de
   pastel. El alcance predeterminado son egresos; los ingresos se grafican solo si el
   usuario los pide expresamente.

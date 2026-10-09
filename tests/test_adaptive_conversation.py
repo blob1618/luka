@@ -17,7 +17,7 @@ import app.services.finance as finance_module
 import app.services.limit as limit_module
 import app.models.database as database_module
 from app.models.database import Base, Categoria, LimiteCategoria, MovimientoFinanciero, Usuario
-from app.services.dispatcher import process_incoming_message
+from app.services.dispatcher import _limit_month_label, process_incoming_message
 from app.services.onboarding import OnboardingDecision, OnboardingResult
 
 
@@ -100,11 +100,19 @@ def category(session, user, name):
     return row
 
 
-def limit(session, user, cat, month, amount):
+def period(offset: int = 0):
+    """(month, year) relative to the current month, so these tests don't rot."""
+    today = date.today()
+    index = today.year * 12 + today.month - 1 + offset
+    return index % 12 + 1, index // 12
+
+
+def limit(session, user, cat, offset, amount):
+    month, year = period(offset)
     row = LimiteCategoria(
         usuario_id=user.id, categoria_id=cat.id, cantidad_max=Decimal(amount),
-        inicio_periodo=date(2026, month, 1),
-        fin_periodo=date(2026, month, calendar.monthrange(2026, month)[1]),
+        inicio_periodo=date(year, month, 1),
+        fin_periodo=date(year, month, calendar.monthrange(year, month)[1]),
         moneda="ARS",
     )
     session.add(row)
@@ -147,7 +155,7 @@ async def test_wrong_llm_new_expense_is_routed_to_correction_then_annulment(conv
 async def test_amount_correction_recomputes_budget_without_duplicate_expense(conversation_db, monkeypatch):
     session, user, _ = conversation_db
     food = category(session, user, "Comida")
-    limit(session, user, food, 9, "40000")
+    limit(session, user, food, 0, "40000")
     responses = iter([
         {"intent": "expense", "movement_type": "egreso", "amount": 40000,
          "currency": "ARS", "description": "almacén", "category": "Comida"},
@@ -202,44 +210,52 @@ async def test_category_correction_uses_existing_category_only(conversation_db, 
 async def test_edit_listed_limit_without_recent_creation(conversation_db, monkeypatch):
     session, user, _ = conversation_db
     cat = category(session, user, "Transporte")
-    original = limit(session, user, cat, 9, "20000")
+    original = limit(session, user, cat, 0, "20000")
+    target = _limit_month_label(*period(1))
     responses = iter([
         {"intent": "list_limits"},
-        {"intent": "change_limit", "limit_category": "Transporte", "limit_month": 10,
-         "changes": {"target_month": 10}},
+        {"intent": "change_limit", "limit_category": "Transporte",
+         "limit_month": period(1)[0],
+         "changes": {"target_month": period(1)[0]}},
     ])
     monkeypatch.setattr(dispatcher_module.LLMService, "process_message", AsyncMock(side_effect=lambda *args, **kwargs: next(responses)))
     phone = user.whatsapp_id
     listed = await process_incoming_message(phone, "Límites")
-    changed = await process_incoming_message(phone, "Cambiá el límite de transporte para octubre")
+    changed = await process_incoming_message(phone, f"Cambiá el límite de transporte para {target}")
     session.expire_all()
     assert "Transporte" in listed.reply_text
-    assert "Octubre" in changed.reply_text
+    assert target in changed.reply_text
     assert session.query(LimiteCategoria).one().id == original.id
-    assert session.query(LimiteCategoria).one().inicio_periodo.month == 10
+    assert session.query(LimiteCategoria).one().inicio_periodo.month == period(1)[0]
 
 
 @pytest.mark.asyncio
 async def test_limit_edit_asks_source_month_when_category_has_multiple(conversation_db, monkeypatch):
     session, user, state = conversation_db
     transport = category(session, user, "Transporte")
-    september = limit(session, user, transport, 9, "20000")
-    november = limit(session, user, transport, 11, "30000")
+    current = limit(session, user, transport, 0, "20000")
+    later = limit(session, user, transport, 2, "30000")
+    target = _limit_month_label(*period(1))
     monkeypatch.setattr(
         dispatcher_module.LLMService, "process_message",
         AsyncMock(return_value={
             "intent": "change_limit", "reference": {"category": "Transporte"},
-            "changes": {"target_month": 10},
+            "changes": {"target_month": period(1)[0]},
         }),
     )
-    question = await process_incoming_message(user.whatsapp_id, "Cambiá el límite de transporte para octubre")
-    assert "Septiembre" in question.reply_text and "Noviembre" in question.reply_text
+    question = await process_incoming_message(
+        user.whatsapp_id, f"Cambiá el límite de transporte para {target}"
+    )
+    assert _limit_month_label(*period(0)) in question.reply_text
+    assert _limit_month_label(*period(2)) in question.reply_text
     assert state["pending_selection"] is not None
-    reply = await process_incoming_message(user.whatsapp_id, "Septiembre")
-    assert "Octubre" in reply.reply_text
+    reply = await process_incoming_message(
+        user.whatsapp_id, _limit_month_label(*period(0))
+    )
+    assert target in reply.reply_text
     session.expire_all()
-    assert session.get(LimiteCategoria, september.id).inicio_periodo.month == 10
-    assert session.get(LimiteCategoria, november.id).inicio_periodo.month == 11
+    assert session.get(LimiteCategoria, current.id).inicio_periodo.month == period(1)[0]
+    assert session.get(LimiteCategoria, later.id).inicio_periodo.month == period(2)[0]
 
 
 @pytest.mark.asyncio
@@ -247,16 +263,17 @@ async def test_both_deletes_only_the_shown_food_limits(conversation_db, monkeypa
     session, user, _ = conversation_db
     food = category(session, user, "Comida")
     transport = category(session, user, "Transporte")
-    limit(session, user, food, 9, "40000")
-    limit(session, user, food, 10, "40000")
-    keep = limit(session, user, transport, 9, "20000")
+    limit(session, user, food, 0, "40000")
+    limit(session, user, food, 1, "40000")
+    keep = limit(session, user, transport, 0, "20000")
     monkeypatch.setattr(
         dispatcher_module.LLMService, "process_message",
         AsyncMock(return_value={"intent": "delete_limit", "limit_category": "Comida"}),
     )
     asked = await process_incoming_message(user.whatsapp_id, "Borrá el límite de comida")
     removed = await process_incoming_message(user.whatsapp_id, "Ambos")
-    assert "Septiembre" in asked.reply_text and "Octubre" in asked.reply_text
+    assert _limit_month_label(*period(0)) in asked.reply_text
+    assert _limit_month_label(*period(1)) in asked.reply_text
     assert "2 límites" in removed.reply_text
     assert removed.event_key == "limit.bulk_deleted"
     assert session.query(LimiteCategoria).one().id == keep.id
@@ -267,15 +284,16 @@ async def test_two_named_months_delete_only_pending_limits(conversation_db, monk
     session, user, _ = conversation_db
     food = category(session, user, "Comida")
     transport = category(session, user, "Transporte")
-    limit(session, user, food, 9, "40000")
-    limit(session, user, food, 10, "40000")
-    keep = limit(session, user, transport, 9, "20000")
+    limit(session, user, food, 0, "40000")
+    limit(session, user, food, 1, "40000")
+    keep = limit(session, user, transport, 0, "20000")
     monkeypatch.setattr(
         dispatcher_module.LLMService, "process_message",
         AsyncMock(return_value={"intent": "delete_limit", "limit_category": "Comida"}),
     )
     await process_incoming_message(user.whatsapp_id, "Borrá el límite de comida")
-    result = await process_incoming_message(user.whatsapp_id, "Septiembre y octubre")
+    months = f"{_limit_month_label(*period(0))} y {_limit_month_label(*period(1))}"
+    result = await process_incoming_message(user.whatsapp_id, months)
     assert "2 límites" in result.reply_text
     assert session.query(LimiteCategoria).one().id == keep.id
 
@@ -321,7 +339,9 @@ async def test_delete_named_movement_after_listing(conversation_db, monkeypatch)
             {"intent": "delete_movement", "reference": {"description": "verduras"}},
         ]),
     )
-    listed = await process_incoming_message(user.whatsapp_id, "/movimientos")
+    listed = await process_incoming_message(
+        user.whatsapp_id, "mostrame mis movimientos"
+    )
     removed = await process_incoming_message(user.whatsapp_id, "Borrá el movimiento de verduras")
     assert "verduras" in listed.reply_text
     assert "Eliminé verduras" in removed.reply_text
@@ -330,7 +350,7 @@ async def test_delete_named_movement_after_listing(conversation_db, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_slash_movement_queries_bypass_llm_and_list_correct_type(conversation_db, monkeypatch):
+async def test_natural_movement_queries_list_all_and_only_expenses(conversation_db, monkeypatch):
     session, user, _ = conversation_db
     for kind, description in (("egreso", "ventilador"), ("ingreso", "sueldo")):
         session.add(MovimientoFinanciero(
@@ -338,13 +358,22 @@ async def test_slash_movement_queries_bypass_llm_and_list_correct_type(conversat
             descripcion=description, fecha_movimiento=date(2026, 9, 17), origen="whatsapp_text",
         ))
     session.commit()
-    llm = AsyncMock(return_value={"intent": "out_of_scope", "reply_text": "¿Qué querés registrar?"})
+    llm = AsyncMock(
+        side_effect=[
+            {"intent": "query_movements", "movement_type": None},
+            {"intent": "query_movements", "movement_type": "egreso"},
+        ]
+    )
     monkeypatch.setattr(dispatcher_module.LLMService, "process_message", llm)
-    all_reply = await process_incoming_message(user.whatsapp_id, "/movimientos")
-    expense_reply = await process_incoming_message(user.whatsapp_id, "/egresos")
+    all_reply = await process_incoming_message(
+        user.whatsapp_id, "mostrame mis movimientos"
+    )
+    expense_reply = await process_incoming_message(
+        user.whatsapp_id, "mostrame solo mis egresos"
+    )
     assert "ventilador" in all_reply.reply_text and "sueldo" in all_reply.reply_text
     assert "ventilador" in expense_reply.reply_text and "sueldo" not in expense_reply.reply_text
-    llm.assert_not_awaited()
+    assert llm.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -357,10 +386,17 @@ async def test_delete_last_two_shown_movements_atomically(conversation_db, monke
             fecha_movimiento=date(2026, 9, 17 - index), origen="whatsapp_text",
         ))
     session.commit()
-    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", AsyncMock(
-        return_value={"intent": "out_of_scope"}
-    ))
-    await process_incoming_message(user.whatsapp_id, "/movimientos")
+    monkeypatch.setattr(
+        dispatcher_module.LLMService,
+        "process_message",
+        AsyncMock(
+            side_effect=[
+                {"intent": "query_movements", "movement_type": None},
+                {"intent": "out_of_scope"},
+            ]
+        ),
+    )
+    await process_incoming_message(user.whatsapp_id, "mostrame mis movimientos")
     shown_ids = [item["id"] for item in state["recent"].items]
     reply = await process_incoming_message(user.whatsapp_id, "Borrá los últimos dos")
     assert "Eliminé 2 movimientos" in reply.reply_text
@@ -380,10 +416,17 @@ async def test_delete_two_named_movements_even_if_llm_references_one(conversatio
             fecha_movimiento=date(2026, 9, 17), origen="whatsapp_text",
         ))
     session.commit()
-    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", AsyncMock(
-        return_value={"intent": "out_of_scope"}
-    ))
-    await process_incoming_message(user.whatsapp_id, "/movimientos")
+    monkeypatch.setattr(
+        dispatcher_module.LLMService,
+        "process_message",
+        AsyncMock(
+            side_effect=[
+                {"intent": "query_movements", "movement_type": None},
+                {"intent": "out_of_scope"},
+            ]
+        ),
+    )
+    await process_incoming_message(user.whatsapp_id, "mostrame mis movimientos")
     reply = await process_incoming_message(user.whatsapp_id, "Borrá ventilador y tv")
     assert "Eliminé 2 movimientos" in reply.reply_text
     session.expire_all()
@@ -534,8 +577,8 @@ async def test_new_explicit_request_interrupts_ambiguous_selection(conversation_
 async def test_new_purchase_interrupts_pending_limit_deletion(conversation_db, monkeypatch):
     session, user, state = conversation_db
     food = category(session, user, "Comida")
-    limit(session, user, food, 9, "40000")
-    limit(session, user, food, 10, "40000")
+    limit(session, user, food, 0, "40000")
+    limit(session, user, food, 1, "40000")
     monkeypatch.setattr(
         dispatcher_module.LLMService, "process_message",
         AsyncMock(side_effect=[

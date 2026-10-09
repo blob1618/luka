@@ -24,6 +24,38 @@ async def test_chart_contract_preserves_comparison_and_explicit_filter_clearing(
     assert result["chart_type"] is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        "quiero entrar al panel avanzado",
+        "pasame mi dashboard",
+        "mostrame mi panel",
+        "quiero acceder a mi dashboard",
+        "pasame el link del dashboard",
+    ],
+)
+async def test_process_message_accepts_dashboard_link_intent_without_model_url(text):
+    provider_response = {
+        "intent": "dashboard_link",
+        "reply_text": "Preparando el acceso.",
+        "login_url": "https://model.example/login?token=fabricated",
+        "dashboard_url": "https://model.example/dashboard",
+    }
+    with patch.object(LLMService, "_get_provider") as mock_get_provider:
+        provider = AsyncMock()
+        provider.generate_json.return_value = provider_response
+        mock_get_provider.return_value = provider
+
+        result = await LLMService.process_message(text)
+
+    assert result["intent"] == "dashboard_link"
+    assert "login_url" not in result
+    assert "dashboard_url" not in result
+    provider.generate_json.assert_awaited_once()
+    assert provider.generate_json.await_args.kwargs["user_message"] == text
+
+
 # =============================================================================
 # Tests de LLMService - process_message (nuevo multi-intent)
 # =============================================================================

@@ -11,7 +11,7 @@ import redis.asyncio as redis
 from testing.services.webhook_mode import WebhookModeResult, WebhookModeService
 from app.services.conversation import ConversationHistoryService, ConversationMessage
 from app.services.dispatcher import DispatchResult
-from app.api.whatsapp import WhatsAppImage
+from app.api.whatsapp import WhatsAppCTAURL, WhatsAppImage
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
@@ -74,6 +74,7 @@ class TestWebhookModeResult:
         assert result.memory is None
         assert result.memory_ttl_seconds is None
         assert result.image_pngs == []
+        assert result.cta_urls == []
 
 
 class TestSendMessage:
@@ -106,6 +107,63 @@ class TestSendMessage:
             )
 
         assert result.image_pngs == [chart_png, b"second-png"]
+
+    @pytest.mark.asyncio
+    async def test_captures_cta_urls_from_dispatch_result(self, redis_mocks):
+        service = WebhookModeService()
+        login_url = "http://localhost:8000/login?token=abc123"
+
+        with (
+            patch(
+                "testing.services.webhook_mode.process_incoming_message",
+                new_callable=AsyncMock,
+                return_value=dispatch_result(
+                    reply_text="🔐 Tu acceso personal al dashboard de Luka.",
+                    reply_message=WhatsAppCTAURL(
+                        body="🔐 Tu acceso personal al dashboard de Luka.",
+                        display_text="Abrir dashboard",
+                        url=login_url,
+                    ),
+                    followup_messages=[
+                        WhatsAppCTAURL(
+                            body="Tus movimientos",
+                            display_text="Ver período",
+                            url="http://localhost:5173/movements",
+                        )
+                    ],
+                ),
+            ),
+            patch("testing.services.webhook_mode.LLMService.reset_provider"),
+            patch("testing.services.webhook_mode.LLMService.set_prompt_path"),
+        ):
+            result = await service.send_message(
+                "pasame mi dashboard",
+                "12345",
+                "gemini",
+                "prompt.md",
+            )
+
+        assert result.cta_urls == [
+            ("Abrir dashboard", login_url),
+            ("Ver período", "http://localhost:5173/movements"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_ignores_non_cta_messages(self, redis_mocks):
+        service = WebhookModeService()
+
+        with (
+            patch(
+                "testing.services.webhook_mode.process_incoming_message",
+                new_callable=AsyncMock,
+                return_value=dispatch_result(),
+            ),
+            patch("testing.services.webhook_mode.LLMService.reset_provider"),
+            patch("testing.services.webhook_mode.LLMService.set_prompt_path"),
+        ):
+            result = await service.send_message("hola", "12345", "gemini", "prompt.md")
+
+        assert result.cta_urls == []
 
     @pytest.mark.asyncio
     async def test_routes_through_dispatcher(self, redis_mocks):
