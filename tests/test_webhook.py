@@ -1,3 +1,5 @@
+from datetime import date
+from decimal import Decimal
 import os
 from unittest.mock import AsyncMock, patch
 
@@ -137,7 +139,7 @@ def post_webhook_with_mocks(llm_result, finance_result=None, messages=None):
         ),
         patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock) as process_message,
         patch(
-            "app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text",
+            "app.services.dispatcher.FinanceService.register_movement_with_category",
             autospec=True,
         ) as register_movement,
         patch("app.main.send_whatsapp_message", new_callable=AsyncMock) as send_message,
@@ -201,7 +203,14 @@ def test_handle_webhook_registered_movement_confirms_after_persistence():
     assert reg_kwargs["sender_phone"] == "12345"
     assert reg_kwargs["whatsapp_message_id"] == "wamid.HBgL"
     assert reg_kwargs["original_text"] == "Gaste 5000 en supermercado"
-    assert reg_kwargs["llm_result"] == llm_result
+    assert reg_kwargs["movement_type"] == "egreso"
+    assert reg_kwargs["amount"] == Decimal("5000")
+    assert reg_kwargs["currency"] == "ARS"
+    assert reg_kwargs["description"] == "supermercado"
+    assert reg_kwargs["category_name"] is None
+    assert reg_kwargs["create_category_if_missing"] is True
+    assert reg_kwargs["fecha_movimiento"] == date.today()
+    assert reg_kwargs["wallet_id"] is None
     sent_message = send_message.await_args.args[1]
     assert isinstance(sent_message, WhatsAppReplyButtons)
     assert sent_message.body == (

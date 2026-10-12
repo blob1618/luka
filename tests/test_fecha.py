@@ -170,7 +170,7 @@ async def test_single_expense_direct_path_passes_ayer():
             return_value=llm_result,
         ),
         patch(
-            "app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text",
+            "app.services.dispatcher.FinanceService.register_movement_with_category",
             spy,
         ),
         patch(
