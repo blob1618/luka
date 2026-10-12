@@ -3214,8 +3214,8 @@ class TestUpdateUltimoMensaje:
 
 class TestMovementNoCategory:
     @pytest.mark.asyncio
-    async def test_expense_without_category_uses_whatsapp_text_registration(self):
-        """_register_and_reply_with_hint falls back to register_movement_from_whatsapp_text."""
+    async def test_expense_without_category_registers_single_movement(self):
+        """_register_and_reply_with_hint routes single movement without category via register_movement_with_category."""
         with (
             patch(
                 "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
@@ -3237,7 +3237,7 @@ class TestMovementNoCategory:
                 return_value=False,
             ),
             patch(
-                "app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text",
+                "app.services.dispatcher.FinanceService.register_movement_with_category",
                 return_value=registered_result(),
             ),
             patch(

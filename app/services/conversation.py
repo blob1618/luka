@@ -11,7 +11,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field, asdict
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -26,7 +26,7 @@ from app.services.telemetry import track_phase
 
 @dataclass
 class PendingMovement:
-    """Datos de un movimiento financiero pendiente de confirmación de categoría."""
+    """Datos de un movimiento financiero pendiente de confirmación de categoría o billetera."""
     sender_phone: str
     whatsapp_message_id: str | None
     original_text: str
@@ -36,17 +36,80 @@ class PendingMovement:
     description: str
     inferred_category: str | None
     llm_result_extra: dict[str, Any] = field(default_factory=dict)
+    wallet_id: str | None = None
+    wallet_options: list[dict[str, str]] = field(default_factory=list)
+    resolved_fecha_movimiento: date | None = None
+
+    @property
+    def fecha_movimiento(self) -> date | None:
+        return self.resolved_fecha_movimiento
+
+    @property
+    def movement_date(self) -> date | None:
+        return self.resolved_fecha_movimiento
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["amount"] = str(d["amount"])  # Decimal → str para JSON
+        if self.wallet_id is not None:
+            d["wallet_id"] = str(self.wallet_id)
+        if self.resolved_fecha_movimiento is not None:
+            d["resolved_fecha_movimiento"] = self.resolved_fecha_movimiento.isoformat()
+        if self.wallet_options:
+            d["wallet_options"] = [
+                {
+                    "ordinal": str(opt.get("ordinal", "")),
+                    "wallet_id": str(opt.get("wallet_id", "")),
+                    "name": str(opt.get("name", "")),
+                }
+                for opt in self.wallet_options
+            ]
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "PendingMovement":
         raw = dict(d)
         raw["amount"] = Decimal(str(raw["amount"]))
-        return cls(**raw)
+        wallet_id = str(raw["wallet_id"]) if raw.get("wallet_id") is not None else None
+        raw_options = raw.get("wallet_options") or []
+        wallet_options = [
+            {
+                "ordinal": str(opt.get("ordinal", "")),
+                "wallet_id": str(opt.get("wallet_id", "")),
+                "name": str(opt.get("name", "")),
+            }
+            for opt in raw_options
+            if isinstance(opt, dict)
+        ]
+        md_raw = (
+            raw.get("resolved_fecha_movimiento")
+            or raw.get("movement_date")
+            or raw.get("fecha_movimiento")
+        )
+        if isinstance(md_raw, str) and md_raw:
+            try:
+                resolved_fecha = date.fromisoformat(md_raw)
+            except ValueError:
+                resolved_fecha = None
+        elif isinstance(md_raw, date):
+            resolved_fecha = md_raw
+        else:
+            resolved_fecha = None
+
+        return cls(
+            sender_phone=str(raw["sender_phone"]),
+            whatsapp_message_id=raw.get("whatsapp_message_id"),
+            original_text=str(raw.get("original_text", "")),
+            movement_type=str(raw.get("movement_type", "egreso")),
+            amount=raw["amount"],
+            currency=str(raw.get("currency", "ARS")),
+            description=str(raw.get("description", "")),
+            inferred_category=raw.get("inferred_category"),
+            llm_result_extra=dict(raw.get("llm_result_extra") or {}),
+            wallet_id=wallet_id,
+            wallet_options=wallet_options,
+            resolved_fecha_movimiento=resolved_fecha,
+        )
 
 
 @dataclass
@@ -209,7 +272,7 @@ class PendingLimitDelete:
 @dataclass
 class ConversationState:
     """Estado de conversación de un usuario."""
-    # step puede ser: "none" | "awaiting_category_confirmation"
+    # step puede ser: "none" | "awaiting_category_confirmation" | "awaiting_wallet_selection"
     #               | "awaiting_movement_category_change" | "awaiting_reminder_data"
     #               | "awaiting_category_rename_confirmation"
     #               | "awaiting_limit_year_confirmation" | "awaiting_limit_category_confirmation"
@@ -711,10 +774,15 @@ class ConversationService:
             ) from exc
 
     @classmethod
-    async def set_pending_movement(cls, whatsapp_id: str, pending: PendingMovement) -> None:
-        """Fija el estado en 'awaiting_category_confirmation' con el movimiento pendiente."""
+    async def set_pending_movement(
+        cls,
+        whatsapp_id: str,
+        pending: PendingMovement,
+        step: str = "awaiting_category_confirmation",
+    ) -> None:
+        """Fija el estado con el movimiento pendiente y el paso especificado."""
         state = ConversationState(
-            step="awaiting_category_confirmation",
+            step=step,
             pending_movement=pending,
         )
         await cls.set_state(whatsapp_id, state)
@@ -724,6 +792,17 @@ class ConversationService:
         """Consulta si el usuario está esperando confirmar una categoría."""
         state = await cls.get_state(whatsapp_id)
         return state.step == "awaiting_category_confirmation"
+
+    @classmethod
+    async def set_pending_wallet_selection(cls, whatsapp_id: str, pending: PendingMovement) -> None:
+        """Fija el estado en 'awaiting_wallet_selection' con el movimiento pendiente."""
+        await cls.set_pending_movement(whatsapp_id, pending, step="awaiting_wallet_selection")
+
+    @classmethod
+    async def is_awaiting_wallet_selection(cls, whatsapp_id: str) -> bool:
+        """Consulta si el usuario está esperando seleccionar una billetera."""
+        state = await cls.get_state(whatsapp_id)
+        return state.step == "awaiting_wallet_selection"
 
     @classmethod
     async def get_pending_movement(cls, whatsapp_id: str) -> PendingMovement | None:

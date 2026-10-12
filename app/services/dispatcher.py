@@ -93,6 +93,7 @@ from app.services.llm_contract import resolve_relative_date
 from app.services.onboarding import OnboardingDecision, OnboardingService
 from app.services.reminder import ReminderListResult, ReminderResult, ReminderService
 from app.services.telemetry import track_phase
+from app.services.wallet import WalletService
 from app.services.reference_resolution import (
     named_movement_targets, normalize_text, recent_count, select_items,
     select_named_months, selects_all, selects_recent,
@@ -246,6 +247,16 @@ def _registration_reply(
             "No identifiqué un movimiento financiero para registrar. "
             "Podés escribir algo como: 'Gasté 5000 en supermercado'."
         )
+
+    if result.status == "needs_wallet_creation":
+        currency = result.currency or str(extracted_data.get("currency") or "ARS").upper()
+        return f"No tenés ninguna billetera en {currency}. Creá una billetera primero para registrar movimientos en esa moneda."
+
+    if result.status == "invalid_selection":
+        return "La billetera seleccionada no es válida. Por favor, elegí una billetera válida."
+
+    if result.status == "currency_mismatch":
+        return "La moneda de la billetera no coincide con la moneda del movimiento."
 
     return extracted_data.get("reply_text") or "No pude interpretar ese mensaje como un movimiento financiero."
 
@@ -1199,6 +1210,9 @@ async def _register_single_with_hint(
 ) -> str:
     category_name = mov.get("category")
     llm_result = {**extracted_data, **mov}
+    norm_amount = Decimal(str(llm_result.get("amount") or 0))
+    resolved_date = resolve_relative_date(mov.get("fecha"), date.today())  # noqa: DTZ011
+    wallet_id = mov.get("wallet_id") or extracted_data.get("wallet_id")
     with track_phase("db"):
         result = await asyncio.to_thread(
             FinanceService.register_movement_with_category,
@@ -1206,12 +1220,13 @@ async def _register_single_with_hint(
             whatsapp_message_id=whatsapp_message_id,
             original_text=text_body,
             movement_type=llm_result.get("movement_type", "egreso"),
-            amount=Decimal(str(llm_result.get("amount") or 0)),
+            amount=norm_amount,
             currency=llm_result.get("currency", "ARS"),
             description=_movement_description(llm_result),
             category_name=category_name,
             create_category_if_missing=True,
-            fecha_movimiento=resolve_relative_date(mov.get("fecha"), date.today()),  # noqa: DTZ011
+            fecha_movimiento=resolved_date,
+            wallet_id=wallet_id,
         )
 
     print(
@@ -1221,6 +1236,30 @@ async def _register_single_with_hint(
         f"status={result.status}",
     )
 
+    if result.status == "needs_wallet_selection":
+        extracted_data["_conversation_event_key"] = "wallet.selection_required"
+        extracted_data["_conversation_event_variables"] = {
+            "currency": str(llm_result.get("currency") or "ARS").upper(),
+        }
+        return await _route_needs_wallet_selection(
+            sender_phone=sender_phone,
+            user_id=result.user_id,
+            whatsapp_message_id=whatsapp_message_id,
+            text_body=text_body,
+            llm_result=llm_result,
+            category_name=category_name,
+            amount=norm_amount,
+            resolved_fecha_movimiento=resolved_date,
+        )
+
+    if result.status == "needs_wallet_creation":
+        currency = result.currency or str(llm_result.get("currency") or "ARS").upper()
+        extracted_data["_conversation_event_key"] = "wallet.creation_required"
+        extracted_data["_conversation_event_variables"] = {
+            "currency": currency,
+        }
+        return f"No tenés ninguna billetera en {currency}. Creá una billetera primero para registrar movimientos en esa moneda."
+
     if result.status == "needs_category_confirmation":
         extracted_data["_conversation_event_key"] = (
             "category.confirmation_required"
@@ -1229,7 +1268,13 @@ async def _register_single_with_hint(
             "category": category_name or "",
         }
         return await _route_needs_category_confirmation(
-            sender_phone, whatsapp_message_id, text_body, llm_result, category_name
+            sender_phone,
+            whatsapp_message_id,
+            text_body,
+            llm_result,
+            category_name,
+            wallet_id=wallet_id or result.wallet_id,
+            resolved_fecha_movimiento=resolved_date,
         )
 
     if result.status != "registered":
@@ -1277,10 +1322,13 @@ async def _register_single_with_hint(
         "amount": amount,
         "currency": currency,
         "category": category_name or "sin categoría",
+        "wallet_id": result.wallet_id or "",
+        "wallet_name": result.wallet_name or "",
     }
 
     reply = f"✅ Registré tu {movement_type}: {description} por ${amount} {currency}."
-    reply += f"\n📁 Categoría: {category_name}."
+    if category_name:
+        reply += f"\n📁 Categoría: {category_name}."
     reply += f"\n{_category_hint_reply()}"
     evaluation = await asyncio.to_thread(
         BudgetService.evaluate_movement,
@@ -1316,6 +1364,8 @@ async def _route_needs_category_confirmation(
     text_body: str,
     extracted_data: dict,
     category_name: str | None,
+    wallet_id: str | None = None,
+    resolved_fecha_movimiento: date | None = None,
 ) -> str:
     """Deriva una categoría no resuelta al flujo existente de confirmación."""
     pending = PendingMovement(
@@ -1328,9 +1378,67 @@ async def _route_needs_category_confirmation(
         description=_movement_description(extracted_data),
         inferred_category=category_name,
         llm_result_extra=extracted_data,
+        wallet_id=wallet_id,
+        resolved_fecha_movimiento=resolved_fecha_movimiento,
     )
     await ConversationService.set_pending_movement(sender_phone, pending)
     return _category_confirmation_reply(category_name or "")
+
+
+def _wallet_selection_reply(options: list[dict[str, str]], currency: str) -> str:
+    lines = [f"Tenés más de una billetera en {currency}. ¿Con cuál querés registrar el movimiento?"]
+    for opt in options:
+        lines.append(f"{opt['ordinal']}. {opt['name']}")
+    lines.append("Respondé con el número de la opción.")
+    return "\n".join(lines)
+
+
+async def _route_needs_wallet_selection(
+    sender_phone: str,
+    user_id: str | UUID | None,
+    whatsapp_message_id: str | None,
+    text_body: str,
+    llm_result: dict,
+    category_name: str | None,
+    amount: Decimal,
+    resolved_fecha_movimiento: date | None,
+) -> str:
+    """Deriva un movimiento ambiguo en moneda con múltiples billeteras a selección."""
+    if user_id is None:
+        user_id = await asyncio.to_thread(_user_id_by_phone, sender_phone)
+    if user_id is None:
+        return "No encontré una cuenta vinculada a este WhatsApp. No pude registrar el movimiento."
+
+    currency = str(llm_result.get("currency") or "ARS").upper()
+    wallets = await asyncio.to_thread(
+        WalletService.list_wallets, user_id=user_id, currency=currency
+    )
+    if not wallets:
+        return f"No tenés ninguna billetera en {currency}. Creá una billetera primero para registrar movimientos en esa moneda."
+
+    wallet_options = [
+        {
+            "ordinal": str(idx),
+            "wallet_id": str(w.wallet_id),
+            "name": str(w.name),
+        }
+        for idx, w in enumerate(wallets, 1)
+    ]
+    pending = PendingMovement(
+        sender_phone=sender_phone,
+        whatsapp_message_id=whatsapp_message_id,
+        original_text=text_body,
+        movement_type=llm_result.get("movement_type", "egreso"),
+        amount=amount,
+        currency=currency,
+        description=_movement_description(llm_result),
+        inferred_category=category_name,
+        llm_result_extra=llm_result,
+        wallet_options=wallet_options,
+        resolved_fecha_movimiento=resolved_fecha_movimiento,
+    )
+    await ConversationService.set_pending_wallet_selection(sender_phone, pending)
+    return _wallet_selection_reply(wallet_options, currency)
 
 
 async def _register_multiop(
@@ -2832,6 +2940,263 @@ def _is_new_other_request(text_body: str) -> bool:
     )
 
 
+def _is_reset_request(text: str) -> bool:
+    normalized = normalize_text(text)
+    return bool(
+        re.search(
+            r"\b(?:olvid\w*|reinici\w*|arranc\w*\s+de\s+cero|empez\w*\s+de\s+cero|borr\w*\s+memoria|reset)\b",
+            normalized,
+        )
+    )
+
+
+def _resolve_wallet_ordinal(text: str, options: list[dict[str, str]]) -> dict[str, str] | None:
+    if not options:
+        return None
+    normalized = normalize_text(text)
+
+    # Word-based ordinals
+    word_ordinals = {
+        "primero": 1, "primera": 1, "primer": 1, "1era": 1, "1ra": 1,
+        "segundo": 2, "segunda": 2, "2da": 2,
+        "tercero": 3, "tercera": 3, "tercer": 3, "3ra": 3,
+        "cuarto": 4, "cuarta": 4, "4ta": 4,
+        "quinto": 5, "quinta": 5, "5ta": 5,
+    }
+    for word, ordinal_num in word_ordinals.items():
+        if re.search(rf"\b{word}\b", normalized):
+            str_ord = str(ordinal_num)
+            for opt in options:
+                if str(opt.get("ordinal")) == str_ord:
+                    return opt
+            return None
+
+    # Number-based ordinals
+    digits = re.findall(r"\b\d+\b", normalized)
+    if len(digits) == 1:
+        str_ord = str(int(digits[0]))
+        for opt in options:
+            if str(opt.get("ordinal")) == str_ord:
+                return opt
+        return None
+
+    return None
+
+
+async def _handle_pending_wallet_selection(
+    ctx: _DispatchContext,
+) -> DispatchResult | None:
+    if not await ConversationService.is_awaiting_wallet_selection(ctx.sender_phone):
+        return None
+
+    pending = await ConversationService.get_pending_movement(ctx.sender_phone)
+    if pending is None:
+        await ConversationService.clear_state(ctx.sender_phone)
+        return DispatchResult(
+            "Se perdió el contexto. Volvé a registrar el movimiento.",
+            service_invoked="wallet",
+        )
+
+    if _is_reset_request(ctx.text_body):
+        return await _handle_reset_context(ctx.sender_phone)
+
+    if _is_cancel_request(ctx.text_body):
+        await ConversationService.clear_state(ctx.sender_phone)
+        return DispatchResult(
+            "Listo, cancelé la operación pendiente.",
+            service_invoked="wallet",
+            event_key="movement.cancelled",
+        )
+
+    chosen_opt = _resolve_wallet_ordinal(ctx.text_body, pending.wallet_options)
+    if chosen_opt is None:
+        reply = (
+            "Opción no válida. Por favor, respondé con el número de una de las opciones:\n"
+            + "\n".join(f"{opt['ordinal']}. {opt['name']}" for opt in pending.wallet_options)
+        )
+        return DispatchResult(
+            reply,
+            service_invoked="wallet",
+        )
+
+    selected_wallet_id = chosen_opt["wallet_id"]
+    with track_phase("db"):
+        result = await asyncio.to_thread(
+            FinanceService.register_movement_with_category,
+            sender_phone=ctx.sender_phone,
+            whatsapp_message_id=pending.whatsapp_message_id,
+            original_text=pending.original_text,
+            movement_type=pending.movement_type,
+            amount=pending.amount,
+            currency=pending.currency,
+            description=pending.description,
+            category_name=pending.inferred_category,
+            create_category_if_missing=True,
+            fecha_movimiento=pending.resolved_fecha_movimiento,
+            wallet_id=selected_wallet_id,
+        )
+
+    print(
+        "[WALLET_SELECTION_REGISTRATION]",
+        f"user={ctx.sender_phone}",
+        f"status={result.status}",
+        f"wallet_id={selected_wallet_id}",
+    )
+
+    if result.status == "needs_category_confirmation":
+        updated_pending = PendingMovement(
+            sender_phone=ctx.sender_phone,
+            whatsapp_message_id=pending.whatsapp_message_id,
+            original_text=pending.original_text,
+            movement_type=pending.movement_type,
+            amount=pending.amount,
+            currency=pending.currency,
+            description=pending.description,
+            inferred_category=pending.inferred_category,
+            llm_result_extra=pending.llm_result_extra,
+            wallet_id=selected_wallet_id,
+            wallet_options=[],
+            resolved_fecha_movimiento=pending.resolved_fecha_movimiento,
+        )
+        await ConversationService.set_pending_movement(
+            ctx.sender_phone, updated_pending, step="awaiting_category_confirmation"
+        )
+        reply = _category_confirmation_reply(pending.inferred_category or "")
+        return DispatchResult(
+            reply,
+            service_invoked="finance",
+            event_key="category.confirmation_required",
+            event_variables={"category": pending.inferred_category or ""},
+        )
+
+    if result.status in {"invalid_selection", "currency_mismatch", "needs_wallet_selection", "needs_wallet_creation"}:
+        user_id = result.user_id or (await asyncio.to_thread(_user_id_by_phone, ctx.sender_phone))
+        current_wallets = await asyncio.to_thread(
+            WalletService.list_wallets, user_id=user_id, currency=pending.currency
+        )
+        if len(current_wallets) > 1:
+            pending.wallet_options = [
+                {
+                    "ordinal": str(idx),
+                    "wallet_id": str(w.wallet_id),
+                    "name": str(w.name),
+                }
+                for idx, w in enumerate(current_wallets, 1)
+            ]
+            await ConversationService.set_pending_wallet_selection(ctx.sender_phone, pending)
+            return DispatchResult(
+                "Esa opción ya no está disponible. Por favor elegí una de las opciones actuales:\n"
+                + "\n".join(f"{opt['ordinal']}. {opt['name']}" for opt in pending.wallet_options),
+                service_invoked="wallet",
+            )
+        else:
+            await ConversationService.clear_state(ctx.sender_phone)
+            return DispatchResult(
+                "La billetera elegida no está disponible. Por favor volvé a registrar el movimiento.",
+                service_invoked="wallet",
+            )
+
+    if result.status == "duplicate":
+        await ConversationService.clear_state(ctx.sender_phone)
+        if result.movement_id:
+            last = LastRegisteredMovement(
+                movement_id=result.movement_id,
+                sender_phone=ctx.sender_phone,
+                movement_type=pending.movement_type,
+                amount=result.amount or pending.amount,
+                currency=result.currency or pending.currency,
+                description=pending.description,
+                category_name=pending.inferred_category,
+            )
+            await ConversationService.set_last_movement(ctx.sender_phone, last)
+            await ConversationService.set_recent_items(
+                ctx.sender_phone,
+                RecentItems("movement", [{
+                    "id": result.movement_id,
+                    "label": last.description,
+                    "description": last.description,
+                    "amount": str(last.amount),
+                    "currency": last.currency,
+                }]),
+            )
+        return DispatchResult(
+            reply_text=_registration_reply(result, {
+                "movement_type": pending.movement_type,
+                "amount": result.amount or pending.amount,
+                "currency": result.currency or pending.currency,
+                "description": pending.description,
+            }),
+            service_invoked="finance",
+        )
+
+    if result.status != "registered":
+        await ConversationService.clear_state(ctx.sender_phone)
+        return DispatchResult(
+            _registration_dispatch_reply(result, {
+                "movement_type": pending.movement_type,
+                "amount": pending.amount,
+                "currency": pending.currency,
+                "description": pending.description,
+            }),
+            service_invoked="finance",
+        )
+
+    await ConversationService.clear_state(ctx.sender_phone)
+    last = LastRegisteredMovement(
+        movement_id=result.movement_id,
+        sender_phone=ctx.sender_phone,
+        movement_type=pending.movement_type,
+        amount=pending.amount,
+        currency=pending.currency,
+        description=pending.description,
+        category_name=pending.inferred_category,
+    )
+    await ConversationService.set_last_movement(ctx.sender_phone, last)
+    await ConversationService.set_recent_items(
+        ctx.sender_phone,
+        RecentItems("movement", [{
+            "id": result.movement_id, "label": last.description,
+            "description": last.description, "amount": str(last.amount),
+            "currency": last.currency,
+        }]),
+    )
+
+    movement_type = pending.movement_type or "movimiento"
+    description = pending.description
+    amount = _format_amount(pending.amount)
+    currency = str(pending.currency).upper()
+    wallet_name = result.wallet_name or chosen_opt["name"]
+    reply = f"✅ Registré tu {movement_type}: {description} por ${amount} {currency} en *{wallet_name}*."
+    if pending.inferred_category:
+        reply += f"\n📁 Categoría: {pending.inferred_category}."
+    reply += f"\n{_category_hint_reply()}"
+
+    budget_threshold_alerts = []
+    if result.movement_id:
+        evaluation = await asyncio.to_thread(BudgetService.evaluate_movement, result.movement_id)
+        budget_feedback = _budget_feedback_reply(evaluation)
+        if budget_feedback:
+            reply += f"\n\n{budget_feedback}"
+        budget_threshold_alerts = _crossed_budget_thresholds([evaluation])
+
+    return DispatchResult(
+        reply_text=reply,
+        service_invoked="finance",
+        budget_threshold_alerts=budget_threshold_alerts,
+        event_key="movement.registered",
+        event_variables={
+            "movement_id": result.movement_id or "",
+            "movement_type": movement_type,
+            "description": description,
+            "amount": amount,
+            "currency": currency,
+            "category": pending.inferred_category or "",
+            "wallet_id": selected_wallet_id,
+            "wallet_name": wallet_name,
+        },
+    )
+
+
 async def _handle_pending_movement_category_change(
     sender_phone: str, text_body: str
 ) -> DispatchResult | None:
@@ -3221,6 +3586,11 @@ async def _apply_pending_category_alternative(
     if pending is None:
         return None
     data = {**pending.llm_result_extra, "category": alternative}
+    data["amount"] = pending.amount
+    if pending.wallet_id:
+        data["wallet_id"] = pending.wallet_id
+    if pending.resolved_fecha_movimiento:
+        data["fecha"] = pending.resolved_fecha_movimiento.isoformat()
     await ConversationService.clear_state(ctx.sender_phone)
     reply = await _register_single_with_hint(
         ctx.sender_phone,
@@ -3850,6 +4220,85 @@ async def _handle_misc_intent(
     return _llm_dispatch_result(data, _safe_non_persisted_reply(data), "llm", intent)
 
 
+async def _handle_wallet_intent(
+    ctx: _DispatchContext, data: dict
+) -> DispatchResult | None:
+    intent = data.get("intent")
+    if intent not in {"create_wallet", "list_wallets", "query_wallets"}:
+        return None
+
+    user_id = await asyncio.to_thread(_user_id_by_phone, ctx.sender_phone)
+    if user_id is None:
+        return _llm_dispatch_result(
+            data,
+            "No encontré una cuenta vinculada a este WhatsApp.",
+            "wallet",
+            intent,
+        )
+
+    if intent in {"list_wallets", "query_wallets"}:
+        balances = await asyncio.to_thread(WalletService.get_balances_own_user, user_id)
+        if not balances:
+            return _llm_dispatch_result(
+                data,
+                "No tenés billeteras registradas todavía.",
+                "wallet",
+                intent,
+            )
+        lines = ["Tus billeteras:"]
+        for b in balances:
+            amt = _format_amount(b.balance)
+            lines.append(f"• {b.name}: ${amt} {b.currency}")
+        return _llm_dispatch_result(
+            data,
+            "\n".join(lines),
+            "wallet",
+            intent,
+        )
+
+    if intent == "create_wallet":
+        name = data.get("wallet_name")
+        currency = str(data.get("wallet_currency") or "ARS").strip().upper()
+        if not name or not str(name).strip():
+            return _llm_dispatch_result(
+                data,
+                "¿Cómo querés llamar a la billetera?",
+                "wallet",
+                intent,
+            )
+        if currency not in WalletService.SUPPORTED_CURRENCIES:
+            return _llm_dispatch_result(
+                data,
+                "La moneda debe ser ARS o USD.",
+                "wallet",
+                intent,
+            )
+
+        result = await asyncio.to_thread(
+            WalletService.create_wallet,
+            user_id=user_id,
+            name=str(name).strip(),
+            currency=currency,
+        )
+        if result.status == "created":
+            reply = f"✅ Creé la billetera *{result.name}* en {result.currency}."
+        elif result.status == "name_already_exists":
+            reply = f"Ya tenés una billetera llamada *{name}* en {currency}."
+        elif result.status == "invalid_data":
+            reply = f"No pude crear la billetera: {result.message}."
+        else:
+            reply = "Hubo un error al crear la billetera. Por favor intentá nuevamente."
+
+        return _llm_dispatch_result(
+            data,
+            reply,
+            "wallet",
+            intent,
+        )
+
+    return None
+
+
 async def _dispatch_intent(ctx: _DispatchContext, data: dict) -> DispatchResult:
     logger.info("conversation_route intent=%s", data.get("intent", "out_of_scope"))
     handlers = (
@@ -3857,6 +4306,7 @@ async def _dispatch_intent(ctx: _DispatchContext, data: dict) -> DispatchResult:
         _handle_limit_intent,
         _handle_chart_intent,
         _handle_financial_education_intent,
+        _handle_wallet_intent,
         _handle_finance_intent,
         _handle_reminder_intent,
         _handle_proactive_reminder_intent,
@@ -3886,6 +4336,9 @@ async def _dispatch_after_onboarding(
 ) -> DispatchResult:
     if educational_request is not None:
         return await _handle_educational_request(ctx.sender_phone, educational_request)
+    pending = await _handle_pending_wallet_selection(ctx)
+    if pending is not None:
+        return pending
     pending = await _handle_pending_movement_category_change(ctx.sender_phone, ctx.text_body)
     if pending is not None:
         return pending
@@ -4466,6 +4919,14 @@ async def _resume_movement_after_category(sender_phone: str) -> DispatchResult:
             reply_text="Se perdió el contexto. Volvé a registrar el movimiento.",
             service_invoked="conversation_flow",
         )
+    resolved_fecha = (
+        pending.resolved_fecha_movimiento
+        if pending.resolved_fecha_movimiento is not None
+        else resolve_relative_date(
+            pending.llm_result_extra.get("fecha"),
+            date.today(),  # noqa: DTZ011
+        )
+    )
     with track_phase("db"):
         result = await asyncio.to_thread(
             FinanceService.register_movement_with_category,
@@ -4478,10 +4939,8 @@ async def _resume_movement_after_category(sender_phone: str) -> DispatchResult:
             description=pending.description,
             category_name=pending.inferred_category,
             create_category_if_missing=False,
-            fecha_movimiento=resolve_relative_date(
-                pending.llm_result_extra.get("fecha"),
-                date.today(),  # noqa: DTZ011
-            ),
+            fecha_movimiento=resolved_fecha,
+            wallet_id=pending.wallet_id,
         )
     if result.status in {"registered", "duplicate"}:
         await ConversationService.clear_state(sender_phone)
@@ -4541,6 +5000,8 @@ async def _resume_movement_after_category(sender_phone: str) -> DispatchResult:
             "amount": _format_amount(pending.amount),
             "currency": pending.currency,
             "category": pending.inferred_category,
+            "wallet_id": result.wallet_id or pending.wallet_id or "",
+            "wallet_name": result.wallet_name or "",
         },
     )
 

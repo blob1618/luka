@@ -99,6 +99,17 @@ procesa en silencio para no repetir una confirmación ya enviada.
 - Para cambiar la categoría de un movimiento se usa `update_movement`. Si la nueva
   categoría no existe, se indica que primero debe crearse y el movimiento no cambia.
 
+## Billeteras
+
+- Cada usuario puede tener billeteras en `ARS` y `USD`. Los movimientos financieros se asocian obligatoriamente a una billetera (`billetera_id`).
+- Creación de billeteras (`create_wallet`): Requiere nombre y moneda (`ARS` o `USD`). Si se omite la moneda, se asume `ARS` por defecto. No admite nombres duplicados para la misma moneda en el mismo usuario.
+- Consulta de saldos (`list_wallets` / `query_wallets`): Muestra el saldo actual calculado por billetera y moneda a partir de los ingresos y egresos no anulados. No se mezclan monedas. El acceso está estrictamente aislado por usuario.
+- Desambiguación en registro de movimientos: Si el usuario tiene una sola billetera en la moneda del movimiento, se auto-selecciona. Si tiene múltiples billeteras en esa moneda y no indicó una (tanto con categoría inferida como sin categoría), el registro no persiste filas, almacena el `PendingMovement` en Redis con `awaiting_wallet_selection` y presenta las opciones numeradas (1..N).
+- Selección multi-turno: Al recibir la respuesta del usuario, se valida que sea un ordinal dentro de las opciones presentadas. Una opción inválida o ajena no registra y vuelve a solicitar una opción válida. «cancelar» y «reiniciar» descartan el estado pendiente sin escribir.
+- Manejo determinista sin billeteras: Si el usuario no tiene ninguna billetera en la moneda del movimiento (`needs_wallet_creation`), se devuelve un mensaje determinista indicándole crear una billetera primero. El texto del modelo (`reply_text`) se suprime por completo y no se realizan escrituras.
+- Persistencia y confirmación: Al recibir una opción válida, `FinanceService` revalida propiedad y moneda y persiste el movimiento con su importe `Decimal` exacto, fecha contable y el `whatsapp_message_id` original. Si se requiere crear una nueva categoría, se preserva la billetera seleccionada (`wallet_id`) y la fecha resuelta (`resolved_fecha_movimiento`) a través del paso de confirmación y corrección de categoría.
+- Límite de verificación: Las pruebas herméticas usan SQLite y `FakeRedis`; no se ejecutó el simulador interactivo de WhatsApp con Redis de testing. Ese criterio del DoD permanece pendiente.
+
 ## Límites de gasto y presupuestos
 
 - Un límite es único por usuario, categoría, inicio de período y moneda. Crear sobre una

@@ -189,7 +189,7 @@ _ALLOWED_INTENTS = {
     "delete_category", "list_categories", "update_movement", "delete_movement",
     "create_limit", "change_limit", "list_limits", "delete_limit", "confirm_limit",
     "reject_limit", "compensate_budget", "confirm_compensation", "reject_compensation",
-    "reset_context", "financial_education",
+    "reset_context", "financial_education", "create_wallet", "list_wallets", "query_wallets",
 }
 
 
@@ -287,6 +287,13 @@ def _normalize_compensation_fields(parsed: Dict[str, Any]) -> dict:
     }
 
 
+def _normalize_wallet_fields(parsed: Dict[str, Any]) -> dict:
+    return {
+        "wallet_name": _strip_optional(parsed.get("wallet_name") or parsed.get("name")),
+        "wallet_currency": _currency_or_none(parsed.get("wallet_currency") or parsed.get("currency")),
+    }
+
+
 def _normalize_intent(parsed: Dict[str, Any]) -> str:
     intent = str(parsed.get("intent", "out_of_scope")).strip().lower()
     return intent if intent in _ALLOWED_INTENTS else "out_of_scope"
@@ -321,6 +328,7 @@ def _normalize_message_response(cls: type, parsed: Dict[str, Any]) -> Dict[str, 
         **_normalize_reminder_fields(parsed),
         **_normalize_limit_fields(parsed),
         **_normalize_compensation_fields(parsed),
+        **_normalize_wallet_fields(parsed),
         "education_term": _strip_optional(parsed.get("education_term")),
         "reply_text": str(parsed.get("reply_text") or ""),
         "movements": _normalize_movements(cls, parsed, intent),
@@ -360,6 +368,8 @@ def _fallback_response(exc: Exception) -> Dict[str, Any]:
         "compensation_target": None,
         "compensation_source": None,
         "compensation_amount": None,
+        "wallet_name": None,
+        "wallet_currency": None,
         "education_term": None,
         "reply_text": (
             "No he podido analizar tu mensaje en este momento. "

@@ -70,6 +70,50 @@ async def _process_message_with_mock_response(mock_response):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "intent", "wallet_name", "wallet_currency"),
+    [
+        (
+            {
+                "intent": "create_wallet",
+                "wallet_name": "  Efectivo  ",
+                "wallet_currency": " usd ",
+                "user_id": "must-not-be-trusted",
+                "wallet_id": "must-not-be-forwarded",
+            },
+            "create_wallet",
+            "Efectivo",
+            "USD",
+        ),
+        (
+            {"intent": "create_wallet", "name": "Ahorro"},
+            "create_wallet",
+            "Ahorro",
+            None,
+        ),
+        (
+            {"intent": "create_wallet", "name": "Cripto", "currency": "eur"},
+            "create_wallet",
+            "Cripto",
+            "EUR",
+        ),
+        ({"intent": "list_wallets", "user_id": "must-not-be-trusted"}, "list_wallets", None, None),
+        ({"intent": "query_wallets", "wallet_id": "must-not-be-forwarded"}, "query_wallets", None, None),
+    ],
+)
+async def test_wallet_intents_normalize_fields_without_identity(
+    payload, intent, wallet_name, wallet_currency
+):
+    result = await _process_message_with_mock_response(payload)
+
+    assert result["intent"] == intent
+    assert result["wallet_name"] == wallet_name
+    assert result["wallet_currency"] == wallet_currency
+    assert "user_id" not in result
+    assert "wallet_id" not in result
+
+
+@pytest.mark.asyncio
 async def test_process_message_preserves_structured_correction_reference_and_patch():
     result = await _process_message_with_mock_response({
         "intent": "update_movement", "reference": {"description": "pizza"},
