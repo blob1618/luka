@@ -328,3 +328,49 @@ Para Release 1, el acceso financiero es mediado por backend:
 No se permite que un dashboard consulte directamente los movimientos financieros de Supabase en esta etapa. El backend debe aplicar autorización y filtrar siempre por el usuario correspondiente.
 
 La migración base declara `ENABLE ROW LEVEL SECURITY` para las tablas protegidas que ya lo tenían. `20260911011601_protect_movimientos_financieros.sql` corrige las diferencias detectadas en la tabla financiera central: habilita RLS y agrega los índices de deduplicación y consulta que faltaban. No se agregan policies públicas; el backend usa un rol con `BYPASSRLS`. `public.billetera` sigue la misma convención: RLS habilitado y `REVOKE ALL` para `anon`/`authenticated`, sin policies ni `auth.uid()`. El estado efectivo debe volver a verificarse cuando una migración toque permisos o RLS.
+
+## STK-237 / STK-240: Modelo y Contrato de Billeteras
+
+### Contrato de Datos
+
+- **Entidad `billetera` (singular)**:
+  - `id`: UUID clave primaria (`extensions.uuid_generate_v4()` en SQL / `uuid.uuid4` en ORM).
+  - `usuario_id`: UUID foreign key obligatoria a `usuario.id`.
+  - `nombre`: Texto no vacío (`CHECK (trim(nombre) <> '')`).
+  - `moneda`: Texto (`ARS` o `USD` en la lógica de negocio).
+  - `creado_en`: Timestamp con zona horaria (`TIMESTAMPTZ NOT NULL DEFAULT now()`).
+  - Restricción de unicidad compuesta: `UNIQUE (id, usuario_id, moneda)` utilizada como destino de integridad referencial.
+  - Restricción de unicidad por nombre normalizado: `UNIQUE INDEX (usuario_id, moneda, lower(trim(nombre)))` que impide nombres duplicados por usuario y moneda.
+  - Múltiples billeteras permitidas para la misma moneda (con distinto nombre).
+  - Sin saldo materializado: los saldos se calculan agregando movimientos no anulados (`anulado_en IS NULL`) en tiempo de consulta.
+- **Relación en `movimientos_financieros`**:
+  - `billetera_id`: UUID nullable en el estado actual de expansión/backfill/índice de PR #60; la restricción final `NOT NULL` es un contrato futuro separado y sujeto a gate.
+  - Clave foránea compuesta `(billetera_id, usuario_id, moneda)` referenciando `billetera(id, usuario_id, moneda)`, que garantiza la integridad de propietario y moneda cuando `billetera_id` no es nulo (la fase actual de expansión admite NULL con `MATCH SIMPLE`).
+  - Índice en `billetera_id` (`movimientos_financieros_billetera_id_idx`).
+  - Sin modificaciones a tipos ni campos financieros históricos.
+
+### Migraciones de Base de Datos (PR #60 / STK-237)
+
+La cadena de migraciones versionadas en PR #60 comprende tres etapas:
+1. `supabase/migrations/20261012174855_add_billetera_expansion_stk237.sql`: creación de la tabla `billetera`, adición de la columna `billetera_id UUID` (nullable) en `movimientos_financieros`, FK compuesta `(billetera_id, usuario_id, moneda)` y RLS habilitada con revocación total de privilegios a roles públicos (`anon`, `authenticated`).
+2. `supabase/migrations/20261012174901_backfill_billetera_historica_stk237.sql`: creación determinista de la billetera `'Inicial'` por cada par `(usuario_id, moneda)` presente en movimientos preexistentes y asignación de `billetera_id`.
+3. `supabase/migrations/20261012181524_add_movimientos_billetera_id_index_stk237.sql`: índice en `movimientos_financieros(billetera_id)`.
+
+**Estado de la restricción y gate de release no resuelto**: El esquema SQL actual en PR #60 mantiene `billetera_id` como nullable (etapa de expansión, backfill e índice). La aplicación final del contrato `NOT NULL` exige una secuencia de release que incluya pausa y drenaje de tráfico/escrituras, backfill final de remanentes, verificación y aplicación estricta del contrato de foreign key y restricción `NOT NULL`, junto con un procedimiento verificado de rollback. Un runbook aprobado de rollout y rollback en producción para este cambio no se localizó en las fuentes revisadas/disponibles (migraciones del repositorio y documentación interna en Confluence). En consecuencia, este gate de release permanece formalmente no resuelto y no debe asumirse que dicha secuencia esté lista para ejecución productiva.
+
+### Verificación y Aceptación
+
+- **Flujo de aceptación del simulador (STK-240)**: `tests/test_wallet_simulator_acceptance.py` valida el recorrido de punta a punta a través de `WebhookModeService.send_message` (mismo adaptador utilizado por el simulador Streamlit). Opera con SQLite en memoria (`StaticPool`), `FakeRedis` (cableado en `ConversationService` y `WebhookModeService.redis.from_url` con compatibilidad de `ttl` y `aclose`), y aislamiento completo de session factories (incluyendo `conversation_flow.SessionLocal`, evitando caídas a bases locales no aisladas). Verifica creación de billeteras, desambiguación con cero escrituras ante múltiples opciones, selección válida de ordinal, consulta de saldos separados por moneda (ARS/USD), anulación lógica y aislamiento estricto entre usuarios. No realiza llamadas reales a Meta/WhatsApp, proveedores LLM ni conexiones de red/remotas.
+- **Evidencia del arnés PostgreSQL local descartable**:
+  - **Fecha**: 2026-10-12 17:35 ART.
+  - **Estado**: PASS (exit code 0) en base PostgreSQL local descartable.
+  - **Entorno**: Supabase CLI 2.117.0, Docker 29.6.1, proyecto efímero `stk240_20261012_pr62` en puerto 55842 sobre base `731d909fb90234c96db47f06194c1f6bda1fc3dd`. Sin lectura de `.env`, credenciales externas ni datos productivos; únicamente fixtures sintéticos.
+  - **Entradas SQL y hashes SHA-256**:
+    - `supabase/migrations/20261012174855_add_billetera_expansion_stk237.sql`: `C221635FE4DF19BFBFA73917015084938F30D2ED62F80FC76A34973477986334`
+    - `supabase/migrations/20261012174901_backfill_billetera_historica_stk237.sql`: `102C4EF49174BCAC930DBB2C7DC7F9564E86B432CBCAFB0FECD2F7B3244EE524`
+    - `supabase/migrations/20261012181524_add_movimientos_billetera_id_index_stk237.sql`: `48AF5FBFF839A92C3464ECA30E0D141C175ACD3273EDC71D26C6E180A6B4DFEC`
+    - `supabase/tests/stk237_billetera.sql`: `F0161CE610335F46A480712D64CA6B3B898552773D020BF8DEFBD73E7689DA74`
+  - **Ejecución**: `docker exec -w /tmp/stk240 supabase_db_stk240_20261012_pr62 psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres -v disposable_confirm=STK237_SYNTHETIC -f supabase/tests/stk237_billetera.sql`.
+  - **Resultado**: `STK-237 HARNESS: todas las aserciones pasaron en base PostgreSQL local descartable.` Verificó expansión, escrituras del binario anterior post-expansión, preservación de columnas históricas, backfill determinista, integridad de propiedad y moneda, FK compuesta, índice, RLS/privilegios de roles `anon`/`authenticated`, e idempotencia.
+  - **Limpieza**: `supabase stop --no-backup` ejecutado exitosamente; contenedor, volumen y red descartados de inmediato.
+  - **Límites**: Este resultado demuestra el comportamiento en PostgreSQL local descartable; no prueba la aplicación en Supabase remoto ni producción, y no autoriza merge o activación por sí solo.
