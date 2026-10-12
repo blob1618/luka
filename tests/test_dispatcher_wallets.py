@@ -453,7 +453,7 @@ async def test_reset_context_clears_pending_wallet_selection(isolated_db):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_valid_selection_persists_and_confirms(isolated_db):
+async def test_ambiguous_replies_keep_pending_until_valid_selection(isolated_db):
     user_id = uuid.uuid4()
     w1_id = uuid.uuid4()
     w2_id = uuid.uuid4()
@@ -484,6 +484,20 @@ async def test_valid_selection_persists_and_confirms(isolated_db):
         resolved_fecha_movimiento=date(2026, 10, 8),
     )
     await ConversationService.set_pending_wallet_selection(sender_phone, pending)
+
+    for ambiguous_reply in ("gasté 2 pesos", "la primera o la segunda"):
+        with patch(
+            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+            return_value=known_user(),
+        ):
+            ambiguous = await process_incoming_message(sender_phone, ambiguous_reply)
+
+        assert "Opción no válida" in ambiguous.reply_text
+        assert await ConversationService.is_awaiting_wallet_selection(sender_phone) is True
+        with isolated_db() as session:
+            assert session.query(MovimientoFinanciero).count() == 0
+
+    # Only a reply that consists of an explicit option may persist the pending movement.
 
     with patch("app.services.dispatcher.OnboardingService.prepare_whatsapp_message", return_value=known_user()):
         result = await process_incoming_message(sender_phone, "2")

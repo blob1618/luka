@@ -2955,32 +2955,35 @@ def _resolve_wallet_ordinal(text: str, options: list[dict[str, str]]) -> dict[st
         return None
     normalized = normalize_text(text)
 
-    # Word-based ordinals
-    word_ordinals = {
-        "primero": 1, "primera": 1, "primer": 1, "1era": 1, "1ra": 1,
-        "segundo": 2, "segunda": 2, "2da": 2,
-        "tercero": 3, "tercera": 3, "tercer": 3, "3ra": 3,
-        "cuarto": 4, "cuarta": 4, "4ta": 4,
-        "quinto": 5, "quinta": 5, "5ta": 5,
-    }
-    for word, ordinal_num in word_ordinals.items():
-        if re.search(rf"\b{word}\b", normalized):
-            str_ord = str(ordinal_num)
-            for opt in options:
-                if str(opt.get("ordinal")) == str_ord:
-                    return opt
+    # The reply must itself be a selection. Searching a free-form sentence for an
+    # ordinal can turn unrelated numbers ("gaste 2 pesos") or alternatives
+    # ("la primera o la segunda") into a persisted wallet choice.
+    number_match = re.fullmatch(r"(?:opcion\s*:?[ ]*)?#?([1-9]\d*)", normalized)
+    if number_match:
+        ordinal = str(int(number_match.group(1)))
+    else:
+        word_ordinals = {
+            "primero": 1, "primera": 1, "primer": 1, "1era": 1, "1ra": 1,
+            "segundo": 2, "segunda": 2, "2da": 2,
+            "tercero": 3, "tercera": 3, "tercer": 3, "3ra": 3,
+            "cuarto": 4, "cuarta": 4, "4ta": 4,
+            "quinto": 5, "quinta": 5, "5ta": 5,
+        }
+        alternatives = "|".join(re.escape(word) for word in word_ordinals)
+        word_match = re.fullmatch(
+            rf"(?:(?:elijo|selecciono|quiero)\s+)?"
+            rf"(?:(?:el|la)\s+)?({alternatives})"
+            rf"(?:\s+billetera)?",
+            normalized,
+        )
+        if not word_match:
             return None
+        ordinal = str(word_ordinals[word_match.group(1)])
 
-    # Number-based ordinals
-    digits = re.findall(r"\b\d+\b", normalized)
-    if len(digits) == 1:
-        str_ord = str(int(digits[0]))
-        for opt in options:
-            if str(opt.get("ordinal")) == str_ord:
-                return opt
-        return None
-
-    return None
+    return next(
+        (opt for opt in options if str(opt.get("ordinal")) == ordinal),
+        None,
+    )
 
 
 async def _handle_pending_wallet_selection(
