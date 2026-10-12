@@ -12,6 +12,7 @@ import app.services.budget as budget_module
 import app.services.compensation as compensation_module
 from app.models.database import (
     Base,
+    Billetera,
     Categoria,
     LimiteCategoria,
     MovimientoFinanciero,
@@ -102,8 +103,27 @@ def create_movement(
     currency="ARS",
     movement_date=REFERENCE_DATE,
     annulled=False,
+    wallet=None,
 ):
+    if wallet is None:
+        wallet = (
+            session.query(Billetera)
+            .filter(
+                Billetera.usuario_id == user.id,
+                Billetera.moneda == currency,
+            )
+            .first()
+        )
+        if wallet is None:
+            wallet = Billetera(
+                usuario_id=user.id,
+                nombre=f"Billetera {currency}",
+                moneda=currency,
+            )
+            session.add(wallet)
+            session.flush()
     movement = MovimientoFinanciero(
+        billetera_id=wallet.id,
         usuario_id=user.id,
         categoria_id=category.id if category else None,
         tipo=movement_type,

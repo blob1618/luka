@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.models.database import Base, MovimientoFinanciero, Recordatorio, Usuario
+from app.models.database import Base, Billetera, MovimientoFinanciero, Recordatorio, Usuario
 
 
 def _make_session_factory():
@@ -607,17 +607,29 @@ class TestProactivePrompts:
         mock_send.assert_not_called()
         assert "PROACTIVE_CONFIG_ERROR" in caplog.text
 
-    def _seed_movement(self, session, user, fecha_movimiento, anulado_en=None):
-        session.add(
-            MovimientoFinanciero(
-                usuario_id=user.id,
-                tipo="egreso",
-                cantidad=Decimal("100"),
-                fecha_movimiento=fecha_movimiento,
-                anulado_en=anulado_en,
-            )
+    def _seed_movement(self, session, user, fecha_movimiento, anulado_en=None, billetera=None):
+        if billetera is None:
+            billetera = session.query(Billetera).filter(Billetera.usuario_id == user.id).first()
+            if billetera is None:
+                billetera = Billetera(
+                    usuario_id=user.id,
+                    nombre="Efectivo",
+                    moneda="ARS",
+                )
+                session.add(billetera)
+                session.flush()
+        movement = MovimientoFinanciero(
+            usuario_id=user.id,
+            billetera_id=billetera.id,
+            moneda=billetera.moneda,
+            tipo="egreso",
+            cantidad=Decimal("100"),
+            fecha_movimiento=fecha_movimiento,
+            anulado_en=anulado_en,
         )
+        session.add(movement)
         session.commit()
+        return movement
 
     @pytest.mark.asyncio
     async def test_skips_only_users_who_registered_movement_today(self, monkeypatch):

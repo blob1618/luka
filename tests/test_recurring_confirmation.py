@@ -38,6 +38,7 @@ from tests.conftest import FakeRedis
 from app.models.database import (
     AvisoRecordatorio,
     Base,
+    Billetera,
     CandidatoGastoRecurrente,
     Categoria,
     CronJobClaim,
@@ -90,6 +91,8 @@ def _create_user(session, phone="5491100001111", proactivo_habilitado=True):
         proactivo_habilitado=proactivo_habilitado,
     )
     session.add(user)
+    session.commit()
+    session.add(Billetera(usuario_id=user.id, nombre="Efectivo", moneda="ARS"))
     session.commit()
     return user
 

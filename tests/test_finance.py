@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 import app.services.finance as finance_module
 from app.models.database import (
     Base,
+    Billetera,
     Categoria,
     LimiteCategoria,
     MovimientoFinanciero,
@@ -48,6 +49,8 @@ def create_user(session, whatsapp_id="5491111111111"):
         whatsapp_id=whatsapp_id,
     )
     session.add(user)
+    session.commit()
+    session.add(Billetera(usuario_id=user.id, nombre="Fixture ARS", moneda="ARS"))
     session.commit()
     return user
 
@@ -452,6 +455,19 @@ def test_register_movement_integrity_error_rechecks_and_returns_duplicate(monkey
         FinanceService,
         "_find_duplicate",
         staticmethod(lambda session, message_id: next(duplicate_checks)),
+    )
+    monkeypatch.setattr(
+        finance_module.WalletService,
+        "resolve_selection",
+        staticmethod(lambda *args, **kwargs: type(
+            "Selection", (), {
+                "status": "selected",
+                "wallet_id": str(uuid.uuid4()),
+                "wallet_name": "Fixture",
+                "currency": "ARS",
+                "message": "",
+            }
+        )()),
     )
 
     result = FinanceService.register_movement_from_whatsapp_text(

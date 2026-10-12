@@ -20,6 +20,7 @@ from app.api.whatsapp import WhatsAppReplyButtons
 from app.main import app
 from app.models.database import (
     Base,
+    Billetera,
     Categoria,
     LimiteCategoria,
     MovimientoFinanciero,
@@ -182,6 +183,13 @@ def create_user(session, whatsapp_id="12345"):
         whatsapp_id=whatsapp_id,
     )
     session.add(user)
+    session.commit()
+    wallet = Billetera(
+        usuario_id=user.id,
+        nombre="Billetera ARS",
+        moneda="ARS",
+    )
+    session.add(wallet)
     session.commit()
     return user
 
@@ -547,6 +555,22 @@ class TestCompensationMultiTurn:
         user = create_user(session, whatsapp_id="5491155551234")
         comida = create_category(session, user.id, "Comida")
         transporte = create_category(session, user.id, "Transporte")
+        wallet = (
+            session.query(Billetera)
+            .filter(
+                Billetera.usuario_id == user.id,
+                Billetera.moneda == "ARS",
+            )
+            .first()
+        )
+        if wallet is None:
+            wallet = Billetera(
+                usuario_id=user.id,
+                nombre="Billetera ARS",
+                moneda="ARS",
+            )
+            session.add(wallet)
+            session.flush()
 
         today = datetime.now(ARGENTINA_TZ).date()
         period_start = today.replace(day=1)
@@ -570,6 +594,7 @@ class TestCompensationMultiTurn:
                     fin_periodo=period_end,
                 ),
                 MovimientoFinanciero(
+                    billetera_id=wallet.id,
                     usuario_id=user.id,
                     categoria_id=comida.id,
                     tipo="egreso",

@@ -34,6 +34,8 @@ decisiones de cada capa. El comportamiento visible para el usuario se describe e
   fechas relativas.
 - `app/services/finance.py`: validación, alta, consulta, edición y anulación de
   movimientos; categorías del usuario.
+- `app/services/wallet.py`: altas y consultas de billeteras propias, selección por
+  propietario y moneda, y saldos por billetera.
 - `app/services/limit.py`: alta, edición, listado y eliminación de límites mensuales por
   categoría y moneda.
 - `app/services/budget.py`: consumo, disponible, porcentaje y exceso derivados de los

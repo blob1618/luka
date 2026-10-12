@@ -16,7 +16,7 @@ import app.services.dispatcher as dispatcher_module
 import app.services.finance as finance_module
 import app.services.limit as limit_module
 import app.models.database as database_module
-from app.models.database import Base, Categoria, LimiteCategoria, MovimientoFinanciero, Usuario
+from app.models.database import Base, Billetera, Categoria, LimiteCategoria, MovimientoFinanciero, Usuario
 from app.services.dispatcher import _limit_month_label, process_incoming_message
 from app.services.onboarding import OnboardingDecision, OnboardingResult
 
@@ -84,6 +84,8 @@ def conversation_db(monkeypatch):
     session = factory()
     user = Usuario(nombre="Usuario", email=f"{uuid.uuid4()}@example.com", whatsapp_id="5491111111111")
     session.add(user)
+    session.commit()
+    session.add(Billetera(usuario_id=user.id, nombre="Efectivo", moneda="ARS"))
     session.commit()
     try:
         yield session, user, state
