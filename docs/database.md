@@ -22,6 +22,7 @@ Tablas oficiales de Release 1:
 - `public.usuario` — usuarios oficiales del sistema.
 - `public.categorias` — categorías para clasificar movimientos.
 - `public.movimientos_financieros` — entidad central para ingresos y egresos.
+- `public.billetera` — billeteras propias del usuario, separadas por moneda (fase de expansión de STK-237).
 - `public.limite_categoria` — presupuestos mensuales por categoría.
 - `public.recordatorio` — recordatorios financieros del usuario.
 - `public.evento` — auditoría y trazabilidad de acciones relevantes.
@@ -60,6 +61,7 @@ Las tablas heredadas `public.movimientos` y `public.metas` no forman parte del c
 - `LimiteCategoria` -> `limite_categoria`
 - `Recordatorio` -> `recordatorio`
 - `Evento` -> `evento`
+- `Billetera` -> `billetera`
 - `MovimientoFinanciero` -> `movimientos_financieros`
 - `ConversationFlow` -> `conversation_flow`
 - `ConversationFlowVersion` -> `conversation_flow_version`
@@ -85,6 +87,7 @@ erDiagram
 
     movimientos_financieros {
         uuid id PK
+        uuid billetera_id FK
         uuid usuario_id FK
         uuid categoria_id FK
         text tipo
@@ -95,6 +98,14 @@ erDiagram
         text origen
         text whatsapp_message_id UK
         timestamptz anulado_en
+    }
+
+    billetera {
+        uuid id PK
+        uuid usuario_id FK
+        text nombre
+        text moneda
+        timestamptz creado_en
     }
 
     limite_categoria {
@@ -110,9 +121,16 @@ erDiagram
     usuario ||--o{ categorias : posee
     usuario ||--o{ movimientos_financieros : registra
     categorias o|--o{ movimientos_financieros : clasifica
+    usuario ||--o{ billetera : posee
+    billetera o|--o{ movimientos_financieros : agrupa
     usuario ||--o{ limite_categoria : configura
     categorias ||--o{ limite_categoria : limita
 ```
+
+El vínculo `movimientos_financieros -> billetera` es compuesto: la clave
+`(billetera_id, usuario_id, moneda)` referencia `billetera(id, usuario_id, moneda)`, de
+modo que una billetera solo puede agrupar movimientos de su mismo propietario y su
+misma moneda exacta. `billetera_id` es nullable durante la expansión.
 
 Este diagrama representa el contrato del ORM, no una verificación del esquema remoto.
 
@@ -136,6 +154,26 @@ WhatsApp -> Backend -> public.movimientos_financieros
 - Confirma al usuario solo después de un commit exitoso.
 
 `public.movimientos_financieros` es la entidad central para ingresos y egresos. Los movimientos con `anulado_en` informado se excluyen de consultas y presupuestos; la fila y su `whatsapp_message_id` se conservan para impedir la recreación por reintentos de WhatsApp. La columna se incorpora mediante `20260917143651_annul_financial_movements.sql` y debe aplicarse antes del código que la consulta.
+
+## Billeteras y fase de expansión (STK-237)
+
+`public.billetera` representa una billetera propia del usuario. Guarda `usuario_id`, `nombre`, `moneda` y `creado_en`; exige `nombre` no vacío e impide repetir el nombre normalizado (`lower(btrim(nombre))`) dentro de la misma pareja `(usuario_id, moneda)`. Un usuario puede tener varias billeteras en la misma moneda, por eso el nombre forma parte de su identidad lógica. La moneda se almacena tal como llega del histórico: no se agrega un check de formato ni se normaliza el valor, para conservar la pareja exacta `(usuario_id, moneda)` de los movimientos; la normalización corresponde a STK-238.
+
+La integridad propietario/moneda no depende de policies ni del backend: la FK compuesta `movimientos_financieros_billetera_fkey` sobre `(billetera_id, usuario_id, moneda) -> billetera(id, usuario_id, moneda)` impide que un movimiento apunte a una billetera de otro usuario o de otra moneda. Con `MATCH SIMPLE`, `billetera_id = NULL` no se valida; ese es el estado válido de la expansión.
+
+Fase y límite explícito: STK-237 implementa la **expansión**, no el contrato final. `billetera_id` queda nullable, no se aplica `NOT NULL`, no se agrega la contracción y no se asume completitud permanente del backfill. El binario anterior sigue insertando movimientos con `billetera_id = NULL` después de la expansión; el backfill transitorio de esas escrituras, la validación de cero huérfanos y el `NOT NULL` pertenecen al corte coordinado STK-240. Mientras dure esa fase, ninguna consulta de saldo debe asumir que todos los movimientos tienen billetera.
+
+Migraciones:
+
+- `20261012174855_add_billetera_expansion_stk237.sql` crea `public.billetera`, agrega la columna nullable y la FK compuesta `NOT VALID`, los índices propios de `billetera` y RLS/`REVOKE`. No crea índices sobre `movimientos_financieros`.
+- `20261012174901_backfill_billetera_historica_stk237.sql` crea una billetera `Inicial` por pareja histórica exacta `(usuario_id, moneda)` con movimientos sin billetera y completa `billetera_id` en esas filas. Incluye movimientos anulados (no filtra `anulado_en`) y solo modifica `billetera_id`: importe, moneda, fecha, categoría, tipo, anulación y origen conservan su valor. Usuarios sin movimientos no generan billeteras. Es idempotente y re-ejecutable (solo considera filas con `billetera_id IS NULL` y usa `ON CONFLICT DO NOTHING`), condición necesaria para reutilizarlo como backfill transitorio en STK-240, y al terminar valida la FK.
+- `20261012181524_add_movimientos_billetera_id_index_stk237.sql` crea el índice `movimientos_financieros_billetera_id_idx` con `CREATE INDEX` normal, después del backfill y en su propio archivo.
+
+Locks: Supabase CLI aplica cada archivo de migración en una sola transacción, así que el alcance de un lock es el archivo completo; por eso la expansión, el backfill y el índice viven en archivos separados. La expansión solo ejecuta DDL breve de metadatos: `ADD COLUMN billetera_id` toma `ACCESS EXCLUSIVE` sobre `movimientos_financieros` (bloquea lecturas y escrituras) y lo conserva hasta que termina esa transacción, pero el archivo no ejecuta DML ni construye índices sobre esa tabla; `ADD FOREIGN KEY ... NOT VALID` toma `SHARE ROW EXCLUSIVE` sobre la tabla referenciante y la referenciada, sin escanear filas. El índice se construye en su propio archivo con `CREATE INDEX` normal: toma `SHARE` y bloquea escrituras sobre `movimientos_financieros` mientras dura el build, sin bloquear lecturas. El backfill, también en su archivo, no toma bloqueo exclusivo global pero retiene row locks en las filas que modifica: DML concurrente sobre otras filas puede continuar, las lecturas no se bloquean y una escritura concurrente sobre una fila ya modificada puede esperar. `VALIDATE CONSTRAINT` usa `SHARE UPDATE EXCLUSIVE` sobre la referenciante y `ROW SHARE` sobre la referenciada.
+
+`public.billetera` tiene RLS habilitado y `REVOKE ALL` para `anon`/`authenticated`, sin policies ni `auth.uid()`: el backend accede con un rol `BYPASSRLS`, igual que el resto del contrato financiero.
+
+El harness `supabase/tests/stk237_billetera.sql` aplica los tres archivos en orden y verifica en una base PostgreSQL local descartable (Supabase CLI, `project_id` propio y confirmación explícita) el backfill histórico, la preservación de campos, los movimientos anulados, la integridad de propietario y moneda, el `billetera_id` nullable, el índice en su archivo posterior y RLS/permisos. No se ejecuta contra Supabase remoto ni producción.
 
 ## Límites y presupuestos
 
@@ -165,7 +203,7 @@ Al crear la migración base se compararon el esquema remoto y una reconstrucció
 
 ## Migraciones y desarrollo local
 
-Supabase CLI (`supabase/migrations/`) es el flujo canónico, único responsable y la única fuente de verdad para los cambios de esquema en la base de datos de Luka. El historial previo quedó consolidado en `supabase/migrations/20260911010815_baseline_remote_schema.sql`, y el historial vigente llega hasta `20260921045538_recurring_confirmation_delivery.sql`.
+Supabase CLI (`supabase/migrations/`) es el flujo canónico, único responsable y la única fuente de verdad para los cambios de esquema en la base de datos de Luka. El historial previo quedó consolidado en `supabase/migrations/20260911010815_baseline_remote_schema.sql`, y el historial vigente llega hasta `20261012181524_add_movimientos_billetera_id_index_stk237.sql`.
 
 1. Crear cada cambio con `supabase migration new <nombre>` y editar solo el archivo nuevo.
 2. Ejecutar `supabase db reset` y `supabase db lint --level warning` antes de abrir o integrar el cambio.
@@ -257,4 +295,4 @@ Para Release 1, el acceso financiero es mediado por backend:
 
 No se permite que un dashboard consulte directamente los movimientos financieros de Supabase en esta etapa. El backend debe aplicar autorización y filtrar siempre por el usuario correspondiente.
 
-La migración base declara `ENABLE ROW LEVEL SECURITY` para las tablas protegidas que ya lo tenían. `20260911011601_protect_movimientos_financieros.sql` corrige las diferencias detectadas en la tabla financiera central: habilita RLS y agrega los índices de deduplicación y consulta que faltaban. No se agregan policies públicas; el backend usa un rol con `BYPASSRLS`. El estado efectivo debe volver a verificarse cuando una migración toque permisos o RLS.
+La migración base declara `ENABLE ROW LEVEL SECURITY` para las tablas protegidas que ya lo tenían. `20260911011601_protect_movimientos_financieros.sql` corrige las diferencias detectadas en la tabla financiera central: habilita RLS y agrega los índices de deduplicación y consulta que faltaban. No se agregan policies públicas; el backend usa un rol con `BYPASSRLS`. `public.billetera` sigue la misma convención: RLS habilitado y `REVOKE ALL` para `anon`/`authenticated`, sin policies ni `auth.uid()`. El estado efectivo debe volver a verificarse cuando una migración toque permisos o RLS.
