@@ -21,6 +21,7 @@ from sqlalchemy.sql import func
 
 from app.api.whatsapp import (
     OutboundWhatsAppMessage,
+    WhatsAppImage,
     WhatsAppReplyButton,
     WhatsAppReplyButtons,
     WhatsAppText,
@@ -76,8 +77,8 @@ from app.services.intent_routing import (
 from app.services.category_creation import CategoryCreationService
 from app.services.limit import LimitService
 from app.services.llm import LLMService
-from app.services.chart_service import generate_chart, choice_patch
-from app.services.chart_request import chart_patch
+from app.services.chart_service import generate_chart, choice_patch, pending_chart_reply
+from app.services.chart_request import ChartRequest, chart_patch, single_month_period_patch
 from app.services.llm_contract import resolve_relative_date
 from app.services.onboarding import OnboardingDecision, OnboardingService
 from app.services.reminder import ReminderListResult, ReminderResult, ReminderService
@@ -2390,6 +2391,8 @@ async def _handle_movement_chart(sender_phone: str, extracted_data: dict) -> Dis
         service_invoked="movement_chart",
         intent="movement_chart",
         raw_llm_response=extracted_data,
+        event_key=reply.event_key,
+        event_variables=reply.event_variables,
     )
 
 
@@ -2665,6 +2668,22 @@ async def _normalize_extracted_message(ctx: _DispatchContext, data: dict) -> dic
         ctx.text_body, data, has_context=bool(ctx.last_chart)
     )
     if data.get("chart_followup") and ctx.last_chart:
+        if (data.get("chart_type") == "pie"
+                and data.get("chart_mode") is None
+                and ctx.last_chart.get("chart_mode") == "monthly"):
+            try:
+                previous_periods = ChartRequest.model_validate(ctx.last_chart).periods(
+                    datetime.now(ARGENTINA_TZ).date()
+                )
+            except ValueError:
+                previous_periods = []
+            if len(previous_periods) == 1:
+                _, start, end = previous_periods[0]
+                data.update(
+                    chart_mode="category",
+                    date_from=start.isoformat(),
+                    date_to=end.isoformat(),
+                )
         data = {
             **ctx.last_chart,
             **chart_patch(data),
@@ -2894,14 +2913,19 @@ async def _resolve_pending_chart(ctx: _DispatchContext) -> DispatchResult | None
     pending = ctx.pending_chart
     if _is_cancel_request(ctx.text_body):
         await ConversationService.clear_state(ctx.sender_phone)
-        return DispatchResult("Listo, cancelé el gráfico.", intent="movement_chart")
+        return DispatchResult("Listo, cancelé el gráfico.", intent="movement_chart", event_key="chart.cancelled")
     selected = choice_patch(pending, ctx.text_body)
     if selected is not None:
         return await _handle_movement_chart(
             ctx.sender_phone, {**pending.request, **selected}
         )
-    if ctx.text_body.strip().isdigit():
-        return DispatchResult(pending.question, intent="movement_chart")
+    if ctx.text_body.strip().isdigit() or normalize_text(ctx.text_body) in {"pastel", "torta", "barras", "barra"}:
+        prompt = pending_chart_reply(pending)
+        return DispatchResult(prompt.text, intent="movement_chart", event_key=prompt.event_key, event_variables=prompt.event_variables)
+    if pending.reason == "period" and pending.request.get("chart_mode", "category") in {"category", "movement_comparison"}:
+        period = single_month_period_patch(ctx.text_body, datetime.now(ARGENTINA_TZ).date())
+        if period:
+            return await _handle_movement_chart(ctx.sender_phone, {**pending.request, **period})
     return await _resolve_pending_chart_text(ctx, pending)
 
 
@@ -2919,6 +2943,14 @@ async def _resolve_pending_chart_text(
         )
     patch_data = chart_patch(data)
     if patch_data and data.get("intent") in {"movement_chart", "out_of_scope", "unknown"}:
+        if pending.reason == "period":
+            mode = pending.request.get("chart_mode", "category")
+            if mode in {"category", "movement_comparison"}:
+                patch_data = {key: value for key, value in patch_data.items() if key in {"date_from", "date_to"}}
+            elif mode == "monthly":
+                patch_data = {key: value for key, value in patch_data.items() if key in {"chart_start_month", "chart_end_month"}}
+            elif mode == "month_comparison":
+                patch_data = {key: value for key, value in patch_data.items() if key == "chart_months"}
         return await _handle_movement_chart(
             ctx.sender_phone, {**pending.request, **patch_data}
         )
@@ -3764,7 +3796,20 @@ async def _render_configured_event(
         variables=result.event_variables,
     )
     if configured is not None:
-        result.reply_message = configured
+        if (result.event_key == "chart.completed"
+                and isinstance(result.reply_message, WhatsAppImage)
+                and isinstance(configured, WhatsAppText)
+                and len(configured.body) <= 1024):
+            original = result.reply_message
+            result.reply_message = WhatsAppImage(
+                content=original.content,
+                filename=original.filename,
+                caption=configured.body,
+                mime_type=original.mime_type,
+            )
+            result.reply_text = configured.body
+        elif result.event_key != "chart.completed":
+            result.reply_message = configured
 
 
 def _set_movement_category_message(

@@ -3,8 +3,9 @@
 import calendar
 import re
 import unicodedata
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
@@ -22,6 +23,10 @@ MONTH_NAMES = (
     "Oct",
     "Nov",
     "Dic",
+)
+FULL_MONTH_NAMES = (
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
 )
 
 
@@ -106,7 +111,7 @@ class ChartRequest(BaseModel):
         else:
             start, end = self.date_from, self.date_to
             if start is None and end is None:
-                start, end = today.replace(day=1), month_end(today)
+                start, end = today.replace(day=1), today
             if start is None or end is None or start > end:
                 raise ValueError(
                     "No pude determinar el período completo. Indicá desde qué fecha y hasta qué fecha."
@@ -127,6 +132,27 @@ def chart_patch(data: dict) -> dict:
     return {key: data[key] for key in CHART_FIELDS if data.get(key) is not None}
 
 
+def single_month_period_patch(text: str, today: date) -> dict:
+    """Resolve an unambiguous named month without asking the LLM for two dates."""
+    value = normalized(text)
+    if re.search(r"\b(desde|hasta|compar\w*|evolucion|mensual)\b", value):
+        return {}
+    matches = list(re.finditer(r"\b(" + "|".join(FULL_MONTH_NAMES) + r")\b", value))
+    if len(matches) != 1:
+        return {}
+    numbers = re.findall(r"\b\d+\b", value)
+    if any(len(number) != 4 for number in numbers) or len(numbers) > 1:
+        return {}
+    year = int(numbers[0]) if numbers else today.year
+    month = FULL_MONTH_NAMES.index(matches[0].group(1)) + 1
+    try:
+        start = date(year, month, 1)
+    except ValueError:
+        return {}
+    end = min(month_end(start), today) if start <= today else month_end(start)
+    return {"date_from": start.isoformat(), "date_to": end.isoformat()}
+
+
 def is_chart_followup(text: str) -> bool:
     value = normalized(text)
     if re.search(
@@ -142,9 +168,12 @@ def is_chart_followup(text: str) -> bool:
     )
 
 
-def normalize_chart(text: str, data: dict, *, has_context: bool = False) -> dict:
+def normalize_chart(
+    text: str, data: dict, *, has_context: bool = False, today: date | None = None
+) -> dict:
     result = dict(data)
     value = normalized(text)
+    today = today or datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).date()
     chart_word = bool(re.search(r"\b(grafico\w*|diagrama\w*)\b", value))
     pie_word = bool(re.search(r"\b(torta|pastel)\b", value))
     finance = bool(
@@ -192,6 +221,21 @@ def normalize_chart(text: str, data: dict, *, has_context: bool = False) -> dict
     result.update(
         intent="movement_chart", chart_explicit=True, chart_followup=continuation
     )
+    period = single_month_period_patch(text, today)
+    temporal_words = bool(re.search(
+        r"\b(hoy|ayer|semana|mes|enero|febrero|marzo|abril|mayo|junio|julio|agosto|"
+        r"septiembre|octubre|noviembre|diciembre|desde|hasta|entre)\b", value
+    )) or bool(re.search(r"\b\d{1,4}[/-]\d", value))
+    if period and not re.search(r"\b(mes a mes|evolucion|mensual|compar\w*)\b", value):
+        result.update(period)
+        result["chart_mode"] = "category"
+    elif not temporal_words:
+        for key in ("date_from", "date_to", "chart_start_month", "chart_end_month", "chart_months"):
+            result[key] = None
+    if continuation and not period and not re.search(r"\b(mes a mes|evolucion|mensual|compar\w*|categor\w*)\b", value):
+        result["chart_mode"] = None
+    elif not continuation and not re.search(r"\b(mes a mes|evolucion|mensual|compar\w*|categor\w*)\b", value):
+        result["chart_mode"] = "category"
     if "compar" in value and re.search(r"\b(dias?|semanas?)\b", value):
         result["chart_mode"] = "unsupported"
     if re.search(r"\b(torta|pastel|circular)\b", value):
