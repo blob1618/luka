@@ -131,4 +131,8 @@ Si Redis no responde, el test se saltea con `pytest.skip` en lugar de fallar.
 - Previsualización de gráficos: cuando el dispatcher devuelve un `WhatsAppImage`, el chat
   muestra el PNG en memoria debajo del mensaje. Es una simulación visual: no carga medios
   ni envía mensajes a Meta. Los bytes no se incluyen en las exportaciones de chat.
+- Botones de enlace: cuando el dispatcher devuelve un `WhatsAppCTAURL` (por ejemplo el acceso
+  personal al dashboard), el chat renderiza el botón con `st.link_button` debajo del texto.
+  Es una simulación visual: abrir el enlace no consume el token y no se envía nada a Meta. La URL
+  sí queda en las exportaciones de chat.
 - El entorno de testing tiene sus propios tests en `testing/tests/`. Están fuera de la suite por defecto (el `pytest.ini` de la raíz solo incluye `tests/`) y se corren dentro del entorno Docker, donde está instalado Streamlit: `python -m pytest -v testing/tests`.

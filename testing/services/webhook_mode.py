@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 import redis.asyncio as redis
 
 from app.services.dispatcher import process_incoming_message
-from app.api.whatsapp import WhatsAppImage
+from app.api.whatsapp import WhatsAppCTAURL, WhatsAppImage
 from app.services.llm import LLMService
 from app.services.conversation import (
     ConversationHistoryService,
@@ -33,6 +33,7 @@ class WebhookModeResult:
     memory: list[dict[str, str]] | None = None
     memory_ttl_seconds: int | None = None
     image_pngs: list[bytes] = field(default_factory=list)
+    cta_urls: list[tuple[str, str]] = field(default_factory=list)
 
 
 class WebhookModeService:
@@ -127,6 +128,7 @@ class WebhookModeService:
             except Exception:
                 redis_state = {"error": "Could not read Redis state"}
 
+            sent = [dispatch_result.reply_message, *dispatch_result.followup_messages]
             return WebhookModeResult(
                 reply_text=dispatch_result.reply_text,
                 raw_llm_response=dispatch_result.raw_llm_response,
@@ -140,9 +142,12 @@ class WebhookModeService:
                 memory=memory,
                 memory_ttl_seconds=memory_ttl_seconds,
                 image_pngs=[
-                    message.content for message in
-                    [dispatch_result.reply_message, *dispatch_result.followup_messages]
+                    message.content for message in sent
                     if isinstance(message, WhatsAppImage)
+                ],
+                cta_urls=[
+                    (message.display_text, message.url) for message in sent
+                    if isinstance(message, WhatsAppCTAURL)
                 ],
             )
         except Exception as exc:
@@ -160,6 +165,7 @@ class WebhookModeService:
                 memory=None,
                 memory_ttl_seconds=None,
                 image_pngs=[],
+                cta_urls=[],
             )
         finally:
             if redis_client is not None:

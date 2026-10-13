@@ -42,6 +42,27 @@ _REFERENTIAL_CHANGE = re.compile(
     r"^(?:(?:mejor\s+)?que\s+sea|en\s+vez\s+de)\b"
 )
 _EXPLICIT_CHANGE = re.compile(r"\b(?:cambia|cambialo|modifica|modificalo)\b")
+_DASHBOARD_ACCESS_STEMS = (
+    "abr", "ver", "mostr", "pas", "mand", "envi", "ped", "solicit",
+    "quer", "necesit", "entr", "ingres", "acced", "obten",
+)
+_DASHBOARD_RESOURCES = {"dashboard", "panel", "portal", "tablero"}
+_LINK_WORDS = {"acceso", "link", "enlace", "url"}
+
+
+def is_dashboard_access_candidate(text: str) -> bool:
+    """Cheap candidate check; LLM remains responsible for the final intent."""
+    words = _normalize(text).split()
+    has_access_verb = any(
+        word.startswith(stem)
+        for word in words
+        for stem in _DASHBOARD_ACCESS_STEMS
+    )
+    has_resource = any(word in _DASHBOARD_RESOURCES for word in words)
+    has_link = any(word in _LINK_WORDS for word in words)
+    return (has_resource and (has_access_verb or has_link)) or (
+        has_access_verb and has_link
+    )
 
 
 def _normalize(text: str) -> str:
@@ -129,12 +150,38 @@ _QUERY_MONTH_YEAR = re.compile(
 )
 
 
+def _query_month_range(normalized: str) -> tuple[str | None, str | None]:
+    match = _QUERY_MONTH_YEAR.search(normalized)
+    if match is None:
+        return None, None
+    month = _MONTHS[match.group(1)]
+    year = int(match.group(2))
+    if not year:
+        return None, None
+    return (
+        date(year, month, 1).isoformat(),
+        date(year, month, monthrange(year, month)[1]).isoformat(),
+    )
+
+
+def _query_result_limit(normalized: str) -> int | None:
+    match = re.search(r"\b(\d+)\s+(?:movimientos|gastos|ingresos|transacciones)\b", normalized)
+    if match is None:
+        return None
+    try:
+        return min(int(match.group(1)), 5)
+    except ValueError:
+        return None
+
+
 def normalize_movement_query_intent(
     text: str,
     extracted_data: dict,
 ) -> dict:
     """Return a corrected copy for unambiguous movement query phrases."""
     data = dict(extracted_data)
+    if text.lstrip().startswith("/"):
+        return data
     normalized = _normalize(text)
 
     # Don't override if already determined by LLM as expense with amount
@@ -149,20 +196,13 @@ def normalize_movement_query_intent(
         elif re.search(r"\bingreso(?:s)?\b", normalized):
             data["movement_type"] = "ingreso"
 
-        month_year = _QUERY_MONTH_YEAR.search(normalized)
-        if month_year:
-            month = _MONTHS[month_year.group(1)]
-            year = int(month_year.group(2))
-            if year:
-                data["date_from"] = date(year, month, 1).isoformat()
-                data["date_to"] = date(year, month, monthrange(year, month)[1]).isoformat()
-
-        m_count = re.search(r"\b(\d+)\s+(?:movimientos|gastos|ingresos|transacciones)\b", normalized)
-        if m_count:
-            try:
-                data["limit"] = min(int(m_count.group(1)), 5)
-            except ValueError:
-                pass
+        date_from, date_to = _query_month_range(normalized)
+        if date_from is not None:
+            data["date_from"] = date_from
+            data["date_to"] = date_to
+        result_limit = _query_result_limit(normalized)
+        if result_limit is not None:
+            data["limit"] = result_limit
         return data
 
     return data

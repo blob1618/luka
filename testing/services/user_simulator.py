@@ -1,5 +1,7 @@
 """Test user management for the Streamlit testing environment."""
 
+import uuid
+
 from app.models.database import (
     Categoria,
     MovimientoFinanciero,
@@ -10,6 +12,11 @@ from app.models.database import (
 
 def _test_email(phone: str) -> str:
     return f"test-{phone}@luka.test"
+
+
+def _test_auth_user_id(phone: str) -> uuid.UUID:
+    """Stable linked identity per phone, as DashboardLinkService requires one."""
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"luka-test-user:{phone}")
 
 
 def sync_test_user(session_factory, *, phone: str, name: str, registered: bool) -> None:
@@ -35,16 +42,20 @@ class UserSimulator:
                 Usuario.whatsapp_id == phone
             ).first()
             if existing:
+                if existing.auth_user_id is None:
+                    existing.auth_user_id = _test_auth_user_id(phone)
                 if existing.nombre != name:
                     existing.nombre = name
+                if session.dirty:
                     session.commit()
-                    session.refresh(existing)
+                session.refresh(existing)
                 return existing
 
             user = Usuario(
                 nombre=name,
                 email=_test_email(phone),
                 whatsapp_id=phone,
+                auth_user_id=_test_auth_user_id(phone),
             )
             session.add(user)
             session.commit()

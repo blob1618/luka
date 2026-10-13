@@ -150,6 +150,12 @@ def render_chart_preview(image_pngs: list[bytes]) -> None:
         )
 
 
+def render_cta_buttons(cta_urls: list[tuple[str, str]]) -> None:
+    """Render the URL buttons the user would tap as WhatsApp CTA."""
+    for label, url in cta_urls:
+        st.link_button(label, url)
+
+
 def _get_prompt_path(config: TestingConfig) -> str:
     """Resolve prompt path from config."""
     if config.prompt_path == "prompt.md" or config.prompt_path.startswith("prompts/"):
@@ -161,11 +167,11 @@ async def _process_message(
     text: str,
     config: TestingConfig,
     phone: str,
-) -> tuple[str, dict, list[bytes]]:
+) -> tuple[str, dict, list[bytes], list[tuple[str, str]]]:
     """
     Procesa el mensaje a través del flujo completo del dispatcher (webhook).
 
-    Returns (reply_text, debug_data, image_pngs).
+    Returns (reply_text, debug_data, image_pngs, cta_urls).
     """
     service = WebhookModeService()
     result = await service.send_message(
@@ -189,7 +195,10 @@ async def _process_message(
     image_pngs = getattr(result, "image_pngs", [])
     if not isinstance(image_pngs, list):
         image_pngs = []
-    return result.reply_text, debug_data, image_pngs
+    cta_urls = getattr(result, "cta_urls", [])
+    if not isinstance(cta_urls, list):
+        cta_urls = []
+    return result.reply_text, debug_data, image_pngs, cta_urls
 
 
 def render_chat(config: TestingConfig) -> None:
@@ -205,6 +214,9 @@ def render_chat(config: TestingConfig) -> None:
         if msg["role"] == "assistant":
             with st.chat_message("assistant", avatar=bot_avatar()):
                 render_assistant_text(msg["content"])
+                cta_urls = msg.get("cta_urls")
+                if cta_urls:
+                    render_cta_buttons(cta_urls)
                 image_pngs = msg.get("image_pngs")
                 if image_pngs:
                     render_chart_preview(image_pngs)
@@ -234,7 +246,7 @@ def render_chat(config: TestingConfig) -> None:
         # Process and add assistant response
         with st.chat_message("assistant", avatar=bot_avatar()):
             with st.spinner("Procesando..."):
-                reply_text, debug_data, image_pngs = asyncio.run(
+                reply_text, debug_data, image_pngs, cta_urls = asyncio.run(
                     _process_message(prompt, config, session.phone)
                 )
 
@@ -243,6 +255,8 @@ def render_chat(config: TestingConfig) -> None:
                 st.error(reply_text or "Error del LLM")
             else:
                 render_assistant_text(reply_text or "Sin respuesta")
+                if cta_urls:
+                    render_cta_buttons(cta_urls)
                 if image_pngs:
                     render_chart_preview(image_pngs)
 
@@ -261,6 +275,8 @@ def render_chat(config: TestingConfig) -> None:
         }
         if image_pngs:
             assistant_message["image_pngs"] = image_pngs
+        if cta_urls:
+            assistant_message["cta_urls"] = cta_urls
         session.messages.append(assistant_message)
 
     # Export buttons in sidebar

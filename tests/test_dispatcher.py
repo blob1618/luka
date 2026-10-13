@@ -3,6 +3,7 @@
 import contextlib
 import uuid
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import date
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,10 +17,19 @@ from app.api.whatsapp import WhatsAppCTAURL, WhatsAppReplyButtons
 from app.models.database import Base, LimiteCategoria, MovimientoFinanciero
 from app.services.conversation import (
     ConversationService,
+    ConversationState,
     LastRegisteredMovement,
+    PendingCompensation,
+    PendingLimit,
+    PendingLimitDelete,
+    PendingMovement,
     PendingMovementCategoryChange,
+    PendingMovementChart,
+    PendingReminder,
+    PendingSelection,
 )
 from app.services.dispatcher import (
+    DispatchResult,
     _handle_configured_action,
     process_incoming_interactive_reply,
     process_incoming_message,
@@ -30,7 +40,20 @@ from app.services.finance import (
     MovementMutationResult,
     MovementRegistrationResult,
 )
+from app.services.limit import LimitResult
 from app.services.onboarding import OnboardingDecision, OnboardingResult
+
+_REAL_PENDING_GUARDS = {
+    method: getattr(ConversationService, method)
+    for method in (
+        "is_awaiting_limit_year_confirmation",
+        "is_awaiting_limit_category_confirmation",
+        "is_awaiting_limit_data",
+        "is_awaiting_limit_delete_category",
+        "is_awaiting_limit_month_selection",
+        "is_awaiting_compensation_confirmation",
+    )
+}
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +136,17 @@ def greeting_llm_result():
         "reminder_title": None,
         "reminder_date": None,
     }
+
+
+def dashboard_llm_result(**overrides):
+    result = {
+        "intent": "dashboard_link",
+        "reply_text": "Usá este enlace: https://untrusted.example/login?token=forged",
+        "login_url": "https://untrusted.example/login?token=forged",
+        "dashboard_url": "https://untrusted.example/dashboard",
+    }
+    result.update(overrides)
+    return result
 
 
 def registered_result():
@@ -228,11 +262,11 @@ class TestOnboardingGate:
 
 
 # ---------------------------------------------------------------------------
-# /link command
+# Dashboard access intent
 # ---------------------------------------------------------------------------
 
-class TestLinkCommand:
-    """The /link command bypasses LLM entirely."""
+class TestDashboardAccessIntent:
+    """Natural dashboard requests use the secure link service."""
 
     def make_link_result(self):
         return DashboardLinkResult(
@@ -242,53 +276,93 @@ class TestLinkCommand:
         )
 
     @pytest.mark.asyncio
-    async def test_link_command_sends_dashboard_link(self):
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "quiero entrar al panel avanzado",
+            "pasame mi dashboard",
+            "mostrame mi panel",
+            "quiero acceder a mi dashboard",
+            "pasame el link del dashboard",
+        ],
+    )
+    async def test_natural_dashboard_request_uses_only_service_generated_link(self, text):
         with (
-            patch(
-                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-                return_value=known_user(),
-            ),
+            common_patches(llm=dashboard_llm_result()) as mocks,
+            patch("app.services.dispatcher.build_user_context", return_value=""),
             patch(
                 "app.services.dispatcher.DashboardLinkService.generate_or_reuse",
                 return_value=self.make_link_result(),
-            ),
+            ) as dashboard_link,
         ):
-            result = await process_incoming_message("12345", "/link")
+            result = await process_incoming_message("12345", text)
 
-        assert "dashboard" in result.reply_text.lower() or "login" in result.reply_text.lower()
+        mocks["llm"].assert_awaited_once()
+        dashboard_link.assert_called_once_with("12345")
         assert result.service_invoked == "dashboard_link"
+        assert result.intent == "dashboard_link"
         assert isinstance(result.reply_message, WhatsAppCTAURL)
         assert result.reply_message.url == self.make_link_result().login_url
         assert result.reply_message.display_text == "Abrir dashboard"
         assert "15 minutos" in result.reply_message.body
-        assert "https://" not in result.reply_message.body
+        assert "untrusted.example" not in result.reply_message.body
+        assert result.reply_text == result.reply_message.body
+        assert result.followup_messages == []
         assert await ConversationService.get_pending_conversation_flow("12345") is None
 
     @pytest.mark.asyncio
-    async def test_link_command_case_insensitive_with_spaces(self):
+    @pytest.mark.parametrize("text", ["/link", "/movimientos", "/egresos"])
+    async def test_slash_texts_no_longer_bypass_the_llm(self, text):
+        with (
+            common_patches(llm=greeting_llm_result()) as mocks,
+            patch("app.services.dispatcher.build_user_context", return_value=""),
+            patch(
+                "app.services.dispatcher.DashboardLinkService.generate_or_reuse"
+            ) as dashboard_link,
+            patch(
+                "app.services.dispatcher._handle_query_movements",
+                new_callable=AsyncMock,
+                return_value="Consulta natural.",
+            ) as query_movements,
+        ):
+            result = await process_incoming_message("12345", text)
+
+        mocks["llm"].assert_awaited_once()
+        dashboard_link.assert_not_called()
+        query_movements.assert_not_awaited()
+        assert result.intent == "greeting"
+
+    @pytest.mark.asyncio
+    async def test_dashboard_request_keeps_onboarding_gate(self):
         with (
             patch(
                 "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-                return_value=known_user(),
+                return_value=send_invitation(),
             ),
             patch(
+                "app.services.dispatcher.LLMService.process_message",
+                new_callable=AsyncMock,
+            ) as llm,
+            patch(
                 "app.services.dispatcher.DashboardLinkService.generate_or_reuse",
-                return_value=self.make_link_result(),
-            ),
+            ) as dashboard_link,
         ):
-            result = await process_incoming_message("12345", "  /link  ")
+            result = await process_incoming_message(
+                "12345", "quiero entrar al panel avanzado"
+            )
 
-        assert result.service_invoked == "dashboard_link"
+        assert result.service_invoked == "onboarding"
+        assert result.event_key == "onboarding.invitation"
+        llm.assert_not_awaited()
+        dashboard_link.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_link_does_not_block_a_following_expense(self):
+    async def test_natural_dashboard_request_does_not_block_a_following_expense(self):
         abandon = AsyncMock()
         render_event = AsyncMock(return_value=None)
         with (
-            patch(
-                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-                return_value=known_user(),
-            ),
+            common_patches(llm=dashboard_llm_result()) as mocks,
+            patch("app.services.dispatcher.build_user_context", return_value=""),
             patch(
                 "app.services.dispatcher.DashboardLinkService.generate_or_reuse",
                 return_value=self.make_link_result(),
@@ -302,10 +376,15 @@ class TestLinkCommand:
                 render_event,
             ),
         ):
-            link_result = await process_incoming_message("12345", "/link")
+            link_result = await process_incoming_message(
+                "12345", "quiero entrar al panel avanzado"
+            )
+
+        mocks["llm"].assert_awaited_once()
 
         with (
             common_patches(),
+            patch("app.services.dispatcher.build_user_context", return_value=""),
             patch(
                 "app.services.dispatcher.ConversationFlowRuntime.abandon",
                 abandon,
@@ -325,6 +404,335 @@ class TestLinkCommand:
         assert expense_result.service_invoked == "finance"
         assert expense_result.intent == "expense"
         assert abandon.await_count == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("text", "llm_data", "expected_intent", "expected_service"),
+        [
+            (
+                "¿qué es un dashboard?",
+                {"intent": "financial_education", "education_term": "dashboard"},
+                "financial_education",
+                "financial_education",
+            ),
+            (
+                "mostrame mis movimientos",
+                {"intent": "query_movements", "movement_type": None},
+                "query_movements",
+                "finance",
+            ),
+            (
+                "armame un gráfico de gastos por categoría",
+                {"intent": "movement_chart", "chart_type": "bar"},
+                "movement_chart",
+                "movement_chart",
+            ),
+        ],
+    )
+    async def test_non_access_requests_keep_their_intent(
+        self, text, llm_data, expected_intent, expected_service
+    ):
+        with (
+            common_patches(llm=llm_data),
+            patch("app.services.dispatcher.build_user_context", return_value=""),
+            patch(
+                "app.services.dispatcher.DashboardLinkService.generate_or_reuse"
+            ) as dashboard_link,
+            patch(
+                "app.services.dispatcher._handle_query_movements",
+                new_callable=AsyncMock,
+                return_value="Consulta de movimientos.",
+            ) as query_movements,
+            patch(
+                "app.services.dispatcher._handle_movement_chart",
+                new_callable=AsyncMock,
+                return_value=DispatchResult(
+                    "Gráfico enviado.",
+                    service_invoked="movement_chart",
+                    intent="movement_chart",
+                ),
+            ) as movement_chart,
+        ):
+            result = await process_incoming_message("12345", text)
+
+        dashboard_link.assert_not_called()
+        assert result.intent == expected_intent
+        assert result.service_invoked == expected_service
+        if expected_intent == "query_movements":
+            query_movements.assert_awaited_once()
+        if expected_intent == "movement_chart":
+            movement_chart.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "selection", "pending_guard"),
+    [
+        pytest.param(
+            ConversationState(
+                step="awaiting_movement_category_change",
+                pending_movement_category_change=PendingMovementCategoryChange(
+                    movement_id="movement-1"
+                ),
+            ),
+            None,
+            None,
+            id="movement-category-change",
+        ),
+        pytest.param(
+            ConversationState(
+                step="awaiting_category_confirmation",
+                pending_movement=PendingMovement(
+                    sender_phone="12345",
+                    whatsapp_message_id="wamid.pending",
+                    original_text="Pagué algo sin categoría",
+                    movement_type="egreso",
+                    amount=Decimal("5000"),
+                    currency="ARS",
+                    description="Compra",
+                    inferred_category="Viajes",
+                ),
+            ),
+            None,
+            None,
+            id="pending-movement-category",
+        ),
+        pytest.param(
+            ConversationState(
+                step="awaiting_reminder_data",
+                pending_reminder=PendingReminder(
+                    sender_phone="12345",
+                    reminder_concept="internet",
+                    reminder_day=None,
+                    reminder_amount=None,
+                ),
+            ),
+            None,
+            None,
+            id="pending-reminder",
+        ),
+        pytest.param(
+            ConversationState(
+                step="awaiting_rename",
+                pending_reminder=PendingReminder(
+                    sender_phone="12345",
+                    reminder_concept=None,
+                    reminder_day=15,
+                    reminder_amount=None,
+                ),
+            ),
+            None,
+            None,
+            id="pending-reminder-rename",
+        ),
+        pytest.param(
+            ConversationState.empty(),
+            PendingSelection(
+                intent="delete_movement",
+                entity="movement",
+                items=[
+                    {
+                        "id": "movement-1",
+                        "label": "Compra",
+                        "amount": 5000,
+                        "currency": "ARS",
+                    }
+                ],
+            ),
+            None,
+            id="pending-selection",
+        ),
+        pytest.param(
+            ConversationState(
+                step="awaiting_movement_chart_details",
+                pending_movement_chart=PendingMovementChart(
+                    sender_phone="12345",
+                    request={"movement_type": "egreso"},
+                    reason="missing_period",
+                    question="¿Qué período querés ver?",
+                ),
+            ),
+            None,
+            None,
+            id="pending-chart",
+        ),
+        pytest.param(
+            ConversationState(
+                step="awaiting_limit_data",
+                pending_limit=PendingLimit(
+                    sender_phone="12345",
+                    category=None,
+                    amount=None,
+                    month=None,
+                    year=None,
+                ),
+            ),
+            None,
+            "is_awaiting_limit_data",
+            id="pending-limit",
+        ),
+        pytest.param(
+            ConversationState(
+                step="awaiting_limit_year_confirmation",
+                pending_limit=PendingLimit(
+                    sender_phone="12345",
+                    category="Comida",
+                    amount=Decimal("40000"),
+                    month=1,
+                    year=2026,
+                ),
+            ),
+            None,
+            "is_awaiting_limit_year_confirmation",
+            id="pending-limit-year-confirmation",
+        ),
+        pytest.param(
+            ConversationState(
+                step="awaiting_limit_category_confirmation",
+                pending_limit=PendingLimit(
+                    sender_phone="12345",
+                    category="Viajes",
+                    amount=Decimal("50000"),
+                    month=9,
+                    year=2026,
+                ),
+            ),
+            None,
+            "is_awaiting_limit_category_confirmation",
+            id="pending-limit-category-confirmation",
+        ),
+        pytest.param(
+            ConversationState(
+                step="awaiting_limit_month_selection",
+                pending_limit_delete=PendingLimitDelete(
+                    sender_phone="12345",
+                    category_name="Comida",
+                    candidates=[
+                        {
+                            "id": "limit-september",
+                            "month": 9,
+                            "year": 2026,
+                            "currency": "ARS",
+                            "amount": "40000",
+                        },
+                        {
+                            "id": "limit-october",
+                            "month": 10,
+                            "year": 2026,
+                            "currency": "ARS",
+                            "amount": "40000",
+                        },
+                    ],
+                ),
+            ),
+            None,
+            "is_awaiting_limit_month_selection",
+            id="pending-limit-month-selection",
+        ),
+        pytest.param(
+            ConversationState(
+                step="awaiting_limit_delete_category",
+                pending_limit_delete=PendingLimitDelete(
+                    sender_phone="12345",
+                    category_name=None,
+                ),
+            ),
+            None,
+            "is_awaiting_limit_delete_category",
+            id="pending-limit-delete-category",
+        ),
+        pytest.param(
+            ConversationState(
+                step="awaiting_compensation_confirmation",
+                pending_compensation=PendingCompensation(
+                    sender_phone="12345",
+                    proposal={"target": "Comida"},
+                ),
+            ),
+            None,
+            "is_awaiting_compensation_confirmation",
+            id="pending-compensation",
+        ),
+    ],
+)
+async def test_dashboard_request_preempts_pending_conversation_state(
+    state, selection, pending_guard, monkeypatch
+):
+    phone = "12345"
+    expected_state = deepcopy(state.to_dict())
+    expected_selection = deepcopy(selection)
+    await ConversationService.set_state(phone, state)
+    if selection is not None:
+        await ConversationService.set_pending_selection(phone, selection)
+    if pending_guard:
+        monkeypatch.setattr(
+            ConversationService, pending_guard, _REAL_PENDING_GUARDS[pending_guard]
+        )
+        assert await getattr(ConversationService, pending_guard)(phone)
+
+    link_result = DashboardLinkResult(
+        DashboardLinkDecision.SEND_LINK,
+        login_url="https://example.com/login?token=service-token",
+        link_ttl_minutes=15,
+    )
+    with (
+        common_patches(
+            llm=dashboard_llm_result(),
+            awaiting_rename=state.step == "awaiting_rename",
+            awaiting_reminder=state.step == "awaiting_reminder_data",
+        ) as mocks,
+        patch("app.services.dispatcher.build_user_context", return_value=""),
+        patch(
+            "app.services.dispatcher.DashboardLinkService.generate_or_reuse",
+            return_value=link_result,
+        ) as dashboard_link,
+        patch(
+            "app.services.dispatcher._apply_movement_action",
+            new_callable=AsyncMock,
+            return_value="No se modificó el movimiento.",
+        ) as movement_action,
+        patch(
+            "app.services.dispatcher.FinanceService.register_movement_from_whatsapp_text"
+        ) as register_from_text,
+        patch("app.services.dispatcher.ReminderService.create_reminder") as create_reminder,
+        patch(
+            "app.services.dispatcher.BudgetCompensationService.apply"
+        ) as apply_compensation,
+        patch(
+            "app.services.dispatcher._handle_create_limit",
+            new_callable=AsyncMock,
+            return_value=DispatchResult("Límite no modificado."),
+        ) as create_limit,
+        patch(
+            "app.services.dispatcher.LimitService.delete_limit",
+            return_value=LimitResult(status="not_found", message="No encontrado."),
+        ) as delete_limit,
+        patch(
+            "app.services.dispatcher.ConversationFlowRuntime.abandon",
+            new_callable=AsyncMock,
+        ) as abandon,
+        patch(
+            "app.services.dispatcher.ConversationFlowRuntime.render_event",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+    ):
+        result = await process_incoming_message(phone, "mostrame mi dashboard")
+
+    abandon.assert_awaited_once_with(phone)
+    assert (await ConversationService.get_state(phone)).to_dict() == expected_state
+    assert await ConversationService.get_pending_selection(phone) == expected_selection
+    mocks["llm"].assert_awaited_once()
+    dashboard_link.assert_called_once_with(phone)
+    movement_action.assert_not_awaited()
+    mocks["register"].assert_not_called()
+    register_from_text.assert_not_called()
+    create_reminder.assert_not_called()
+    apply_compensation.assert_not_called()
+    create_limit.assert_not_awaited()
+    delete_limit.assert_not_called()
+    assert result.service_invoked == "dashboard_link"
+    assert result.reply_message.url == link_result.login_url
 
 
 # ---------------------------------------------------------------------------
@@ -2131,61 +2539,65 @@ class TestUnknownIntentFallback:
 
 
 # ---------------------------------------------------------------------------
-# /link more decisions
+# Dashboard access decision outcomes
 # ---------------------------------------------------------------------------
 
-class TestLinkMoreDecisions:
+class TestDashboardAccessDecisions:
     def make_result(self, decision):
         return DashboardLinkResult(decision)
 
     @pytest.mark.asyncio
-    async def test_link_not_eligible(self):
+    async def test_natural_dashboard_request_not_eligible(self):
         with (
-            patch(
-                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-                return_value=known_user(),
-            ),
+            common_patches(llm=dashboard_llm_result()) as mocks,
+            patch("app.services.dispatcher.build_user_context", return_value=""),
             patch(
                 "app.services.dispatcher.DashboardLinkService.generate_or_reuse",
                 return_value=self.make_result(DashboardLinkDecision.NOT_ELIGIBLE),
-            ),
+            ) as dashboard_link,
         ):
-            result = await process_incoming_message("12345", "/link")
+            result = await process_incoming_message(
+                "12345", "quiero entrar al panel avanzado"
+            )
 
+        mocks["llm"].assert_awaited_once()
+        dashboard_link.assert_called_once_with("12345")
         assert result.service_invoked == "dashboard_link"
         assert "cuenta vinculada" in result.reply_text
 
     @pytest.mark.asyncio
-    async def test_link_error(self):
+    async def test_natural_dashboard_request_link_error(self):
         with (
-            patch(
-                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-                return_value=known_user(),
-            ),
+            common_patches(llm=dashboard_llm_result()) as mocks,
+            patch("app.services.dispatcher.build_user_context", return_value=""),
             patch(
                 "app.services.dispatcher.DashboardLinkService.generate_or_reuse",
                 return_value=self.make_result(DashboardLinkDecision.ERROR),
-            ),
+            ) as dashboard_link,
         ):
-            result = await process_incoming_message("12345", "/link")
+            result = await process_incoming_message("12345", "pasame mi dashboard")
 
+        mocks["llm"].assert_awaited_once()
+        dashboard_link.assert_called_once_with("12345")
         assert result.service_invoked == "dashboard_link"
         assert "enlace" in result.reply_text.lower()
 
     @pytest.mark.asyncio
-    async def test_link_suppress_response(self):
+    async def test_natural_dashboard_request_suppressed_response(self):
         with (
-            patch(
-                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-                return_value=known_user(),
-            ),
+            common_patches(llm=dashboard_llm_result()) as mocks,
+            patch("app.services.dispatcher.build_user_context", return_value=""),
             patch(
                 "app.services.dispatcher.DashboardLinkService.generate_or_reuse",
                 return_value=self.make_result(DashboardLinkDecision.SUPPRESS_RESPONSE),
-            ),
+            ) as dashboard_link,
         ):
-            result = await process_incoming_message("12345", "/link")
+            result = await process_incoming_message(
+                "12345", "quiero acceder a mi dashboard"
+            )
 
+        mocks["llm"].assert_awaited_once()
+        dashboard_link.assert_called_once_with("12345")
         assert result.service_invoked == "dashboard_link"
         assert result.reply_text == ""
 
