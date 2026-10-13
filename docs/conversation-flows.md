@@ -206,6 +206,12 @@ backend; no se admiten URLs libres dentro de textos ni acciones.
 
 ## Respuestas interactivas
 
+### Gráficos de movimientos: un recorrido administrable
+
+En **Administración de flujos → Crear flujo**, elegí **Gráficos de movimientos · recorrido completo** (`chart.journey`). El editor muestra en un solo mapa las etapas para pedir un período, elegir barras o pastel, elegir moneda o categoría, corregir filtros y responder con el gráfico, sin datos, error o cancelación. Podés editar los textos y los ejemplos de respuesta, guardar un borrador y publicar el recorrido. La etapa **Gráfico enviado** edita el texto que acompaña a la imagen.
+
+Las opciones se generan según los datos reales del pedido y se insertan con `{options}`. Ese marcador es obligatorio en las etapas de elección. La descripción de la imagen conserva `{caption}` con el período, moneda y total calculados. Luka conserva la interpretación de fechas, la selección, la consulta de movimientos y la generación de la imagen. Los ejemplos del mapa ilustran respuestas posibles; no cambian las reglas de interpretación. Si no hay una versión publicada, se usan los mensajes predeterminados.
+
 ### Creación y edición de límites: un único recorrido
 
 Elegí **Crear y editar límites · recorrido completo** (`limit.creation`) al crear

@@ -29,6 +29,8 @@ TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 class ChartReply:
     text: str
     images: list[WhatsAppImage] = field(default_factory=list)
+    event_key: str | None = None
+    event_variables: dict[str, str] = field(default_factory=dict)
 
 
 def prepare_charts(request, result, periods, today) -> list[MovementChartSpec]:
@@ -171,23 +173,51 @@ async def ask(phone, request, question, *, reason, options=None):
         options=options or [],
     )
     await ConversationService.set_pending_movement_chart(phone, pending)
-    return ChartReply(question)
+    return pending_chart_reply(pending)
+
+
+def pending_chart_reply(pending: PendingMovementChart) -> ChartReply:
+    question = pending.question
+    options = pending.options
+    event = {
+        "period": "chart.period_required",
+        "distribution": "chart.distribution_choice",
+        "currency": "chart.currency_choice",
+        "categories": "chart.category_choice",
+        "filters": "chart.invalid_filters",
+    }.get(pending.reason)
+    variables = {"question": question}
+    if options:
+        variables["options"] = "\n".join(
+            f"{index}. {option['label']}" for index, option in enumerate(options, 1)
+        )
+        variables["question"] = question.split("\n1.", 1)[0]
+    return ChartReply(question, event_key=event, event_variables=variables)
 
 
 def choice_patch(pending, text):
     value = normalized(text).strip(" .")
     for index, option in enumerate(pending.options, 1):
-        if value in (str(index), f"opcion {index}", normalized(option["label"])):
+        label = normalized(option["label"])
+        if value in (str(index), f"opcion {index}", label, f"{index}. {label}", f"{index} {label}"):
             return option["patch"]
+    matches = [option for option in pending.options if value and label_word_match(value, option["label"])]
+    if len(matches) == 1:
+        return matches[0]["patch"]
     return None
+
+
+def label_word_match(value: str, label: str) -> bool:
+    """Accept a short choice only when it uniquely names an offered option."""
+    words = normalized(label).split()
+    return value in words and value in {"pastel", "barras", "barra"}
 
 
 async def generate_chart(phone: str, data: dict, *, today=None) -> ChartReply:
     today = today or datetime.now(TZ).date()
     if data.get("chart_mode") == "unsupported":
-        return ChartReply(
-            "Puedo comparar meses completos, no días o semanas. Indicá dos meses y sus años."
-        )
+        message = "Puedo comparar meses completos, no días o semanas. Indicá dos meses y sus años."
+        return ChartReply(message, event_key="chart.failed", event_variables={"message": message})
     try:
         request = ChartRequest.model_validate(chart_patch(data))
     except ValidationError:
@@ -284,7 +314,7 @@ async def generate_chart(phone: str, data: dict, *, today=None) -> ChartReply:
                 phone, payload, question, reason="categories", options=options
             )
         if result.status != "ok":
-            return ChartReply(result.message)
+            return ChartReply(result.message, event_key="chart.failed", event_variables={"message": result.message})
         if not result.rows or not any(row.amount > 0 for row in result.rows):
             kind = (
                 "ingresos"
@@ -294,7 +324,8 @@ async def generate_chart(phone: str, data: dict, *, today=None) -> ChartReply:
                 else "movimientos"
             )
             await ConversationService.clear_state(phone)
-            return ChartReply(f"No encontré {kind} para esos filtros y período.")
+            message = f"No encontré {kind} para esos filtros y período."
+            return ChartReply(message, event_key="chart.no_data", event_variables={"message": message})
         payload["chart_currency"] = result.currency
         specs = prepare_charts(request, result, periods, today)
         images = []
@@ -312,10 +343,9 @@ async def generate_chart(phone: str, data: dict, *, today=None) -> ChartReply:
             images.append(WhatsAppImage(content=png, caption=caption[:1024]))
         await ConversationService.clear_state(phone)
         await ConversationService.set_last_chart(phone, payload)
-        return ChartReply(images[0].caption, images)
+        return ChartReply(images[0].caption, images, "chart.completed", {"caption": images[0].caption})
     except Exception:
         logger.warning("chart_generation_failed", exc_info=False)
         await ConversationService.clear_state(phone)
-        return ChartReply(
-            "No pude generar el gráfico. Podés volver a pedirlo en unos minutos."
-        )
+        message = "No pude generar el gráfico. Podés volver a pedirlo en unos minutos."
+        return ChartReply(message, event_key="chart.failed", event_variables={"message": message})
