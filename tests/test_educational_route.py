@@ -12,7 +12,13 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.services.monthly_balance as monthly_balance_module
-from app.models.database import Base, MovimientoFinanciero, Usuario
+from app.models.database import (
+    Base,
+    Categoria,
+    LimiteCategoria,
+    MovimientoFinanciero,
+    Usuario,
+)
 from app.services.conversation import (
     ConversationService,
     PendingConversationFlow,
@@ -361,12 +367,23 @@ def _add_user(factory, phone):
         return user.id
 
 
-def _add_movement(factory, user_id, when, *, tipo="egreso", cantidad="100.00", moneda="ARS"):
+def _add_movement(
+    factory,
+    user_id,
+    when,
+    *,
+    tipo="egreso",
+    cantidad="100.00",
+    moneda="ARS",
+    anulado_en=None,
+    categoria_id=None,
+):
     with factory() as session:
         session.add(
             MovimientoFinanciero(
                 id=uuid.uuid4(),
                 usuario_id=user_id,
+                categoria_id=categoria_id,
                 tipo=tipo,
                 cantidad=Decimal(cantidad),
                 moneda=moneda,
@@ -374,6 +391,45 @@ def _add_movement(factory, user_id, when, *, tipo="egreso", cantidad="100.00", m
                 fecha_movimiento=when,
                 origen="whatsapp_text",
                 whatsapp_message_id=f"wamid.{uuid.uuid4()}",
+                anulado_en=anulado_en,
+            )
+        )
+        session.commit()
+
+
+def _add_category(factory, user_id, nombre="Educación"):
+    with factory() as session:
+        categoria = Categoria(
+            id=uuid.uuid4(),
+            usuario_id=user_id,
+            nombre=nombre,
+            es_default=False,
+            esta_eliminado=False,
+        )
+        session.add(categoria)
+        session.commit()
+        return categoria.id
+
+
+def _add_limit(
+    factory,
+    user_id,
+    categoria_id,
+    *,
+    cantidad_max="45000.00",
+    inicio=date(2026, 9, 1),
+    fin=date(2026, 9, 30),
+):
+    with factory() as session:
+        session.add(
+            LimiteCategoria(
+                id=uuid.uuid4(),
+                usuario_id=user_id,
+                categoria_id=categoria_id,
+                cantidad_max=Decimal(cantidad_max),
+                moneda="ARS",
+                inicio_periodo=inicio,
+                fin_periodo=fin,
             )
         )
         session.commit()
@@ -427,15 +483,38 @@ def _movement_snapshot(factory):
         return [
             (
                 str(row.id),
+                str(row.usuario_id),
+                str(row.categoria_id) if row.categoria_id is not None else None,
                 row.tipo,
                 str(row.cantidad),
                 row.moneda,
                 row.descripcion,
                 row.fecha_movimiento,
-                row.anulado_en,
+                row.origen,
+                row.whatsapp_message_id,
+                row.creado_en,
                 row.actualizado_en,
+                row.anulado_en,
             )
             for row in session.query(MovimientoFinanciero).order_by(MovimientoFinanciero.id).all()
+        ]
+
+
+def _limit_snapshot(factory):
+    with factory() as session:
+        return [
+            (
+                str(row.id),
+                str(row.usuario_id),
+                str(row.categoria_id),
+                str(row.cantidad_max),
+                row.moneda,
+                row.inicio_periodo,
+                row.fin_periodo,
+                row.creado_en,
+                row.actualizado_en,
+            )
+            for row in session.query(LimiteCategoria).order_by(LimiteCategoria.id).all()
         ]
 
 
@@ -460,6 +539,86 @@ async def test_balance_request_is_read_only_and_never_calls_llm(balance_db):
     assert "diferencia 600,00 (sobrante positivo registrado)" in result.reply_text
     assert "no demuestran que el dinero esté disponible" in result.reply_text
     assert "puedo ampliar con orientación general" in result.reply_text
+
+
+@pytest.mark.asyncio
+async def test_acceptance_positive_surplus_is_read_only_and_isolated(balance_db):
+    """STK-244: ARS 100.000 income minus ARS 30.000 expense yields ARS 70.000.
+
+    The synthetic dataset also carries noise that must never reach the answer:
+    an annulled row, a row outside the closed period, a movement owned by
+    another WhatsApp account and a category/limit row. The fixed ``balance_db``
+    date makes the closed period deterministic (September 2026, Argentina time).
+    """
+    user_a = _add_user(balance_db, PHONE_A)
+    user_b = _add_user(balance_db, PHONE_B)
+    category_id = _add_category(balance_db, user_a)
+    _add_limit(balance_db, user_a, category_id)
+
+    _add_movement(
+        balance_db, user_a, date(2026, 9, 5), tipo="ingreso", cantidad="100000.00"
+    )
+    _add_movement(
+        balance_db,
+        user_a,
+        date(2026, 9, 10),
+        tipo="egreso",
+        cantidad="30000.00",
+        categoria_id=category_id,
+    )
+    _add_movement(
+        balance_db,
+        user_a,
+        date(2026, 9, 12),
+        tipo="ingreso",
+        cantidad="999999.00",
+        categoria_id=category_id,
+        anulado_en=datetime(2026, 9, 13, 12, 0, tzinfo=ARGENTINA_TZ),
+    )
+    _add_movement(
+        balance_db, user_a, date(2026, 8, 5), tipo="ingreso", cantidad="555555.00"
+    )
+    _add_movement(
+        balance_db, user_b, date(2026, 9, 15), tipo="ingreso", cantidad="888888.00"
+    )
+    movements_before = _movement_snapshot(balance_db)
+    limits_before = _limit_snapshot(balance_db)
+
+    with _route_patches() as llm, _write_guards() as guards:
+        result = await process_incoming_message(PHONE_A, "¿Cuánto me sobró el mes pasado?")
+
+    assert result.intent == "educational_route"
+    assert result.service_invoked == "educational_route"
+    assert result.raw_llm_response is None
+    llm.assert_not_awaited()
+    for guard in guards:
+        guard.assert_not_called()
+    assert _movement_snapshot(balance_db) == movements_before
+    assert _limit_snapshot(balance_db) == limits_before
+
+    reply = result.reply_text
+    assert "01/09/2026 al 30/09/2026" in reply
+    assert "ingresos 100.000,00, egresos 30.000,00" in reply
+    assert "diferencia 70.000,00 (sobrante positivo registrado)" in reply
+    assert "Hay un sobrante positivo registrado" in reply
+    assert "pueden faltar movimientos no cargados o pagos futuros" in reply
+    assert "no demuestran que el dinero esté disponible" in reply
+
+    # The annulled row, the out-of-period row, the foreign account and the
+    # budget limit leave no trace in the reply.
+    for leaked in ("999.999", "555.555", "888.888", "45.000"):
+        assert leaked not in reply
+
+
+def test_current_schema_defines_no_wallet_entity():
+    """The current schema has no wallet/billetera table to read or write."""
+    wallet_tables = {
+        str(name).lower()
+        for name in Base.metadata.tables
+        if "billetera" in str(name).lower() or "wallet" in str(name).lower()
+    }
+
+    assert wallet_tables == set()
 
 
 @pytest.mark.asyncio
