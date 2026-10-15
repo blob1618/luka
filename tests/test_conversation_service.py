@@ -777,12 +777,20 @@ async def test_concurrent_tasks_and_different_users_isolated(monkeypatch):
     state1 = ConversationState(step="awaiting_reminder_data")
     state2 = ConversationState(step="awaiting_category_confirmation")
 
-    barrier = asyncio.Barrier(2)
+    both_states_written = asyncio.Event()
+    writers_ready = 0
+
+    async def wait_for_both_writers():
+        nonlocal writers_ready
+        writers_ready += 1
+        if writers_ready == 2:
+            both_states_written.set()
+        await both_states_written.wait()
 
     async def task_1():
         # Setea user1
         await ConversationService.set_state(user1, state1)
-        await barrier.wait()
+        await wait_for_both_writers()
         # Lee user1 de su caché
         u1_state = await ConversationService.get_state(user1)
         # Lee user2 (miss en su caché local -> consulta Redis)
@@ -792,7 +800,7 @@ async def test_concurrent_tasks_and_different_users_isolated(monkeypatch):
     async def task_2():
         # Setea user2
         await ConversationService.set_state(user2, state2)
-        await barrier.wait()
+        await wait_for_both_writers()
         # Lee user2 de su caché
         u2_state = await ConversationService.get_state(user2)
         # Lee user1 (miss en su caché local -> consulta Redis)

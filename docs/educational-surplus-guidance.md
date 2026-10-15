@@ -1,5 +1,8 @@
 # Orientación educativa sobre excedentes
 
+La cobertura y el resultado de cada criterio de aceptación de STK-52 se registran
+en la [bitácora de pruebas de HU-EDU-02](testing/STK-52-HU-EDU-02.md).
+
 Luka puede responder «¿cuánto me sobró el mes pasado?» con una cifra basada
 únicamente en los movimientos ya registrados del usuario, y ofrecer después
 orientación educativa general sobre ahorro e inversión. La consulta es de solo
