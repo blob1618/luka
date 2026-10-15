@@ -59,11 +59,17 @@ _RENAME_CATEGORY = re.compile(
     r"(?P<target>[\wáéíóúüñ][\wáéíóúüñ -]{0,99})\s*[.!]?\s*$",
     re.IGNORECASE,
 )
+_RENAME_CATEGORY_BY_CHANGE = re.compile(
+    r"^\s*(?:quiero\s+)?(?:cambi(?:ar|a|á))\s+la\s+categor[ií]a\s+"
+    r"(?P<source>[\wáéíóúüñ][\wáéíóúüñ -]{0,99}?)\s+por\s+"
+    r"(?P<target>[\wáéíóúüñ][\wáéíóúüñ -]{0,99})\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
 
 
 def normalize_category_management_intent(text: str, data: dict) -> dict:
     """Route explicit category commands even when the LLM calls them confirmations."""
-    rename = _RENAME_CATEGORY.fullmatch(text)
+    rename = _RENAME_CATEGORY.fullmatch(text) or _RENAME_CATEGORY_BY_CHANGE.fullmatch(text)
     if rename is not None:
         return {
             **data,
@@ -178,6 +184,13 @@ _QUERY_MOVEMENTS = re.compile(
     r"?\s*(?:mis\s+|los\s+)?(?:ultimos\s+)?(?:\d+\s+)?(?:movimientos|gastos|ingresos|transacciones)"
     r"(?:\s+(?:de|del|en)\s+.*)?$"
 )
+_CATEGORY_EXPENSE_QUERY = re.compile(
+    r"^\s*(?:quiero\s+)?(?:ver|mostr(?:a|á)(?:me)?|muestra(?:me)?)\s+"
+    r"(?:(?:mis|los)\s+)?gastos\s+"
+    r"(?:referidos?\s+a|(?:de|en)\s+la\s+categor[ií]a)\s+"
+    r"(?P<category>[^?.!]{1,100}?)\s*[?.!]?\s*$",
+    re.IGNORECASE,
+)
 _QUERY_MONTH_YEAR = re.compile(
     r"\b(?:de|del|en)\s+(" + "|".join(_MONTHS) + r")\s+de\s+(\d{4})$"
 )
@@ -219,6 +232,14 @@ def normalize_movement_query_intent(
 
     # Don't override if already determined by LLM as expense with amount
     if data.get("intent") == "expense" and data.get("amount") is not None:
+        return data
+
+    category_query = _CATEGORY_EXPENSE_QUERY.fullmatch(text)
+    if category_query:
+        data["intent"] = "query_movements"
+        data["movement_type"] = "egreso"
+        data["category"] = category_query.group("category").strip()
+        data["reply_text"] = "Consultando tus gastos."
         return data
 
     if _QUERY_MOVEMENTS.fullmatch(normalized):

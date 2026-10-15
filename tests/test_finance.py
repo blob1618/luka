@@ -573,6 +573,46 @@ def test_rename_category_preserves_movement_and_rejects_cross_user_or_duplicate(
     assert movement.moneda == "ARS"
 
 
+def test_category_suggestion_is_owned_active_and_rename_checks_identity(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    other = create_user(session, "5492222222222")
+    category = create_category(session, user.id, nombre="Jardinería")
+    create_category(session, other.id, nombre="Jardinerio")
+    create_category(session, user.id, nombre="Jardines", esta_eliminado=True)
+
+    suggestion = FinanceService.suggest_category(user.id, "jardineria")
+    assert suggestion.status == "suggested"
+    assert suggestion.category_name == "Jardinería"
+    assert suggestion.category_id == str(category.id)
+    assert FinanceService.suggest_category(other.id, "Jardines").status == "not_found"
+    assert FinanceService.rename_category(
+        user.id, "Jardinería", "Plantas", str(uuid.uuid4())
+    ).status == "not_found"
+    session.refresh(category)
+    assert category.nombre == "Jardinería"
+
+
+def test_movement_query_resolves_unique_misspelled_category_without_modifying_it(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    category = create_category(session, user.id, nombre="Jardinería")
+    session.add(MovimientoFinanciero(
+        usuario_id=user.id, categoria_id=category.id, tipo="egreso",
+        cantidad=2500, moneda="ARS", descripcion="macetas",
+    ))
+    session.commit()
+
+    result = FinanceService.query_movements(
+        user.id, movement_type="egreso", category_name="jardinera"
+    )
+    assert result.status == "ok"
+    assert result.total_found == 1
+    assert result.resolved_category_name == "Jardinería"
+    session.refresh(category)
+    assert category.nombre == "Jardinería"
+
+
 def test_delete_category_existing(db_context):
     session = db_context["session"]
     user = create_user(session)

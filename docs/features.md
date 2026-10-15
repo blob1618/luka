@@ -78,6 +78,9 @@ procesa en silencio para no repetir una confirmación ya enviada.
   multi-turno y, al aprobarse, la categoría se crea y el movimiento se registra.
 - El usuario puede crear una categoría por pedido directo y renombrar una categoría
   activa propia. El renombrado conserva los movimientos y límites asociados.
+- Si el nombre de origen de un renombrado no coincide, Luka propone una única categoría
+  activa similar y espera un «sí» antes de modificarla. La propuesta vence con el
+  estado de conversación; «no» cancela sin cambios.
 - El listado de categorías muestra las activas con totales de ingresos y egresos
   (excluyendo anulados).
 - Eliminar una categoría es lógico: desvincula sus movimientos (`categoria_id` nulo) y
@@ -134,6 +137,9 @@ procesa en silencio para no repetir una confirmación ya enviada.
 
 - `query_movements` filtra por tipo (`ingreso`/`egreso`), categoría y rango de fechas,
   con orden determinista por fecha y antigüedad de carga.
+- En consultas de solo lectura, una variante de acento o un error de escritura con
+  una única coincidencia clara se resuelve al nombre real de la categoría. Si hay
+  varias coincidencias posibles, no se elige una por aproximación.
 - Muestra como máximo cinco movimientos y aclara cuántos hay en total cuando hay más.
   Los movimientos anulados no aparecen.
 - Si hay más resultados que los mostrados y la consulta tiene filtro de fechas, se
