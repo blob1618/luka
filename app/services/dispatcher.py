@@ -68,6 +68,7 @@ from app.services.finance import (
 )
 from app.services.intent_routing import (
     is_dashboard_access_candidate,
+    normalize_category_management_intent,
     normalize_limit_intent,
     normalize_movement_query_intent,
     normalize_movement_chart_intent,
@@ -2754,7 +2755,8 @@ async def _normalize_extracted_message(ctx: _DispatchContext, data: dict) -> dic
             "chart_explicit": True,
             "error": data.get("error"),
         }
-    return normalize_movement_query_intent(ctx.text_body, data)
+    data = normalize_movement_query_intent(ctx.text_body, data)
+    return normalize_category_management_intent(ctx.text_body, data)
 
 
 def _is_new_movement_request(text_body: str) -> bool:

@@ -9,9 +9,11 @@ from app.services.dispatcher import (
     _DispatchContext,
     _handle_finance_intent,
     _multiop_registration_reply,
+    _normalize_extracted_message,
     _register_and_reply_with_hint,
 )
 from app.services.finance import CategoryResult, MovementRegistrationResult
+from app.services.intent_routing import normalize_category_management_intent
 
 
 @pytest.mark.asyncio
@@ -84,3 +86,36 @@ async def test_explicit_create_and_rename_category_intents_use_owned_finance_ser
     assert "Plantas" in renamed.reply_text
     create.assert_called_once_with(user_id, "Jardinería")
     rename.assert_called_once_with(user_id, "Jardinería", "Plantas")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "expected_intent", "expected_category", "expected_target"),
+    [
+        ("Creá la categoría Jardinería", "create_category", "Jardinería", None),
+        ("Renombrá la categoría Jardinería a Plantas", "rename_category", "Jardinería", "Plantas"),
+    ],
+)
+async def test_chat_category_commands_override_false_confirmation(
+    message, expected_intent, expected_category, expected_target,
+):
+    ctx = _DispatchContext(
+        sender_phone="5491111111111", text_body=message,
+        whatsapp_message_id="wamid.category", conversation_history=None,
+    )
+    data = await _normalize_extracted_message(
+        ctx, {"intent": "confirm_category", "category": None},
+    )
+
+    assert data["intent"] == expected_intent
+    assert data["category"] == expected_category
+    if expected_target is not None:
+        assert data["changes"]["category"] == expected_target
+
+
+def test_category_management_route_does_not_replace_movement_reclassification():
+    movement = {"intent": "update_movement", "changes": {"category": "Transporte"}}
+
+    assert normalize_category_management_intent(
+        "Cambiá la categoría del último gasto a Transporte", movement,
+    ) is movement
