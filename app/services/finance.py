@@ -656,6 +656,37 @@ class FinanceService:
             session.close()
 
     @classmethod
+    def rename_category(
+        cls, user_id: Any, category_name: str, new_name: str
+    ) -> CategoryResult:
+        """Rename an active category owned by the user without changing its links."""
+        source = cls._normalize_category_name(category_name)
+        target = cls._normalize_category_name(new_name)
+        if not source or not target:
+            return CategoryResult(status="error", message="category names are required")
+
+        session = SessionLocal()
+        try:
+            category = cls._find_category(session, user_id, source)
+            if category is None:
+                return CategoryResult(status="not_found", message="category not found")
+            existing = cls._find_category(session, user_id, target)
+            if existing is not None and existing.id != category.id:
+                return CategoryResult(status="already_exists", message="target category exists")
+            category.nombre = new_name.strip()
+            session.commit()
+            return CategoryResult(
+                status="renamed", message="category renamed",
+                category_id=str(category.id), category_name=category.nombre,
+            )
+        except Exception as exc:
+            session.rollback()
+            print(f"[FINANCE] rename_category error: {type(exc).__name__}: {exc}")
+            return CategoryResult(status="error", message="could not rename category")
+        finally:
+            session.close()
+
+    @classmethod
     def delete_category(cls, user_id: Any, category_name: str) -> CategoryResult:
         """
         Elimina (soft-delete) una categoría por nombre (case-insensitive).
@@ -830,9 +861,9 @@ class FinanceService:
                     category_name, cls._active_user_category_names(session, user.id)
                 )
                 if (
-                    resolved is None
-                    and create_category_if_missing
+                    create_category_if_missing
                     and not category_creation_confirmed
+                    and cls._find_category(session, user.id, resolved or category_name) is None
                 ):
                     return cls._result(
                         "needs_category_confirmation",
@@ -851,7 +882,7 @@ class FinanceService:
                     categoria_id = category.id
                 elif create_category_if_missing:
                     cat_result = cls.create_category(user.id, category_name)
-                    if cat_result.status == "created":
+                    if cat_result.status in {"created", "already_exists"}:
                         # Reabrir sesión (create_category cierra su propia sesión)
                         session.close()
                         session = SessionLocal()
@@ -869,6 +900,10 @@ class FinanceService:
                         )
                         if categoria:
                             categoria_id = categoria.id
+                    if categoria_id is None:
+                        return cls._result("persistence_error", "category could not be attached")
+                else:
+                    return cls._result("category_not_found", "category is not active")
 
             movement = MovimientoFinanciero(
                 usuario_id=user.id,

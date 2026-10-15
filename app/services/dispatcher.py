@@ -75,6 +75,7 @@ from app.services.intent_routing import (
     references_recent_limit,
 )
 from app.services.category_creation import CategoryCreationService
+from app.services.categories_taxonomy import category_explicitly_named_in_text
 from app.services.limit import LimitService
 from app.services.llm import LLMService
 from app.services.chart_service import generate_chart, choice_patch, pending_chart_reply
@@ -228,6 +229,9 @@ def _registration_reply(
     if result.status == "persistence_error":
         return "Hubo un problema registrando el movimiento. Por favor, intentá nuevamente en unos minutos."
 
+    if result.status == "category_not_found":
+        return "La categoría ya no está disponible. No registré el movimiento; intentá de nuevo."
+
     if result.status == "not_a_movement":
         return (
             "No identifiqué un movimiento financiero para registrar. "
@@ -263,8 +267,17 @@ def _multiop_registration_reply(
     if registered == total:
         if total == 1:
             single = (movements or [extracted_data])[0]
-            return f"{_registered_reply(single)}\n{_category_hint_reply()}"
-        return f"✅ Registré los {total} movimientos."
+            category = results[0].category_name
+            category_line = (
+                f"📁 Categoría: {category}." if category else
+                "📁 Quedó sin categoría. Podés crear una y después asignársela."
+            )
+            return f"{_registered_reply(single)}\n{category_line}\n{_category_hint_reply()}"
+        uncategorized = sum(1 for result in results if not result.category_name)
+        reply = f"✅ Registré los {total} movimientos."
+        if uncategorized:
+            reply += f" {uncategorized} quedaron sin categoría."
+        return reply
 
     if registered == 0:
         if total == 1:
@@ -463,6 +476,13 @@ async def _apply_movement_action(
                 intent, result.status)
     error_reply = _movement_mutation_error_reply(result.status)
     if error_reply is not None:
+        if result.status == "category_not_found" and changes.get("category"):
+            return (
+                f"No tenés la categoría {changes['category']}. "
+                f"Decime 'Creá la categoría {changes['category']}' y después "
+                "volvé a pedirme este cambio. "
+                "El movimiento sigue con su categoría anterior."
+            )
         return error_reply
     before = result.before
     if result.status == "updated":
@@ -941,7 +961,7 @@ def _format_categories_list(categories_result) -> str:
     """Formatea la lista de categorías con totales para enviar por WhatsApp."""
     cats = categories_result.categories
     if not cats:
-        return "No tenés categorías todavía. Cuando registres movimientos se irán creando."
+        return "No tenés categorías todavía. Para crear una, decime 'Creá la categoría ...'."
 
     lines = ["📊 *Tus categorías:*"]
     for c in cats:
@@ -979,6 +999,40 @@ async def _handle_delete_category(sender_phone: str, extracted_data: dict) -> st
         return _category_not_found_reply(category_name)
     else:
         return "Hubo un problema eliminando la categoría. Intentá de nuevo."
+
+
+async def _handle_create_category(sender_phone: str, extracted_data: dict) -> str:
+    category_name = str(extracted_data.get("category") or "").strip()
+    if not category_name:
+        return "Decime el nombre con 'Creá la categoría ...'."
+    user_id = await asyncio.to_thread(_user_id_by_phone, sender_phone)
+    if user_id is None:
+        return "No encontré tu cuenta."
+    result = await asyncio.to_thread(FinanceService.create_category, user_id, category_name)
+    if result.status == "created":
+        return f"✅ Creé la categoría {result.category_name}."
+    if result.status == "already_exists":
+        return f"La categoría {result.category_name} ya existe."
+    return "No pude crear la categoría. Intentá de nuevo."
+
+
+async def _handle_rename_category(sender_phone: str, extracted_data: dict) -> str:
+    source = str(extracted_data.get("category") or "").strip()
+    changes = extracted_data.get("changes") or {}
+    target = str(changes.get("category") or "").strip() if isinstance(changes, dict) else ""
+    if not source or not target:
+        return "Decime el nombre actual y el nuevo de la categoría."
+    user_id = await asyncio.to_thread(_user_id_by_phone, sender_phone)
+    if user_id is None:
+        return "No encontré tu cuenta."
+    result = await asyncio.to_thread(FinanceService.rename_category, user_id, source, target)
+    if result.status == "renamed":
+        return f"✅ Renombré la categoría {source} a {result.category_name}."
+    if result.status == "not_found":
+        return _category_not_found_reply(source)
+    if result.status == "already_exists":
+        return f"Ya tenés una categoría {target}. Elegí otro nombre."
+    return "No pude renombrar la categoría. Intentá de nuevo."
 
 
 async def _handle_list_categories(sender_phone: str) -> str:
@@ -1090,6 +1144,14 @@ async def _register_and_reply_with_hint(
     """
     movements = extracted_data.get("movements") or [extracted_data]
 
+    if len(movements) == 1:
+        mov = movements[0]
+        explicit = category_explicitly_named_in_text(text_body)
+        proposed = mov.get("category")
+        if explicit and proposed and str(proposed).casefold() not in text_body.casefold():
+            mov = {**mov, "category": explicit}
+            movements = [mov]
+
     # Confirmación de categoría SOLO con exactamente 1 movimiento con categoría inferida.
     if len(movements) == 1 and movements[0].get("category"):
         return await _register_single_with_hint(
@@ -1156,6 +1218,7 @@ async def _register_single_with_hint(
         return _registration_dispatch_reply(result, llm_result)
 
     # Guardar el último movimiento en Redis para posible cambio de categoría
+    category_name = result.category_name
     last = LastRegisteredMovement(
         movement_id=result.movement_id,
         sender_phone=sender_phone,
@@ -3533,6 +3596,12 @@ async def _handle_finance_intent(
         return _llm_dispatch_result(data, reply, "finance", intent)
     if intent == "delete_category":
         reply = await _handle_delete_category(ctx.sender_phone, data)
+        return _llm_dispatch_result(data, reply, "finance", intent)
+    if intent == "create_category":
+        reply = await _handle_create_category(ctx.sender_phone, data)
+        return _llm_dispatch_result(data, reply, "finance", intent)
+    if intent == "rename_category":
+        reply = await _handle_rename_category(ctx.sender_phone, data)
         return _llm_dispatch_result(data, reply, "finance", intent)
     if intent == "list_categories":
         reply = await _handle_list_categories(ctx.sender_phone)

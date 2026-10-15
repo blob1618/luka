@@ -1,4 +1,18 @@
-from app.services.categories_taxonomy import resolve_category, resolve_category_for_user
+from app.services.categories_taxonomy import (
+    category_explicitly_named_in_text,
+    resolve_category,
+    resolve_category_for_user,
+)
+
+
+def test_explicit_category_uses_unique_text_evidence():
+    assert category_explicitly_named_in_text("Gasté 10000 en Uber") == "Transporte"
+    assert category_explicitly_named_in_text("Gasté 12000 en supermercado") == "Comida"
+    assert category_explicitly_named_in_text("Gasté en Uber y supermercado") is None
+
+
+def test_exact_user_category_wins_over_taxonomy_alias():
+    assert resolve_category_for_user("Supermercado", {"Comida", "Supermercado"}) == "Supermercado"
 
 
 def test_resolve_synonym_to_canonical():

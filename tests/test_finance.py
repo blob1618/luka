@@ -547,6 +547,32 @@ def test_create_category_empty_name_returns_error(db_context):
     assert result.status == "error"
 
 
+def test_rename_category_preserves_movement_and_rejects_cross_user_or_duplicate(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    other = create_user(session, "5492222222222")
+    category = create_category(session, user.id, nombre="Jardinería")
+    create_category(session, user.id, nombre="Comida")
+    movement = MovimientoFinanciero(
+        usuario_id=user.id, categoria_id=category.id, tipo="egreso",
+        cantidad=10000, moneda="ARS", descripcion="plantas",
+    )
+    session.add(movement)
+    session.commit()
+
+    assert FinanceService.rename_category(other.id, "Jardinería", "Plantas").status == "not_found"
+    assert FinanceService.rename_category(user.id, "Jardinería", "Comida").status == "already_exists"
+    result = FinanceService.rename_category(user.id, "Jardinería", "Plantas")
+
+    assert result.status == "renamed"
+    session.refresh(category)
+    session.refresh(movement)
+    assert category.nombre == "Plantas"
+    assert movement.categoria_id == category.id
+    assert movement.cantidad == 10000
+    assert movement.moneda == "ARS"
+
+
 def test_delete_category_existing(db_context):
     session = db_context["session"]
     user = create_user(session)
@@ -704,7 +730,7 @@ def test_register_movement_with_category_existing(db_context):
     assert movement.categoria_id == cat.id
 
 
-def test_register_movement_with_category_create_if_missing(db_context):
+def test_register_movement_with_category_requires_confirmation_even_for_taxonomy(db_context):
     session = db_context["session"]
     create_user(session)
 
@@ -720,11 +746,10 @@ def test_register_movement_with_category_create_if_missing(db_context):
         create_category_if_missing=True,
     )
 
-    assert result.status == "registered"
-    movement = session.query(MovimientoFinanciero).one()
-    assert movement.categoria_id is not None
-    cat = session.query(Categoria).filter(Categoria.id == movement.categoria_id).first()
-    assert cat.nombre == "Transporte"
+    assert result.status == "needs_category_confirmation"
+    assert result.category_name == "Transporte"
+    assert session.query(MovimientoFinanciero).count() == 0
+    assert session.query(Categoria).count() == 0
 
 
 def test_register_movement_with_category_not_found_no_create(db_context):
@@ -743,9 +768,8 @@ def test_register_movement_with_category_not_found_no_create(db_context):
         create_category_if_missing=False,
     )
 
-    assert result.status == "registered"
-    movement = session.query(MovimientoFinanciero).one()
-    assert movement.categoria_id is None
+    assert result.status == "category_not_found"
+    assert session.query(MovimientoFinanciero).count() == 0
 
 
 def test_register_movement_with_category_unknown_needs_confirmation(db_context):
