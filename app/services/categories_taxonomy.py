@@ -1,3 +1,4 @@
+import re
 import unicodedata
 from collections.abc import Iterable
 
@@ -57,16 +58,31 @@ def resolve_category_for_user(
     if not normalized:
         return None
 
+    user_names = sorted(user_category_names or set(), key=lambda raw: (_normalize(raw), raw))
+    for raw in user_names:
+        if _normalize(raw) == normalized:
+            return raw
+
     canonical = _SYNONYM_TO_CANONICAL.get(normalized)
     if canonical:
-        for raw in user_category_names or set():
+        for raw in user_names:
+            if _normalize(raw) == _normalize(canonical):
+                return raw
+        for raw in user_names:
             if _SYNONYM_TO_CANONICAL.get(_normalize(raw)) == canonical:
                 return raw
         return canonical
 
-    for raw in user_category_names or set():
-        if _normalize(raw) == normalized:
-            return raw
-
     return None
+
+
+def category_explicitly_named_in_text(text: str) -> str | None:
+    """Return a canonical category only when one taxonomy family is named."""
+    normalized = _normalize(text)
+    matches = {
+        canonical
+        for synonym, canonical in _SYNONYM_TO_CANONICAL.items()
+        if re.search(rf"(?<!\w){re.escape(synonym)}(?!\w)", normalized)
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
 

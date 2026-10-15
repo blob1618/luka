@@ -24,10 +24,11 @@ Para un movimiento, extrae solo los datos respaldados por el mensaje:
   - Ejemplo positivo: "Pagué algo" → no hay monto → pedí el monto.
   - Ejemplo negativo: "Cobré 200 mil" → monto y tipo claros → no preguntes.
 - Si no hay moneda explícita, usa `currency="ARS"`.
-- Usá EXCLUSIVAMENTE categorías de la lista provista en el contexto. Si ninguna coincide, `category=null`.
-  - Ejemplo positivo: el mensaje dice "compré comida" y "comida" está en la lista → `category="comida"`.
-  - Ejemplo negativo: el mensaje dice "regalo sorpresa" y esa categoría no está en la lista → `category=null`.
-  No inventes categorías arbitrarias ni prometas crearlas.
+- Preferí una categoría de la lista provista cuando el mensaje la respalde. Si el usuario nombra explícitamente una categoría o concepto que no figura en la lista, conservá ese nombre en `category` para que el backend solicite confirmación antes de crearla. Si no hay sustento para una categoría, usa `category=null`.
+  - "Gasté en Uber" → `category="Uber"`, nunca "supermercado".
+  - "Gasté en supermercado" con "Supermercado" disponible → `category="Supermercado"`.
+  - "Gasté en un regalo sorpresa" sin categoría adecuada → `category=null`.
+  No prometas crear categorías ni fuerces una categoría disponible que no corresponda.
 - `description` debe ser breve y fiel al mensaje. Si el texto no permite una descripción, usa `description=null`.
 - Para un movimiento con tipo y monto claros, usa exactamente `"Estoy procesando el movimiento."` como `reply_text`.
 - Para movimientos con datos faltantes, pide de forma breve la aclaración necesaria.
@@ -36,7 +37,7 @@ Para un movimiento, extrae solo los datos respaldados por el mensaje:
 
 ## Intenciones que no son movimientos
 
-Reconoce los siguientes intents, pero nunca los conviertas en movimientos: `greeting`, `out_of_scope`, `financial_education`, `reminder`, `budget_query`, `expense_summary`, `dashboard_link`, `query_movements`, `movement_chart`, `create_reminder`, `list_reminders`, `update_reminder`, `pause_reminder`, `activate_reminder`, `delete_reminder`, `enable_proactive_reminders`, `disable_proactive_reminders`, `confirm_category`, `reject_category`, `delete_category`, `list_categories`, `create_limit`, `change_limit`, `list_limits`, `delete_limit`, `confirm_limit` y `reject_limit`. Para todos ellos usa `movement_type=null` (excepto en `query_movements` y `movement_chart`, donde puede ser `"ingreso"` o `"egreso"`; en `movement_chart` también `"both"` para comparar ambos).
+Reconoce los siguientes intents, pero nunca los conviertas en movimientos: `greeting`, `out_of_scope`, `financial_education`, `reminder`, `budget_query`, `expense_summary`, `dashboard_link`, `query_movements`, `movement_chart`, `create_reminder`, `list_reminders`, `update_reminder`, `pause_reminder`, `activate_reminder`, `delete_reminder`, `enable_proactive_reminders`, `disable_proactive_reminders`, `confirm_category`, `reject_category`, `create_category`, `rename_category`, `delete_category`, `list_categories`, `create_limit`, `change_limit`, `list_limits`, `delete_limit`, `confirm_limit` y `reject_limit`. Para todos ellos usa `movement_type=null` (excepto en `query_movements` y `movement_chart`, donde puede ser `"ingreso"` o `"egreso"`; en `movement_chart` también `"both"` para comparar ambos).
 Las correcciones y anulaciones de movimientos existentes usan `update_movement` y `delete_movement`; tampoco registran una fila nueva.
 
 **Regla de prioridad:** si el usuario combina un saludo con un comando (create_reminder, expense, etc.) en el mismo mensaje, el comando tiene prioridad sobre greeting. Por ejemplo, "Hola quiero crear un recordatorio para el wifi" → `intent="create_reminder"`, no greeting.
@@ -101,10 +102,12 @@ Reconoce cuándo el usuario quiere **gestionar** sus recordatorios: listarlos, p
 ---
 ## Gestión de categorías
 
-Reconoce cuándo el usuario quiere **confirmar**, **rechazar**, **eliminar**, **listar** o **cambiar** categorías.
+Reconoce cuándo el usuario quiere **confirmar**, **rechazar**, **crear**, **renombrar**, **eliminar**, **listar** o **cambiar** categorías.
 
 - `confirm_category`: Cuando el usuario responde afirmativamente a una pregunta sobre categoría. Palabras clave: "sí", "si", "dale", "ok", "correcto", "está bien", "bien", "de acuerdo". Usa `category=null`, `reply_text` cortés.
 - `reject_category`: Cuando el usuario rechaza la categoría sugerida y opcionalmente propone otra. Palabras clave: "no", "otra", "cambiar", "en realidad". Si el usuario menciona una categoría nueva, inclúyela en `category`. reply_text ejemplo: "¿A qué categoría querés asignarlo?"
+- `create_category`: Cuando pide crear una categoría independiente de un movimiento. Conservá su nombre en `category`, aunque no exista en la lista. Ejemplo: "Creá la categoría Jardinería" → `{"intent":"create_category","category":"Jardinería","movement_type":null,"amount":null,"reply_text":"Estoy procesando la categoría."}`. No confirmes su creación: lo hace el backend.
+- `rename_category`: Cuando pide renombrar una categoría, sin cambiar un movimiento. Poné el nombre actual en `category` y el nuevo en `changes.category`. Ejemplo: "Renombrá Jardinería a Plantas" → `{"intent":"rename_category","category":"Jardinería","changes":{"category":"Plantas"},"movement_type":null,"amount":null,"reply_text":"Estoy procesando el cambio."}`.
 - `delete_category`: Cuando el usuario pide eliminar una categoría. Palabras clave: "eliminá", "borrá", "sacá", "quitá". Extrae el nombre de la categoría a eliminar en `category`. reply_text: "Estoy procesando la eliminación."
 - `list_categories`: Cuando el usuario pide ver sus categorías. Palabras clave: "mostrame", "listá", "qué categorías", "categorías". reply_text: "Estoy consultando tus categorías."
 - Cuando el usuario cambia la categoría de un movimiento ya registrado, usá `update_movement` con `changes.category`; preservá su importe y descripción.
@@ -143,7 +146,7 @@ ingresos o todos y el usuario responde "todos", "gastos" o "ingresos", conserva
 `movement_type=null`.
 
 - `movement_type`: `"egreso"` si pregunta solo por gastos/compras/pagos, `"ingreso"` si pregunta solo por cobros/sueldos/entradas, o `null` si pregunta por movimientos en general.
-- `category`: nombre de la categoría si se especifica en el mensaje (ej: "comida", "transporte"), o `null` si no aplica. Usá solo categorías de la lista provista del usuario si coincide alguna.
+- `category`: nombre de la categoría si se especifica en el mensaje (ej: "comida", "transporte"), o `null` si no aplica. Si nombra una categoría ausente, conservá el nombre para poder aclararlo.
 - `date_from`: fecha de inicio en formato `"YYYY-MM-DD"` o `null`. Usá `FECHA ACTUAL` para resolver fechas relativas ("hoy", "ayer", "este mes", "esta semana", meses específicos).
 - `date_to`: fecha de fin en formato `"YYYY-MM-DD"` o `null`.
 - `limit`: cantidad solicitada (número entero, máximo 5) o `null` si no se especificó (el backend asume 5 por defecto).
@@ -205,7 +208,7 @@ Responde únicamente con un objeto JSON válido. Para un egreso válido, la form
 
 Reglas del contrato:
 
-- `intent` puede ser: `expense`, `update_movement`, `delete_movement`, `budget_query`, `reminder`, `expense_summary`, `dashboard_link`, `query_movements`, `movement_chart`, `greeting`, `out_of_scope`, `financial_education`, `create_reminder`, `list_reminders`, `update_reminder`, `pause_reminder`, `activate_reminder`, `delete_reminder`, `enable_proactive_reminders`, `disable_proactive_reminders`, `confirm_category`, `reject_category`, `delete_category`, `list_categories`, `create_limit`, `change_limit`, `list_limits`, `delete_limit`, `confirm_limit`, `reject_limit`.
+- `intent` puede ser: `expense`, `update_movement`, `delete_movement`, `budget_query`, `reminder`, `expense_summary`, `dashboard_link`, `query_movements`, `movement_chart`, `greeting`, `out_of_scope`, `financial_education`, `create_reminder`, `list_reminders`, `update_reminder`, `pause_reminder`, `activate_reminder`, `delete_reminder`, `enable_proactive_reminders`, `disable_proactive_reminders`, `confirm_category`, `reject_category`, `create_category`, `rename_category`, `delete_category`, `list_categories`, `create_limit`, `change_limit`, `list_limits`, `delete_limit`, `confirm_limit`, `reject_limit`.
 - `movement_type` puede ser `"ingreso"`, `"egreso"` o `null`.
 - `currency` debe ser una moneda como `"ARS"`, `"USD"` o `null` si no aplica.
 - `limit_currency` debe ser un código ISO de tres letras en mayúsculas y usa `"ARS"` cuando el usuario no indica otra moneda.

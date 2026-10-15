@@ -3224,7 +3224,7 @@ class TestMovementNoCategory:
             patch(
                 "app.services.dispatcher.LLMService.process_message",
                 new_callable=AsyncMock,
-                return_value=movement_llm_result(category=None),
+                return_value=movement_llm_result(category=None, description="regalo sorpresa"),
             ),
             patch(
                 "app.services.dispatcher.ConversationService.is_awaiting_rename",
@@ -3248,7 +3248,7 @@ class TestMovementNoCategory:
                 "app.services.dispatcher._update_ultimo_mensaje",
             ),
         ):
-            result = await process_incoming_message("12345", "Gasté 5000 en supermercado", "wamid.10")
+            result = await process_incoming_message("12345", "Gasté 5000 en un regalo sorpresa", "wamid.10")
 
         assert result.service_invoked == "finance"
         assert "5000" in result.reply_text

@@ -48,6 +48,39 @@ _DASHBOARD_ACCESS_STEMS = (
 )
 _DASHBOARD_RESOURCES = {"dashboard", "panel", "portal", "tablero"}
 _LINK_WORDS = {"acceso", "link", "enlace", "url"}
+_CREATE_CATEGORY = re.compile(
+    r"^\s*(?:cre[aá]|crear)\s+(?:(?:la|una)\s+)?categor[ií]a\s+"
+    r"(?P<name>[\wáéíóúüñ][\wáéíóúüñ -]{0,99})\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+_RENAME_CATEGORY = re.compile(
+    r"^\s*(?:renombr[aá]|renombrar)\s+(?:(?:la)\s+)?categor[ií]a\s+"
+    r"(?P<source>[\wáéíóúüñ][\wáéíóúüñ -]{0,99}?)\s+a\s+"
+    r"(?P<target>[\wáéíóúüñ][\wáéíóúüñ -]{0,99})\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def normalize_category_management_intent(text: str, data: dict) -> dict:
+    """Route explicit category commands even when the LLM calls them confirmations."""
+    rename = _RENAME_CATEGORY.fullmatch(text)
+    if rename is not None:
+        return {
+            **data,
+            "intent": "rename_category",
+            "category": rename.group("source").strip(),
+            "changes": {"category": rename.group("target").strip()},
+            "movement_type": None,
+        }
+    create = _CREATE_CATEGORY.fullmatch(text)
+    if create is not None:
+        return {
+            **data,
+            "intent": "create_category",
+            "category": create.group("name").strip(),
+            "movement_type": None,
+        }
+    return data
 
 
 def is_dashboard_access_candidate(text: str) -> bool:
