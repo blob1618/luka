@@ -1,5 +1,6 @@
 import uuid
 from datetime import date
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -16,6 +17,8 @@ from app.models.database import (
     Usuario,
 )
 from app.services.finance import FinanceService
+from app.services.budget import BudgetEvaluation
+from app.services.dispatcher import _register_and_reply_with_hint
 from app.services.intent_routing import (
     normalize_category_management_intent,
     normalize_movement_query_intent,
@@ -615,6 +618,41 @@ def test_movement_query_resolves_unique_misspelled_category_without_modifying_it
     assert result.resolved_category_name == "Jardinería"
     session.refresh(category)
     assert category.nombre == "Jardinería"
+
+
+@pytest.mark.asyncio
+async def test_registration_respects_named_user_category_over_llm_guess(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    jardineria = create_category(session, user.id, nombre="Jardinería")
+    create_category(session, user.id, nombre="Plantas")
+    extracted = {
+        "intent": "expense", "movement_type": "egreso", "amount": 2500,
+        "currency": "ARS", "description": "macetas", "category": "Plantas",
+    }
+    with (
+        patch(
+            "app.services.dispatcher.BudgetService.evaluate_movement",
+            return_value=BudgetEvaluation(status="ok", message="no limit"),
+        ),
+        patch(
+            "app.services.dispatcher._check_pending_candidate_proposal",
+            return_value=None,
+        ),
+    ):
+        reply = await _register_and_reply_with_hint(
+            user.whatsapp_id, "wamid.explicit-jardineria",
+            "Gasté 2500 ARS en macetas, categoría Jardinería", extracted,
+        )
+
+    movement = session.query(MovimientoFinanciero).one()
+    assert movement.categoria_id == jardineria.id
+    assert "📁 Categoría: Jardinería." in reply
+    query = FinanceService.query_movements(
+        user.id, movement_type="egreso", category_name="jardinera"
+    )
+    assert query.total_found == 1
+    assert query.resolved_category_name == "Jardinería"
 
 
 def test_reclassifying_last_expense_by_por_updates_existing_movement(db_context):

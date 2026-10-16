@@ -98,6 +98,16 @@ def suggest_user_category(name: str | None, user_category_names: Iterable[str]) 
     return scores[0][1]
 
 
+def category_named_in_text(text: str) -> str | None:
+    """Extract an explicit category label at the end of a movement message."""
+    named = re.search(
+        r"\bcategor[ií]a\s+(?P<name>[\wÀ-ÿ][\wÀ-ÿ -]{0,99})\s*[.!]?\s*$",
+        text,
+        re.IGNORECASE,
+    )
+    return named.group("name").strip() if named else None
+
+
 def category_explicitly_named_in_text(text: str) -> str | None:
     """Return a canonical category only when one taxonomy family is named."""
     normalized = _normalize(text)
