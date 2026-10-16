@@ -1267,13 +1267,40 @@ async def _register_single_with_hint(
         extracted_data["_conversation_event_variables"] = {
             "category": category_name or "",
         }
+        pending_wallet_id = wallet_id or result.wallet_id
+        if pending_wallet_id is None and result.user_id is not None:
+            wallets = await asyncio.to_thread(
+                WalletService.list_wallets,
+                user_id=result.user_id,
+                currency=llm_result.get("currency") or "ARS",
+            )
+            if len(wallets) == 1:
+                pending_wallet_id = wallets[0].wallet_id
+            elif len(wallets) > 1:
+                return await _route_needs_wallet_selection(
+                    sender_phone=sender_phone,
+                    user_id=result.user_id,
+                    whatsapp_message_id=whatsapp_message_id,
+                    text_body=text_body,
+                    llm_result=llm_result,
+                    category_name=category_name,
+                    amount=norm_amount,
+                    resolved_fecha_movimiento=resolved_date,
+                )
+            else:
+                await ConversationService.clear_state(sender_phone)
+                currency = str(llm_result.get("currency") or "ARS").upper()
+                return (
+                    f"No tenés ninguna billetera en {currency}. "
+                    "Creá una billetera primero para registrar movimientos en esa moneda."
+                )
         return await _route_needs_category_confirmation(
             sender_phone,
             whatsapp_message_id,
             text_body,
             llm_result,
             category_name,
-            wallet_id=wallet_id or result.wallet_id,
+            wallet_id=pending_wallet_id,
             resolved_fecha_movimiento=resolved_date,
         )
 
@@ -4944,6 +4971,41 @@ async def _resume_movement_after_category(sender_phone: str) -> DispatchResult:
             create_category_if_missing=False,
             fecha_movimiento=resolved_fecha,
             wallet_id=pending.wallet_id,
+        )
+    if result.status == "needs_wallet_selection":
+        reply_text = await _route_needs_wallet_selection(
+            sender_phone=sender_phone,
+            user_id=result.user_id,
+            whatsapp_message_id=pending.whatsapp_message_id,
+            text_body=pending.original_text,
+            llm_result={
+                **pending.llm_result_extra,
+                "movement_type": pending.movement_type,
+                "amount": pending.amount,
+                "currency": pending.currency,
+                "description": pending.description,
+            },
+            category_name=pending.inferred_category,
+            amount=pending.amount,
+            resolved_fecha_movimiento=resolved_fecha,
+        )
+        return DispatchResult(
+            reply_text=reply_text,
+            service_invoked="wallet",
+            event_key="wallet.selection_required",
+            event_variables={"currency": pending.currency},
+        )
+    if result.status == "needs_wallet_creation":
+        await ConversationService.clear_state(sender_phone)
+        currency = result.currency or pending.currency
+        return DispatchResult(
+            reply_text=(
+                f"No tenés ninguna billetera en {currency}. "
+                "Creá una billetera primero para registrar movimientos en esa moneda."
+            ),
+            service_invoked="wallet",
+            event_key="wallet.creation_required",
+            event_variables={"currency": currency},
         )
     if result.status in {"registered", "duplicate"}:
         await ConversationService.clear_state(sender_phone)

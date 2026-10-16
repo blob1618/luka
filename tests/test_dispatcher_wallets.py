@@ -698,6 +698,100 @@ async def test_wallet_selection_chains_category_confirmation(isolated_db):
         assert cat.nombre.lower() == "parapente"
 
 
+@pytest.mark.asyncio
+async def test_auto_selected_wallet_is_preserved_through_category_confirmation(isolated_db):
+    user_id = uuid.uuid4()
+    wallet_id = uuid.uuid4()
+    sender_phone = "5491100000015"
+
+    with isolated_db() as session:
+        user = Usuario(
+            id=user_id,
+            nombre="Franco",
+            email="franco15@example.com",
+            whatsapp_id=sender_phone,
+        )
+        session.add(user)
+        session.add(
+            Billetera(
+                id=wallet_id,
+                usuario_id=user_id,
+                nombre="Efectivo",
+                moneda="ARS",
+            )
+        )
+        session.commit()
+
+    llm_payload = {
+        "intent": "expense",
+        "movement_type": "egreso",
+        "amount": 1250,
+        "currency": "ARS",
+        "description": "parapente",
+        "expense": "parapente",
+        "category": "Parapente",
+        "reply_text": "",
+        "fecha": "2026-10-07",
+    }
+    with (
+        patch(
+            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+            return_value=known_user(),
+        ),
+        patch(
+            "app.services.dispatcher.LLMService.process_message",
+            new_callable=AsyncMock,
+            return_value=llm_payload,
+        ),
+    ):
+        first = await process_incoming_message(
+            sender_phone,
+            "Gasté 1250 en parapente",
+            whatsapp_message_id="msg-auto-wallet-category",
+        )
+
+    assert "¿Querés crearla?" in first.reply_text
+    pending = await ConversationService.get_pending_movement(sender_phone)
+    assert pending is not None
+    assert pending.wallet_id == str(wallet_id)
+
+    # A second same-currency wallet appearing mid-turn must not erase the
+    # wallet that was auto-selected when the movement first arrived.
+    with isolated_db() as session:
+        session.add(
+            Billetera(
+                id=uuid.uuid4(),
+                usuario_id=user_id,
+                nombre="Mercado Pago",
+                moneda="ARS",
+            )
+        )
+        session.commit()
+
+    with (
+        patch(
+            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+            return_value=known_user(),
+        ),
+        patch(
+            "app.services.dispatcher.LLMService.process_message",
+            new_callable=AsyncMock,
+            return_value={"intent": "confirm_category"},
+        ),
+    ):
+        confirmed = await process_incoming_message(sender_phone, "sí")
+
+    assert "Registré tu egreso" in confirmed.reply_text
+    with isolated_db() as session:
+        movements = session.query(MovimientoFinanciero).all()
+        assert len(movements) == 1
+        movement = movements[0]
+        assert movement.billetera_id == wallet_id
+        assert movement.whatsapp_message_id == "msg-auto-wallet-category"
+        assert movement.cantidad == Decimal("1250")
+        assert movement.fecha_movimiento == date(2026, 10, 7)
+
+
 # ---------------------------------------------------------------------------
 # Test 7: Create wallet intent (success, duplicate, validation, user_not_found)
 # ---------------------------------------------------------------------------
