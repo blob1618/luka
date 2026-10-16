@@ -1,0 +1,119 @@
+{
+  "version": "1.0.0",
+  "reviewed_at": "2026-10-13",
+  "sources": [
+    {
+      "id": "bcra_educacion_financiera",
+      "title": "BCRA — Educación financiera",
+      "url": "https://www.bcra.gob.ar/que-es-la-educacion-financiera/"
+    },
+    {
+      "id": "bcra_plazos_fijos",
+      "title": "BCRA — Plazos fijos: claves para invertir tu dinero",
+      "url": "https://www.bcra.gob.ar/plazos-fijos-tipos-plazos-y-rentabilidad/"
+    },
+    {
+      "id": "cnv_fondos_comunes_inversion",
+      "title": "CNV — Fondos Comunes de Inversión",
+      "url": "https://www.cnv.gov.ar/SitioWeb/FondosComunesInversion"
+    },
+    {
+      "id": "cnv_normas_toc2013",
+      "title": "CNV — Normas (TOC2013 actualizado)",
+      "url": "https://www.cnv.gov.ar/sitioWeb/Content/assets/files/TOC2013.pdf"
+    }
+  ],
+  "topics": [
+    {
+      "id": "reserva_imprevistos",
+      "title": "Reserva para imprevistos",
+      "kind": "ahorro",
+      "purpose": "Reunir un colchón de dinero para cubrir gastos inesperados sin endeudarte.",
+      "horizon": "Se arma de a poco y no tiene fecha fija de uso.",
+      "availability": "Se busca que sea de acceso simple y que esté separado del dinero del día a día.",
+      "risks": [
+        "Usar la reserva para gastos que no son urgentes y quedarte sin colchón.",
+        "Perder poder de compra con el tiempo si el dinero queda quieto."
+      ],
+      "limits": [
+        "Es una orientación general de organización, no una recomendación personal.",
+        "No incluyo montos exactos ni condiciones de productos."
+      ],
+      "source_ids": ["bcra_educacion_financiera"]
+    },
+    {
+      "id": "meta_ahorro",
+      "title": "Ahorro para una meta",
+      "kind": "ahorro",
+      "purpose": "Separar dinero de forma periódica para alcanzar un objetivo concreto, como un viaje o un equipo.",
+      "horizon": "Depende de la meta: puede llevar pocos meses o varios años.",
+      "availability": "Se usa cuando llegás a la meta; antes ese dinero no se toca.",
+      "risks": [
+        "Abandonar el plan si la meta queda lejos o si aparece otro gasto.",
+        "Elegir una meta poco clara y no saber cuánto separar."
+      ],
+      "limits": [
+        "Es una orientación general de organización, no una recomendación personal.",
+        "No incluyo montos, plazos ni condiciones de productos."
+      ],
+      "source_ids": ["bcra_educacion_financiera"]
+    },
+    {
+      "id": "plazo_fijo_tradicional",
+      "title": "Plazo fijo tradicional",
+      "kind": "inversion",
+      "purpose": "Colocar un dinero por un tiempo determinado y recuperarlo al vencimiento junto con los intereses pactados.",
+      "horizon": "El plazo se acuerda al inicio y se mantiene hasta el vencimiento.",
+      "availability": "El plazo fijo tradicional no admite cancelación anticipada; una modalidad precancelable permite retirar antes con condiciones menos favorables.",
+      "risks": [
+        "Si necesitás el dinero antes del vencimiento, en la modalidad tradicional no podés cancelarlo.",
+        "Las condiciones quedan pactadas al inicio y no se ajustan hasta el vencimiento."
+      ],
+      "limits": [
+        "Es una explicación general, no una oferta ni una recomendación personal.",
+        "No incluyo plazos mínimos, montos ni condiciones vigentes."
+      ],
+      "source_ids": ["bcra_plazos_fijos", "bcra_educacion_financiera"]
+    },
+    {
+      "id": "fci_mercado_dinero",
+      "title": "FCI de mercado de dinero",
+      "kind": "inversion",
+      "purpose": "Reunir aportes de varias personas con objetivos similares para que una sociedad los administre e invierta en una cartera.",
+      "horizon": "No tiene vencimiento fijo: depende del objetivo del fondo y de cuándo decidas rescatar.",
+      "availability": "El rescate sigue los plazos y condiciones del reglamento de gestión del fondo.",
+      "risks": [
+        "El resultado puede variar: el valor de la inversión puede subir o bajar.",
+        "Las cuotapartes no son depósitos bancarios ni cuentan con las garantías de los depósitos.",
+        "La composición, el riesgo y el rescate dependen del reglamento del fondo."
+      ],
+      "limits": [
+        "Es una explicación general, no una oferta ni una recomendación personal.",
+        "No incluyo composición, condiciones ni resultados vigentes."
+      ],
+      "source_ids": ["cnv_fondos_comunes_inversion", "cnv_normas_toc2013"]
+    },
+    {
+      "id": "comparacion_plazo_fijo_fci",
+      "title": "Plazo fijo y FCI de mercado de dinero: comparación educativa",
+      "kind": "comparacion",
+      "purpose": "Entender diferencias generales entre las dos opciones antes de informarte por tu cuenta.",
+      "horizon": "El plazo fijo se pacta por un tiempo determinado; el FCI no tiene vencimiento fijo.",
+      "availability": "En el plazo fijo tradicional el dinero queda colocado hasta el vencimiento; en el FCI el rescate depende del reglamento del fondo.",
+      "risks": [
+        "En el FCI el resultado puede variar y las cuotapartes no son depósitos bancarios.",
+        "En el plazo fijo tradicional no podés cancelar antes del vencimiento.",
+        "Ninguna de las dos opciones sirve para todos los casos: depende de tus objetivos y del tiempo que podés esperar."
+      ],
+      "limits": [
+        "Es una comparación general y educativa, no una recomendación ni una predicción.",
+        "No incluyo condiciones, montos ni resultados vigentes."
+      ],
+      "source_ids": [
+        "bcra_plazos_fijos",
+        "cnv_fondos_comunes_inversion",
+        "cnv_normas_toc2013"
+      ]
+    }
+  ]
+}

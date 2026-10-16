@@ -61,6 +61,13 @@ from app.services.dashboard_link import (
     DashboardLinkService,
     dashboard_link_message,
 )
+from app.services.educational_route import (
+    INTENT_NAME as EDUCATIONAL_ROUTE_INTENT,
+    SERVICE_NAME as EDUCATIONAL_ROUTE_SERVICE,
+    EducationalRequest,
+    classify_educational_request,
+    render_educational_reply,
+)
 from app.services.financial_education import FinancialEducationService
 from app.services.finance import (
     FinanceService,
@@ -3861,7 +3868,24 @@ async def _dispatch_intent(ctx: _DispatchContext, data: dict) -> DispatchResult:
     return await _handle_misc_intent(ctx, data)
 
 
-async def _dispatch_after_onboarding(ctx: _DispatchContext) -> DispatchResult:
+async def _handle_educational_request(
+    sender_phone: str, request: EducationalRequest
+) -> DispatchResult:
+    """Responder una consulta educativa con fuentes deterministas y de solo lectura."""
+    reply = await asyncio.to_thread(render_educational_reply, sender_phone, request)
+    return DispatchResult(
+        reply_text=reply,
+        service_invoked=EDUCATIONAL_ROUTE_SERVICE,
+        intent=EDUCATIONAL_ROUTE_INTENT,
+    )
+
+
+async def _dispatch_after_onboarding(
+    ctx: _DispatchContext,
+    educational_request: EducationalRequest | None = None,
+) -> DispatchResult:
+    if educational_request is not None:
+        return await _handle_educational_request(ctx.sender_phone, educational_request)
     pending = await _handle_pending_movement_category_change(ctx.sender_phone, ctx.text_body)
     if pending is not None:
         return pending
@@ -3894,25 +3918,32 @@ async def _dispatch_incoming_message(
     text_body: str,
     whatsapp_message_id: str | None = None,
     conversation_history: list[dict[str, str]] | None = None,
+    educational_request: EducationalRequest | None = None,
 ) -> DispatchResult:
     """
     Process an incoming text message through the full dispatch pipeline.
 
-    Onboarding gates all messages. Explicit dashboard-access candidates are
-    classified before pending conversation state; all other messages retain
-    the regular multi-turn and intent routing order.
+    Onboarding gates all messages. Recognized educational requests are answered
+    by the deterministic read-only route before pending conversation state and
+    before any LLM call. Explicit dashboard-access candidates are classified
+    next; all other messages retain the regular multi-turn and intent routing
+    order.
 
     Args:
         sender_phone: The sender's WhatsApp phone number.
         text_body: The raw text body of the message.
         whatsapp_message_id: Optional WhatsApp message ID for dedup.
         conversation_history: Up to four previous visible turns (eight messages).
+        educational_request: Precomputed classification, so the message is not
+            parsed twice just to decide whether to abandon a pending flow.
 
     Returns:
         DispatchResult with reply_text and debug metadata.
     """
     onboarding = _onboarding_response(sender_phone)
     if onboarding is not None:
+        # The deterministic route is not reached, so keep the old cleanup.
+        await ConversationFlowRuntime.abandon(sender_phone)
         return onboarding
     _update_ultimo_mensaje(sender_phone)
     ctx = _DispatchContext(
@@ -3922,8 +3953,14 @@ async def _dispatch_incoming_message(
         conversation_history=conversation_history,
     )
     ctx.last_chart = await ConversationService.get_last_chart(sender_phone)
-    # Orden de handlers: onboarding -> candidato dashboard -> cambio de categoria pendiente
-    # -> seleccion pendiente -> flujos multi-turno -> educacion conceptual -> LLM -> normalizacion -> intent.
+    # Orden de handlers: onboarding -> ruta educativa -> candidato dashboard ->
+    # cambio de categoria pendiente -> seleccion pendiente -> flujos multi-turno
+    # -> educacion conceptual -> LLM -> normalizacion -> intent.
+    if educational_request is not None:
+        # Ruta educativa aceptada: preservar el estado pendiente, incluido el
+        # ConversationFlowRuntime, y no llamar al LLM.
+        return await _dispatch_after_onboarding(ctx, educational_request)
+    await ConversationFlowRuntime.abandon(sender_phone)
     if is_dashboard_access_candidate(text_body):
         data = await _extract_message_once(ctx)
         if data.get("intent") == "dashboard_link":
@@ -4049,13 +4086,18 @@ async def process_incoming_message(
     whatsapp_message_id: str | None = None,
     conversation_history: list[dict[str, str]] | None = None,
 ) -> DispatchResult:
-    """Route free text, then apply a published presentation when one exists."""
-    await ConversationFlowRuntime.abandon(sender_phone)
+    """Route free text, then apply a published presentation when one exists.
+
+    The message is classified once here; ``_dispatch_incoming_message`` decides
+    whether the route is accepted (after the onboarding gate) and therefore
+    whether the previous pending-flow cleanup must run.
+    """
     result = await _dispatch_incoming_message(
         sender_phone=sender_phone,
         text_body=text_body,
         whatsapp_message_id=whatsapp_message_id,
         conversation_history=conversation_history,
+        educational_request=classify_educational_request(text_body),
     )
     await _render_configured_event(sender_phone, result)
     _attach_movement_category_action(result)
