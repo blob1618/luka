@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app.api.whatsapp import WhatsAppReplyButtons, WhatsAppText
 from app.models import database
 from app.models.database import Base, Billetera, Categoria, LimiteCategoria, Usuario
-from app.services import budget, category_creation, conversation_flow, dispatcher, finance, limit, onboarding
+from app.services import budget, category_creation, conversation_flow, dispatcher, finance, limit, onboarding, wallet
 from app.services.conversation import ConversationService
 from app.services.conversation_flow import ConversationFlowService
 from app.services.conversation_flow_contract import (
@@ -49,7 +49,7 @@ def environment(monkeypatch):
     )
     Base.metadata.create_all(engine)
     sessions = sessionmaker(bind=engine)
-    for module in (database, limit, budget, onboarding, conversation_flow, dispatcher, finance, category_creation):
+    for module in (database, limit, budget, onboarding, conversation_flow, dispatcher, finance, category_creation, wallet):
         monkeypatch.setattr(module, "SessionLocal", sessions)
     with sessions() as session:
         user = Usuario(nombre="Demo", email="limit-demo@example.test", whatsapp_id=PHONE)

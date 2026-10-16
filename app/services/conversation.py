@@ -19,6 +19,21 @@ import redis.asyncio as redis
 
 from app.services.telemetry import track_phase
 
+
+def _json_safe(value: Any) -> Any:
+    """Convierte valores extraídos a tipos seguros para el estado JSON de Redis."""
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
@@ -51,6 +66,7 @@ class PendingMovement:
     def to_dict(self) -> dict:
         d = asdict(self)
         d["amount"] = str(d["amount"])  # Decimal → str para JSON
+        d["llm_result_extra"] = _json_safe(d["llm_result_extra"])
         if self.wallet_id is not None:
             d["wallet_id"] = str(self.wallet_id)
         if self.resolved_fecha_movimiento is not None:

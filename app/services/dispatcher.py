@@ -1190,8 +1190,8 @@ async def _register_and_reply_with_hint(
             mov = {**mov, "category": explicit}
             movements = [mov]
 
-    # Confirmación de categoría SOLO con exactamente 1 movimiento con categoría inferida.
-    if len(movements) == 1 and movements[0].get("category"):
+    # Toda operación única pasa por el registro wallet-aware, aunque no tenga categoría inferida.
+    if len(movements) == 1:
         return await _register_single_with_hint(
             sender_phone, whatsapp_message_id, text_body, extracted_data, movements[0]
         )
