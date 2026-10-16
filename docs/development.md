@@ -145,6 +145,7 @@ La rama compartida y de despliegue es `main`. El flujo de ramas, PRs y verificac
   - `llm.py` y `llm_providers/`: fachada LLM y providers Gemini/Mistral.
   - `llm_contract.py`, `conversation_flow_contract.py`: contrato de la respuesta del LLM y de los flujos configurables.
   - `finance.py`: validación y persistencia de movimientos.
+  - `wallet.py`: creación, selección, propiedad, moneda y saldos por billetera.
   - `limit.py`: CRUD de límites mensuales por categoría.
   - `budget.py`: cálculo de consumo, disponibilidad y exceso.
   - `reminder.py`: CRUD de recordatorios.

@@ -18,6 +18,7 @@ from app.api.whatsapp import WhatsAppCTAURL
 from app.main import app
 from app.models.database import (
     Base,
+    Billetera,
     Categoria,
     LimiteCategoria,
     MovimientoFinanciero,
@@ -152,6 +153,8 @@ def create_user(session, whatsapp_id="5491100000001", auth_user_id=None):
         auth_user_id=auth_user_id,
     )
     session.add(user)
+    session.commit()
+    session.add(Billetera(usuario_id=user.id, nombre="Efectivo", moneda="ARS"))
     session.commit()
     session.refresh(user)
     return user

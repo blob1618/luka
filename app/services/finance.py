@@ -8,6 +8,7 @@ from sqlalchemy import and_, func
 from sqlalchemy.exc import IntegrityError
 
 from app.models.database import (
+    Billetera,
     Categoria,
     LimiteCategoria,
     MovimientoFinanciero,
@@ -18,6 +19,7 @@ from app.services.categories_taxonomy import (
     resolve_category_for_user,
     suggest_user_category,
 )
+from app.services.wallet import WalletService
 
 
 @dataclass
@@ -29,6 +31,10 @@ class MovementRegistrationResult:
     duplicate: bool = False
     category_name: str | None = None
     patron_hash: str | None = None
+    wallet_id: str | None = None
+    wallet_name: str | None = None
+    currency: str | None = None
+    amount: Decimal | None = None
 
 
 @dataclass
@@ -64,6 +70,7 @@ class MovementItem:
     descripcion: str | None
     fecha_movimiento: date
     categoria_nombre: str | None
+    wallet_id: str | None = None
 
 
 @dataclass
@@ -109,6 +116,8 @@ class FinanceService:
             and ("currency" not in expected or movement.moneda == expected["currency"])
             and ("date" not in expected
                  or movement.fecha_movimiento.isoformat() == expected["date"])
+            and ("wallet_id" not in expected
+                 or str(getattr(movement, "billetera_id", None)) == str(expected["wallet_id"]))
         )
 
     @staticmethod
@@ -117,6 +126,7 @@ class FinanceService:
             id=str(movement.id), tipo=movement.tipo, cantidad=movement.cantidad,
             moneda=movement.moneda, descripcion=movement.descripcion,
             fecha_movimiento=movement.fecha_movimiento, categoria_nombre=category_name,
+            wallet_id=str(movement.billetera_id) if movement.billetera_id else None,
         )
 
     @classmethod
@@ -161,7 +171,10 @@ class FinanceService:
         """Apply only explicitly supplied fields to an owned, active movement."""
         from uuid import UUID
 
-        allowed = {"amount", "description", "category", "currency", "movement_type", "fecha"}
+        allowed = {
+            "amount", "description", "category", "currency", "movement_type",
+            "fecha", "wallet_id",
+        }
         if not isinstance(changes, dict) or not changes or set(changes) - allowed:
             return MovementMutationResult("invalid_data")
         try:
@@ -187,6 +200,31 @@ class FinanceService:
                 return MovementMutationResult("stale_context")
             category = session.get(Categoria, movement.categoria_id) if movement.categoria_id else None
             before = cls._movement_item(movement, category.nombre if category else None)
+            has_currency_change = "currency" in changes
+            has_wallet_change = "wallet_id" in changes
+            if has_currency_change or has_wallet_change:
+                target_currency = None
+                if has_currency_change:
+                    target_currency = cls._normalize_optional_text(changes["currency"])
+                    if target_currency is None:
+                        return MovementMutationResult("invalid_data")
+                    target_currency = target_currency.upper()
+                target_wallet_id = changes.get("wallet_id") if has_wallet_change else None
+                if has_wallet_change and (
+                    target_wallet_id is None or not str(target_wallet_id).strip()
+                ):
+                    return MovementMutationResult("invalid_selection")
+                selection = WalletService.resolve_selection(
+                    session,
+                    user.id,
+                    currency=target_currency,
+                    wallet_id=target_wallet_id,
+                )
+                if selection.status != "selected":
+                    session.rollback()
+                    return MovementMutationResult(selection.status)
+                movement.billetera_id = UUID(selection.wallet_id)
+                movement.moneda = selection.currency
             if "amount" in changes:
                 amount = cls._normalize_amount(changes["amount"])
                 if amount is None:
@@ -197,11 +235,6 @@ class FinanceService:
                 if description is None:
                     return MovementMutationResult("invalid_data")
                 movement.descripcion = description[:500]
-            if "currency" in changes:
-                currency = cls._normalize_optional_text(changes["currency"])
-                if currency is None or len(currency) != 3 or not currency.isalpha():
-                    return MovementMutationResult("invalid_data")
-                movement.moneda = currency.upper()
             if "movement_type" in changes:
                 movement_type = str(changes["movement_type"]).lower()
                 if movement_type not in cls.VALID_MOVEMENT_TYPES:
@@ -338,6 +371,10 @@ class FinanceService:
         duplicate: bool = False,
         category_name: str | None = None,
         patron_hash: str | None = None,
+        wallet_id: str | None = None,
+        wallet_name: str | None = None,
+        currency: str | None = None,
+        amount: Decimal | None = None,
     ) -> MovementRegistrationResult:
         return MovementRegistrationResult(
             status=status,
@@ -347,6 +384,40 @@ class FinanceService:
             duplicate=duplicate,
             category_name=category_name,
             patron_hash=patron_hash,
+            wallet_id=wallet_id,
+            wallet_name=wallet_name,
+            currency=currency,
+            amount=amount,
+        )
+
+    @classmethod
+    def _duplicate_result(cls, session, movement, user) -> MovementRegistrationResult:
+        if getattr(movement, "usuario_id", None) != user.id:
+            return cls._result("invalid_data", "invalid message id")
+
+        persisted_wallet = None
+        wallet_id = getattr(movement, "billetera_id", None)
+        currency = getattr(movement, "moneda", None)
+        if wallet_id is not None:
+            persisted_wallet = (
+                session.query(Billetera)
+                .filter(
+                    Billetera.id == wallet_id,
+                    Billetera.usuario_id == user.id,
+                    Billetera.moneda == currency,
+                )
+                .first()
+            )
+        return cls._result(
+            "duplicate",
+            "movement already registered",
+            movement_id=str(movement.id),
+            user_id=str(user.id),
+            duplicate=True,
+            wallet_id=str(wallet_id) if persisted_wallet is not None else None,
+            wallet_name=persisted_wallet.nombre if persisted_wallet is not None else None,
+            currency=currency,
+            amount=getattr(movement, "cantidad", None),
         )
 
     @staticmethod
@@ -428,6 +499,7 @@ class FinanceService:
         original_text: str,
         llm_result: dict,
         fecha_movimiento: date | None = None,
+        wallet_id: UUID | str | None = None,
     ) -> MovementRegistrationResult:
         sender_phone = cls._normalize_optional_text(sender_phone)
         if not sender_phone:
@@ -455,9 +527,11 @@ class FinanceService:
             return cls._result("invalid_data", "amount must be a positive number")
 
         raw_currency = llm_result.get("currency")
-        currency = "ARS" if raw_currency is None else str(raw_currency).strip().upper()
-        if not currency:
-            return cls._result("invalid_data", "currency is required")
+        if raw_currency is not None and not str(raw_currency).strip():
+            return cls._result("invalid_data", "currency cannot be empty")
+        currency = str(raw_currency).strip().upper() if raw_currency is not None else None
+        if wallet_id is not None and not str(wallet_id).strip():
+            return cls._result("invalid_selection", "wallet id cannot be empty")
 
         description = cls._resolve_description(llm_result, original_text)
         if not description:
@@ -476,12 +550,21 @@ class FinanceService:
 
             duplicate = cls._find_duplicate(session, whatsapp_message_id)
             if duplicate is not None:
+                return cls._duplicate_result(session, duplicate, user)
+
+            wallet_selection = WalletService.resolve_selection(
+                session,
+                user.id,
+                currency=currency,
+                wallet_id=wallet_id,
+            )
+            if wallet_selection.status != "selected":
                 return cls._result(
-                    "duplicate",
-                    "movement already registered",
-                    movement_id=str(duplicate.id),
-                    user_id=str(duplicate.usuario_id),
-                    duplicate=True,
+                    wallet_selection.status,
+                    wallet_selection.message,
+                    user_id=user_id,
+                    currency=wallet_selection.currency,
+                    amount=amount,
                 )
 
             if category_name:
@@ -500,10 +583,11 @@ class FinanceService:
             category = cls._find_category(session, user.id, category_name)
             movement = MovimientoFinanciero(
                 usuario_id=user.id,
+                billetera_id=UUID(wallet_selection.wallet_id),
                 categoria_id=category.id if category else None,
                 tipo=movement_type,
                 cantidad=amount,
-                moneda=currency,
+                moneda=wallet_selection.currency,
                 descripcion=description,
                 origen="whatsapp_text",
                 whatsapp_message_id=whatsapp_message_id,
@@ -513,6 +597,18 @@ class FinanceService:
 
             session.add(movement)
             session.commit()
+            session.refresh(movement)
+            persisted_wallet = (
+                session.query(Billetera)
+                .filter(
+                    Billetera.id == movement.billetera_id,
+                    Billetera.usuario_id == user.id,
+                    Billetera.moneda == movement.moneda,
+                )
+                .first()
+            )
+            if persisted_wallet is None:
+                raise RuntimeError("persisted movement wallet could not be reloaded")
 
             patron_hash = None
             if movement_type == "egreso":
@@ -536,6 +632,10 @@ class FinanceService:
                 duplicate=False,
                 category_name=category.nombre if category else None,
                 patron_hash=patron_hash,
+                wallet_id=str(movement.billetera_id),
+                wallet_name=persisted_wallet.nombre,
+                currency=movement.moneda,
+                amount=movement.cantidad,
             )
 
         except IntegrityError as exc:
@@ -550,13 +650,9 @@ class FinanceService:
                 except Exception:
                     duplicate = None
                 if duplicate is not None:
-                    return cls._result(
-                        "duplicate",
-                        "movement already registered",
-                        movement_id=str(duplicate.id),
-                        user_id=str(duplicate.usuario_id),
-                        duplicate=True,
-                    )
+                    user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
+                    if user is not None:
+                        return cls._duplicate_result(session, duplicate, user)
             return cls._result("persistence_error", "could not persist movement")
 
         except Exception as exc:
@@ -843,12 +939,13 @@ class FinanceService:
         original_text: str,
         movement_type: str,
         amount: Decimal,
-        currency: str,
+        currency: str | None,
         description: str,
         category_name: str | None = None,
         create_category_if_missing: bool = False,
         category_creation_confirmed: bool = False,
         fecha_movimiento: date | None = None,
+        wallet_id: UUID | str | None = None,
     ) -> MovementRegistrationResult:
         """
         Registra un movimiento financiero con una categoría específica.
@@ -864,8 +961,15 @@ class FinanceService:
         if movement_type not in cls.VALID_MOVEMENT_TYPES:
             return cls._result("invalid_data", "movement_type must be ingreso or egreso")
 
-        if amount is None or amount <= 0:
+        amount = cls._normalize_amount(amount)
+        if amount is None:
             return cls._result("invalid_data", "amount must be a positive number")
+
+        if currency is not None and not str(currency).strip():
+            return cls._result("invalid_data", "currency cannot be empty")
+        currency = str(currency).strip().upper() if currency is not None else None
+        if wallet_id is not None and not str(wallet_id).strip():
+            return cls._result("invalid_selection", "wallet id cannot be empty")
 
         if not description:
             return cls._result("invalid_data", "description is required")
@@ -882,12 +986,21 @@ class FinanceService:
 
             duplicate = cls._find_duplicate(session, whatsapp_message_id)
             if duplicate is not None:
+                return cls._duplicate_result(session, duplicate, user)
+
+            wallet_selection = WalletService.resolve_selection(
+                session,
+                user.id,
+                currency=currency,
+                wallet_id=wallet_id,
+            )
+            if wallet_selection.status != "selected":
                 return cls._result(
-                    "duplicate",
-                    "movement already registered",
-                    movement_id=str(duplicate.id),
-                    user_id=str(duplicate.usuario_id),
-                    duplicate=True,
+                    wallet_selection.status,
+                    wallet_selection.message,
+                    user_id=user_id,
+                    currency=wallet_selection.currency,
+                    amount=amount,
                 )
 
             # Resolver categoría contra la taxonomía cerrada / categorías del usuario
@@ -942,10 +1055,11 @@ class FinanceService:
 
             movement = MovimientoFinanciero(
                 usuario_id=user.id,
+                billetera_id=UUID(wallet_selection.wallet_id),
                 categoria_id=categoria_id,
                 tipo=movement_type,
                 cantidad=amount,
-                moneda=currency,
+                moneda=wallet_selection.currency,
                 descripcion=description,
                 origen="whatsapp_text",
                 whatsapp_message_id=whatsapp_message_id,
@@ -955,6 +1069,18 @@ class FinanceService:
 
             session.add(movement)
             session.commit()
+            session.refresh(movement)
+            persisted_wallet = (
+                session.query(Billetera)
+                .filter(
+                    Billetera.id == movement.billetera_id,
+                    Billetera.usuario_id == user.id,
+                    Billetera.moneda == movement.moneda,
+                )
+                .first()
+            )
+            if persisted_wallet is None:
+                raise RuntimeError("persisted movement wallet could not be reloaded")
 
             patron_hash = None
             if movement_type == "egreso":
@@ -978,6 +1104,10 @@ class FinanceService:
                 duplicate=False,
                 category_name=category_name,
                 patron_hash=patron_hash,
+                wallet_id=str(movement.billetera_id),
+                wallet_name=persisted_wallet.nombre,
+                currency=movement.moneda,
+                amount=movement.cantidad,
             )
 
         except IntegrityError as exc:
@@ -989,13 +1119,9 @@ class FinanceService:
                 except Exception:
                     duplicate = None
                 if duplicate is not None:
-                    return cls._result(
-                        "duplicate",
-                        "movement already registered",
-                        movement_id=str(duplicate.id),
-                        user_id=str(duplicate.usuario_id),
-                        duplicate=True,
-                    )
+                    user = cls._get_user_by_phone(session, sender_phone)
+                    if user is not None:
+                        return cls._duplicate_result(session, duplicate, user)
             return cls._result("persistence_error", "could not persist movement")
 
         except Exception as exc:

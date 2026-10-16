@@ -628,17 +628,6 @@ async def test_acceptance_positive_surplus_is_read_only_and_isolated(balance_db)
         assert leaked not in reply
 
 
-def test_current_schema_defines_no_wallet_entity():
-    """The current schema has no wallet/billetera table to read or write."""
-    wallet_tables = {
-        str(name).lower()
-        for name in Base.metadata.tables
-        if "billetera" in str(name).lower() or "wallet" in str(name).lower()
-    }
-
-    assert wallet_tables == set()
-
-
 @pytest.mark.asyncio
 async def test_educational_request_with_amount_is_read_only(balance_db):
     user_id = _add_user(balance_db, PHONE_A)

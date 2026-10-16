@@ -14,7 +14,12 @@ financiero: `ingreso` o `egreso`. El backend confirma únicamente después de pe
   pendientes sin revertir los ya registrados.
 - Validaciones antes de persistir: remitente con usuario vinculado, monto positivo,
   tipo válido y descripción resoluble (`description`, `expense` o el texto original).
-- La moneda se normaliza a mayúsculas y usa `ARS` si el mensaje no indica otra.
+- La moneda se normaliza a mayúsculas y admite `ARS` o `USD`. Si no se indica moneda,
+  el registro busca una billetera `ARS`; si se proporciona solo una billetera explícita,
+  se infiere su moneda. Si se indican ambas y no coinciden, el registro se rechaza.
+- El movimiento se vincula a una billetera propia compatible. Una única billetera de la
+  moneda se selecciona automáticamente; varias requieren selección explícita y ninguna
+  produce `needs_wallet_creation`. El writer no crea billeteras ni elige entre varias.
 - La fecha del movimiento se resuelve contra la fecha actual cuando el mensaje usa
   expresiones relativas («ayer», «el martes») y por defecto es hoy.
 - La categoría es opcional. Se resuelve contra la taxonomía base y las categorías
@@ -32,6 +37,9 @@ Estados posibles del registro:
 | `duplicate` | El `whatsapp_message_id` ya existía; no se inserta otra fila y la respuesta visible se suprime. |
 | `user_not_found` | No hay usuario vinculado a ese WhatsApp; no se persiste nada. |
 | `invalid_data` | Faltan datos válidos (monto, tipo o descripción); se pide reformular. |
+| `needs_wallet_creation` | El usuario no tiene una billetera para la moneda; no se registra el movimiento. |
+| `needs_wallet_selection` | Hay varias billeteras compatibles; no se registra hasta elegir una. |
+| `invalid_selection` / `currency_mismatch` | La billetera no existe, no pertenece al usuario o no coincide con la moneda; no se registra. |
 | `persistence_error` | La escritura falló; no se confirma el registro. |
 | `not_a_movement` | El mensaje no es un movimiento financiero registrable. |
 | `needs_category_confirmation` | La categoría propuesta no está activa para el usuario; se inicia el flujo de confirmación antes de crearla. |
@@ -44,7 +52,9 @@ procesa en silencio para no repetir una confirmación ya enviada.
 ## Edición y anulación de movimientos
 
 - `update_movement` aplica solo los campos mencionados por el usuario: importe,
-  descripción, categoría, moneda, tipo y fecha. El resto del movimiento se conserva.
+  descripción, categoría, moneda, tipo, fecha y billetera. El resto del movimiento se
+  conserva. Cambiar moneda o billetera valida conjuntamente propiedad y moneda; una
+  selección ambigua o incompatible deja el movimiento intacto.
 - La operación exige usuario propietario, movimiento activo y que los datos coincidan
   con lo mostrado (`stale_context` si cambió). La categoría nueva debe ser una categoría
   activa del usuario.

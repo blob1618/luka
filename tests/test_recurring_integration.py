@@ -33,6 +33,7 @@ from app.api.whatsapp import (
 from app.models.database import (
     AvisoRecordatorio,
     Base,
+    Billetera,
     CandidatoGastoRecurrente,
     Categoria,
     MovimientoFinanciero,
@@ -76,6 +77,8 @@ def _create_user(session, phone="5491100001111", name="Usuario Integración", pr
         proactivo_habilitado=proactivo,
     )
     session.add(user)
+    session.commit()
+    session.add(Billetera(usuario_id=user.id, nombre="Efectivo", moneda="ARS"))
     session.commit()
     return user
 

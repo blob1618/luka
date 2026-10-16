@@ -142,12 +142,21 @@ El flujo oficial es:
 WhatsApp -> Backend -> public.movimientos_financieros
 ```
 
-`FinanceService.register_movement_from_whatsapp_text()` aplica estas reglas:
+`FinanceService.register_movement_from_whatsapp_text()` y
+`FinanceService.register_movement_with_category()` aplican estas reglas:
 
 - Requiere `sender_phone` y busca una coincidencia en `public.usuario.whatsapp_id`.
 - No crea ni vincula usuarios. Sin usuario vinculado devuelve `user_not_found` y no guarda el movimiento.
-- Admite `tipo` `ingreso` o `egreso`, monto positivo, moneda y descripción.
-- Usa `ARS` cuando el resultado del LLM no incluye moneda y normaliza el valor a mayúsculas.
+- Admite `tipo` `ingreso` o `egreso`, monto positivo, moneda `ARS` o `USD` y descripción.
+- Normaliza la moneda a mayúsculas. Si no se especifica, resuelve contra `ARS`; cuando
+  se pasa solo una billetera explícita, infiere su moneda. Si se pasan ambas y difieren,
+  devuelve `currency_mismatch`.
+- Resuelve una billetera del usuario y moneda antes de procesar la categoría. Selecciona
+  automáticamente si existe una sola opción, devuelve `needs_wallet_selection` si hay
+  varias y `needs_wallet_creation` si no hay ninguna. El writer no crea billeteras ni
+  guarda el movimiento mientras falte una selección válida.
+- Después del commit vuelve a leer movimiento y billetera persistidos; la respuesta de
+  éxito expone su ID, nombre, moneda e importe guardados.
 - Busca una categoría activa perteneciente al usuario.
 - No crea categorías automáticamente. Sin coincidencia guarda `categoria_id=null`.
 - Guarda `origen="whatsapp_text"` y el identificador de Meta en `whatsapp_message_id`.
@@ -157,7 +166,7 @@ WhatsApp -> Backend -> public.movimientos_financieros
 
 ## Billeteras y fase de expansión (STK-237)
 
-`public.billetera` representa una billetera propia del usuario. Guarda `usuario_id`, `nombre`, `moneda` y `creado_en`; exige `nombre` no vacío e impide repetir el nombre normalizado (`lower(btrim(nombre))`) dentro de la misma pareja `(usuario_id, moneda)`. Un usuario puede tener varias billeteras en la misma moneda, por eso el nombre forma parte de su identidad lógica. La moneda se almacena tal como llega del histórico: no se agrega un check de formato ni se normaliza el valor, para conservar la pareja exacta `(usuario_id, moneda)` de los movimientos; la normalización corresponde a STK-238.
+`public.billetera` representa una billetera propia del usuario. Guarda `usuario_id`, `nombre`, `moneda` y `creado_en`; exige `nombre` no vacío e impide repetir el nombre normalizado (`lower(btrim(nombre))`) dentro de la misma pareja `(usuario_id, moneda)`. Un usuario puede tener varias billeteras en la misma moneda, por eso el nombre forma parte de su identidad lógica. La moneda histórica permanece sin reescritura para conservar la pareja exacta `(usuario_id, moneda)` de cada movimiento. STK-238 normaliza a mayúsculas las nuevas operaciones y limita la creación/selección de billeteras a `ARS` y `USD`.
 
 La integridad propietario/moneda no depende de policies ni del backend: la FK compuesta `movimientos_financieros_billetera_fkey` sobre `(billetera_id, usuario_id, moneda) -> billetera(id, usuario_id, moneda)` impide que un movimiento apunte a una billetera de otro usuario o de otra moneda. Con `MATCH SIMPLE`, `billetera_id = NULL` no se valida; ese es el estado válido de la expansión.
 
@@ -172,6 +181,29 @@ Migraciones:
 Locks: Supabase CLI aplica cada archivo de migración en una sola transacción, así que el alcance de un lock es el archivo completo; por eso la expansión, el backfill y el índice viven en archivos separados. La expansión solo ejecuta DDL breve de metadatos: `ADD COLUMN billetera_id` toma `ACCESS EXCLUSIVE` sobre `movimientos_financieros` (bloquea lecturas y escrituras) y lo conserva hasta que termina esa transacción, pero el archivo no ejecuta DML ni construye índices sobre esa tabla; `ADD FOREIGN KEY ... NOT VALID` toma `SHARE ROW EXCLUSIVE` sobre la tabla referenciante y la referenciada, sin escanear filas. El índice se construye en su propio archivo con `CREATE INDEX` normal: toma `SHARE` y bloquea escrituras sobre `movimientos_financieros` mientras dura el build, sin bloquear lecturas. El backfill, también en su archivo, no toma bloqueo exclusivo global pero retiene row locks en las filas que modifica: DML concurrente sobre otras filas puede continuar, las lecturas no se bloquean y una escritura concurrente sobre una fila ya modificada puede esperar. `VALIDATE CONSTRAINT` usa `SHARE UPDATE EXCLUSIVE` sobre la referenciante y `ROW SHARE` sobre la referenciada.
 
 `public.billetera` tiene RLS habilitado y `REVOKE ALL` para `anon`/`authenticated`, sin policies ni `auth.uid()`: el backend accede con un rol `BYPASSRLS`, igual que el resto del contrato financiero.
+
+### Writers y saldos (STK-238)
+
+`WalletService` crea billeteras nuevas únicamente en `ARS` o `USD`, normaliza la moneda
+a mayúsculas y rechaza nombres duplicados tras normalizar espacios y mayúsculas dentro
+del mismo usuario y moneda. Las consultas y selecciones filtran siempre por el usuario
+propietario. Una billetera explícita permite inferir la moneda; sin selección explícita,
+la moneda ausente usa `ARS`. Una única coincidencia se selecciona automáticamente, varias
+devuelven `needs_wallet_selection` con opciones estables y ninguna devuelve
+`needs_wallet_creation`.
+
+Ambos writers de `FinanceService` resuelven propietario y moneda antes de guardar,
+persisten `billetera_id` y `moneda` juntos, y devuelven `registered` solo después del
+commit y la lectura de la billetera persistida. Los errores de selección no insertan
+movimientos. Un `whatsapp_message_id` duplicado de otro usuario no revela su movimiento.
+Al editar, cambiar moneda o billetera vuelve a validar ambos campos como pareja y deja
+el movimiento intacto si la selección es ambigua o incompatible.
+
+`WalletService.get_balances_own_user()` devuelve una fila por billetera propia y moneda,
+con ingresos activos menos egresos activos usando `Decimal`; excluye movimientos anulados
+y no suma movimientos de otra billetera o moneda. Mientras `billetera_id` siga nullable,
+las filas históricas o concurrentes sin billetera no aparecen en estos saldos; el cierre
+de esa ventana corresponde al backfill coordinado de STK-240.
 
 El harness `supabase/tests/stk237_billetera.sql` aplica los tres archivos en orden y verifica en una base PostgreSQL local descartable (Supabase CLI, `project_id` propio y confirmación explícita) el backfill histórico, la preservación de campos, los movimientos anulados, la integridad de propietario y moneda, el `billetera_id` nullable, el índice en su archivo posterior y RLS/permisos. No se ejecuta contra Supabase remoto ni producción.
 

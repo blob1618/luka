@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.whatsapp import WhatsAppReplyButtons, WhatsAppText
 from app.models import database
-from app.models.database import Base, Categoria, LimiteCategoria, Usuario
+from app.models.database import Base, Billetera, Categoria, LimiteCategoria, Usuario
 from app.services import budget, category_creation, conversation_flow, dispatcher, finance, limit, onboarding
 from app.services.conversation import ConversationService
 from app.services.conversation_flow import ConversationFlowService
@@ -55,6 +55,7 @@ def environment(monkeypatch):
         user = Usuario(nombre="Demo", email="limit-demo@example.test", whatsapp_id=PHONE)
         session.add(user)
         session.flush()
+        session.add(Billetera(usuario_id=user.id, nombre="Efectivo", moneda="ARS"))
         session.add(Categoria(nombre="Comida", usuario_id=user.id))
         session.commit()
 

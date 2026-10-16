@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.services.finance as finance_module
-from app.models.database import Base, MovimientoFinanciero, Usuario
+from app.models.database import Base, Billetera, MovimientoFinanciero, Usuario
 from app.services.dispatcher import _register_multiop, process_incoming_message
 from app.services.finance import MovementRegistrationResult
 from app.services.llm import LLMService
@@ -58,6 +58,8 @@ def _create_user(session, whatsapp_id="5491111111111"):
         whatsapp_id=whatsapp_id,
     )
     session.add(user)
+    session.commit()
+    session.add(Billetera(usuario_id=user.id, nombre="Efectivo", moneda="ARS"))
     session.commit()
     return user
 
