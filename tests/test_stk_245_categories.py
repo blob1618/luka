@@ -126,11 +126,32 @@ async def test_chat_category_commands_override_false_confirmation(
 
 
 def test_category_management_route_does_not_replace_movement_reclassification():
-    movement = {"intent": "update_movement", "changes": {"category": "Transporte"}}
+    movement = {
+        "intent": "update_movement", "reference": "last_registered",
+        "changes": {"category": "Transporte"},
+    }
+    for message in (
+        "Cambiá la categoría del último gasto a Transporte",
+        "Cambiá la categoría del último gasto por Transporte",
+        "Cambiá la categoría de mi último movimiento por Transporte",
+    ):
+        assert normalize_category_management_intent(message, movement) is movement
 
-    assert normalize_category_management_intent(
-        "Cambiá la categoría del último gasto a Transporte", movement,
-    ) is movement
+
+@pytest.mark.asyncio
+async def test_reclassification_by_por_keeps_last_registered_movement_route():
+    ctx = _DispatchContext(
+        sender_phone="5491111111111",
+        text_body="Cambiá la categoría del último gasto por Transporte",
+        whatsapp_message_id="wamid.reclassify", conversation_history=None,
+    )
+    routed = await _normalize_extracted_message(ctx, {
+        "intent": "update_movement", "reference": "last_registered",
+        "changes": {"category": "Transporte"}, "category": None,
+    })
+    assert routed["intent"] == "update_movement"
+    assert routed["reference"] == "last_registered"
+    assert routed["changes"] == {"category": "Transporte"}
 
 
 def test_explicit_expense_query_preserves_misspelled_category_for_safe_resolution():
@@ -141,6 +162,31 @@ def test_explicit_expense_query_preserves_misspelled_category_for_safe_resolutio
     assert routed["intent"] == "query_movements"
     assert routed["movement_type"] == "egreso"
     assert routed["category"] == "jardinera"
+
+
+@pytest.mark.asyncio
+async def test_category_query_preserves_month_filter_and_extracted_category():
+    ctx = _DispatchContext(
+        sender_phone="5491111111111",
+        text_body="Quiero ver los gastos referidos a Comida de octubre de 2026",
+        whatsapp_message_id="wamid.period-query", conversation_history=None,
+    )
+    routed = await _normalize_extracted_message(ctx, {
+        "intent": "query_movements", "category": "Comida",
+        "movement_type": "egreso", "date_from": "2026-10-01",
+        "date_to": "2026-10-31",
+    })
+    assert routed["intent"] == "query_movements"
+    assert routed["category"] == "Comida"
+    assert routed["date_from"] == "2026-10-01"
+    assert routed["date_to"] == "2026-10-31"
+
+    without_llm_dates = normalize_movement_query_intent(ctx.text_body, {
+        "intent": "expense_summary", "category": None,
+    })
+    assert without_llm_dates["category"] == "Comida"
+    assert without_llm_dates["date_from"] == "2026-10-01"
+    assert without_llm_dates["date_to"] == "2026-10-31"
 
 
 @pytest.mark.asyncio

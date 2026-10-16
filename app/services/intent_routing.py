@@ -71,10 +71,17 @@ def normalize_category_management_intent(text: str, data: dict) -> dict:
     """Route explicit category commands even when the LLM calls them confirmations."""
     rename = _RENAME_CATEGORY.fullmatch(text) or _RENAME_CATEGORY_BY_CHANGE.fullmatch(text)
     if rename is not None:
+        source = rename.group("source").strip()
+        if re.fullmatch(
+            r"(?:(?:de|del)\s+)?(?:mi\s+)?(?:ultimo|ultima|ultimos|ultimas)\s+"
+            r"(?:gasto|movimiento|ingreso|egreso|compra|transaccion)s?",
+            _normalize(source),
+        ):
+            return data
         return {
             **data,
             "intent": "rename_category",
-            "category": rename.group("source").strip(),
+            "category": source,
             "changes": {"category": rename.group("target").strip()},
             "movement_type": None,
         }
@@ -194,6 +201,10 @@ _CATEGORY_EXPENSE_QUERY = re.compile(
 _QUERY_MONTH_YEAR = re.compile(
     r"\b(?:de|del|en)\s+(" + "|".join(_MONTHS) + r")\s+de\s+(\d{4})$"
 )
+_CATEGORY_QUERY_MONTH_YEAR = re.compile(
+    r"\s+(?:de|del|en)\s+(?:" + "|".join(_MONTHS) + r")\s+de\s+\d{4}$",
+    re.IGNORECASE,
+)
 
 
 def _query_month_range(normalized: str) -> tuple[str | None, str | None]:
@@ -236,9 +247,18 @@ def normalize_movement_query_intent(
 
     category_query = _CATEGORY_EXPENSE_QUERY.fullmatch(text)
     if category_query:
+        category_text = category_query.group("category").strip()
+        period = _CATEGORY_QUERY_MONTH_YEAR.search(category_text)
+        if period:
+            category_text = category_text[:period.start()].strip()
+            date_from, date_to = _query_month_range(normalized)
+            if not data.get("date_from"):
+                data["date_from"] = date_from
+            if not data.get("date_to"):
+                data["date_to"] = date_to
         data["intent"] = "query_movements"
         data["movement_type"] = "egreso"
-        data["category"] = category_query.group("category").strip()
+        data["category"] = category_text
         data["reply_text"] = "Consultando tus gastos."
         return data
 
