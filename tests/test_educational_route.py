@@ -164,6 +164,8 @@ def test_open_or_multi_month_requests_fall_through(text):
         "¿Cuánto me sobró del presupuesto de comida?",
         "¿Cuánto me sobró del presupuesto de comida el mes pasado?",
         "¿Cuánto me sobró del límite de comida el mes pasado?",
+        "¿Cuánto me sobró de la categoría comida?",
+        "¿Cuánto me sobró de las categorías de comida el mes pasado?",
     ],
 )
 def test_category_budget_surplus_is_not_a_monthly_balance_request(text):

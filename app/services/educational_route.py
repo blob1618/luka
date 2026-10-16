@@ -68,7 +68,7 @@ _EXPLICIT_MONTH_TERMS = re.compile(
     r"septiembre|setiembre|octubre|noviembre|diciembre)\b"
 )
 _CATEGORY_BUDGET_TERMS = re.compile(
-    r"\b(?:presupuestos?|limites?|topes?)\b"
+    r"\b(?:presupuestos?|limites?|topes?|categorias?)\b"
 )
 
 # Pedidos de un período abierto/actual o de varios meses: query_monthly_balance
