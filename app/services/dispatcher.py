@@ -1356,6 +1356,8 @@ async def _register_single_with_hint(
     reply = f"✅ Registré tu {movement_type}: {description} por ${amount} {currency}."
     if category_name:
         reply += f"\n📁 Categoría: {category_name}."
+    else:
+        reply += "\n📁 Quedó sin categoría. Podés crear una y después asignársela."
     reply += f"\n{_category_hint_reply()}"
     evaluation = await asyncio.to_thread(
         BudgetService.evaluate_movement,
