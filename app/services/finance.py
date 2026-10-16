@@ -15,12 +15,11 @@ from app.models.database import (
     SessionLocal,
     Usuario,
 )
-from app.services.categories_taxonomy import resolve_category_for_user
-from app.services.wallet import WalletService
 from app.services.categories_taxonomy import (
     resolve_category_for_user,
     suggest_user_category,
 )
+from app.services.wallet import WalletService
 
 
 @dataclass
