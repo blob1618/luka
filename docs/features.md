@@ -24,7 +24,8 @@ financiero: `ingreso` o `egreso`. El backend confirma únicamente después de pe
   expresiones relativas («ayer», «el martes») y por defecto es hoy.
 - La categoría es opcional. Se resuelve contra la taxonomía base y las categorías
   activas del usuario; sin coincidencia, el movimiento se guarda con `categoria_id`
-  nulo. Nunca se crea una categoría sin confirmación explícita.
+  nulo y la respuesta lo indica. Nunca se crea una categoría sin confirmación explícita
+  o sin un pedido directo de creación del usuario.
 - La respuesta de confirmación se construye con el resultado real de la persistencia.
   El `reply_text` del LLM no confirma escrituras.
 
@@ -41,7 +42,8 @@ Estados posibles del registro:
 | `invalid_selection` / `currency_mismatch` | La billetera no existe, no pertenece al usuario o no coincide con la moneda; no se registra. |
 | `persistence_error` | La escritura falló; no se confirma el registro. |
 | `not_a_movement` | El mensaje no es un movimiento financiero registrable. |
-| `needs_category_confirmation` | La categoría propuesta no está en la taxonomía ni en las categorías del usuario; se inicia el flujo de confirmación. |
+| `needs_category_confirmation` | La categoría propuesta no está activa para el usuario; se inicia el flujo de confirmación antes de crearla. |
+| `category_not_found` | La categoría seleccionada dejó de estar activa antes del registro; no se guarda el movimiento. |
 
 La deduplicación es doble: el webhook reclama el `message_id` una sola vez en Redis y
 `FinanceService` verifica `whatsapp_message_id` antes de insertar. Un reenvío de Meta se
@@ -73,19 +75,29 @@ procesa en silencio para no repetir una confirmación ya enviada.
 
 - Existe una taxonomía base de categorías canónicas con sinónimos: Servicios, Comida,
   Transporte, Ocio, Vivienda, Salud, Ingresos, Educación y Ropa. Por ejemplo, «super»,
-  «almacén» o «despensa» resuelven a Comida.
+  «supermercado» o «despensa» resuelven a Comida.
 - Si el usuario ya tiene una categoría que resuelve al mismo canónico, el movimiento se
-  asocia a esa categoría real en lugar del nombre canónico.
-- Cuando el LLM propone una categoría que no está en la taxonomía ni entre las
-  categorías del usuario, el backend pregunta antes de crearla. La confirmación es
+  asocia a esa categoría real en lugar del nombre canónico. Una coincidencia exacta
+  con el nombre del usuario tiene prioridad sobre otros sinónimos.
+- Si el texto menciona inequívocamente una categoría de la taxonomía y el LLM propone
+  otra que no aparece en el texto, prevalece la evidencia explícita. Por ejemplo,
+  «Uber» no se asigna a Supermercado.
+- En un registro individual, cuando el LLM propone una categoría que el usuario no
+  tiene activa, incluso si corresponde a la taxonomía base, el backend pregunta antes
+  de crearla. La confirmación es
   multi-turno y, al aprobarse, la categoría se crea y el movimiento se registra.
+- El usuario puede crear una categoría por pedido directo y renombrar una categoría
+  activa propia. El renombrado conserva los movimientos y límites asociados.
+- Si el nombre de origen de un renombrado no coincide, Luka propone una única categoría
+  activa similar y espera un «sí» antes de modificarla. La propuesta vence con el
+  estado de conversación; «no» cancela sin cambios.
 - El listado de categorías muestra las activas con totales de ingresos y egresos
   (excluyendo anulados).
 - Eliminar una categoría es lógico: desvincula sus movimientos (`categoria_id` nulo) y
   elimina los límites asociados. Si más adelante se vuelve a usar ese nombre, la
   categoría se reactiva.
-- No existe renombrado de categorías. Para cambiar la categoría de un movimiento se usa
-  `update_movement`.
+- Para cambiar la categoría de un movimiento se usa `update_movement`. Si la nueva
+  categoría no existe, se indica que primero debe crearse y el movimiento no cambia.
 
 ## Límites de gasto y presupuestos
 
@@ -135,6 +147,9 @@ procesa en silencio para no repetir una confirmación ya enviada.
 
 - `query_movements` filtra por tipo (`ingreso`/`egreso`), categoría y rango de fechas,
   con orden determinista por fecha y antigüedad de carga.
+- En consultas de solo lectura, una variante de acento o un error de escritura con
+  una única coincidencia clara se resuelve al nombre real de la categoría. Si hay
+  varias coincidencias posibles, no se elige una por aproximación.
 - Muestra como máximo cinco movimientos y aclara cuántos hay en total cuando hay más.
   Los movimientos anulados no aparecen.
 - Si hay más resultados que los mostrados y la consulta tiene filtro de fechas, se

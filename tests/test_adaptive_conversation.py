@@ -198,10 +198,13 @@ async def test_category_correction_uses_existing_category_only(conversation_db, 
     )
     phone = user.whatsapp_id
     await process_incoming_message(phone, "Pagué uber 5000", "wamid.uber")
+    session.expire_all()
+    assert session.query(MovimientoFinanciero).one().categoria_id == transport.id
     changed = await process_incoming_message(phone, "Cambiá la categoría a transporte")
     refused = await process_incoming_message(phone, "Mejor categoría inventada")
     assert "Transporte" in changed.reply_text
-    assert "No encontré esa categoría activa" in refused.reply_text
+    assert "Creá la categoría Inventada" in refused.reply_text
+    assert "sigue con su categoría anterior" in refused.reply_text
     session.expire_all()
     movement = session.query(MovimientoFinanciero).one()
     assert movement.categoria_id == transport.id and movement.categoria_id != food.id

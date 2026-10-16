@@ -1,4 +1,35 @@
-from app.services.categories_taxonomy import resolve_category, resolve_category_for_user
+from app.services.categories_taxonomy import (
+    category_explicitly_named_in_text,
+    category_named_in_text,
+    resolve_category,
+    resolve_category_for_user,
+    suggest_user_category,
+)
+
+
+def test_read_only_name_resolution_accepts_unique_typo_but_not_ambiguous_names():
+    assert resolve_category_for_user(
+        "jardinera", {"Jardinería"}, allow_fuzzy=True
+    ) == "Jardinería"
+    assert resolve_category_for_user("jardinera", {"Jardinería"}) is None
+    assert suggest_user_category("Comido", {"Comida", "Comide"}) is None
+
+
+def test_explicit_category_uses_unique_text_evidence():
+    assert category_explicitly_named_in_text("Gasté 10000 en Uber") == "Transporte"
+    assert category_explicitly_named_in_text("Gasté 12000 en supermercado") == "Comida"
+    assert category_explicitly_named_in_text("Gasté en Uber y supermercado") is None
+    assert category_named_in_text(
+        "Gasté 2500 ARS en macetas, categoría Jardinería"
+    ) == "Jardinería"
+    assert category_named_in_text(
+        "Gasté 2500 ARS en Uber, categoría Comida"
+    ) == "Comida"
+    assert category_named_in_text("Gasté 5000 en supermercado") is None
+
+
+def test_exact_user_category_wins_over_taxonomy_alias():
+    assert resolve_category_for_user("Supermercado", {"Comida", "Supermercado"}) == "Supermercado"
 
 
 def test_resolve_synonym_to_canonical():

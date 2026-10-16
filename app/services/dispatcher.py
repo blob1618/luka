@@ -21,6 +21,7 @@ from sqlalchemy.sql import func
 
 from app.api.whatsapp import (
     OutboundWhatsAppMessage,
+    WhatsAppImage,
     WhatsAppReplyButton,
     WhatsAppReplyButtons,
     WhatsAppText,
@@ -41,6 +42,7 @@ from app.services.conversation import (
     PendingLimitDelete,
     PendingMovement,
     PendingMovementCategoryChange,
+    PendingCategoryRename,
     PendingMovementChart,
     PendingReminder,
     PendingSelection,
@@ -67,6 +69,7 @@ from app.services.finance import (
 )
 from app.services.intent_routing import (
     is_dashboard_access_candidate,
+    normalize_category_management_intent,
     normalize_limit_intent,
     normalize_movement_query_intent,
     normalize_movement_chart_intent,
@@ -74,10 +77,11 @@ from app.services.intent_routing import (
     references_recent_limit,
 )
 from app.services.category_creation import CategoryCreationService
+from app.services.categories_taxonomy import category_explicitly_named_in_text, category_named_in_text
 from app.services.limit import LimitService
 from app.services.llm import LLMService
-from app.services.chart_service import generate_chart, choice_patch
-from app.services.chart_request import chart_patch
+from app.services.chart_service import generate_chart, choice_patch, pending_chart_reply
+from app.services.chart_request import ChartRequest, chart_patch, single_month_period_patch
 from app.services.llm_contract import resolve_relative_date
 from app.services.onboarding import OnboardingDecision, OnboardingService
 from app.services.reminder import ReminderListResult, ReminderResult, ReminderService
@@ -227,6 +231,9 @@ def _registration_reply(
     if result.status == "persistence_error":
         return "Hubo un problema registrando el movimiento. Por favor, intentá nuevamente en unos minutos."
 
+    if result.status == "category_not_found":
+        return "La categoría ya no está disponible. No registré el movimiento; intentá de nuevo."
+
     if result.status == "not_a_movement":
         return (
             "No identifiqué un movimiento financiero para registrar. "
@@ -262,8 +269,17 @@ def _multiop_registration_reply(
     if registered == total:
         if total == 1:
             single = (movements or [extracted_data])[0]
-            return f"{_registered_reply(single)}\n{_category_hint_reply()}"
-        return f"✅ Registré los {total} movimientos."
+            category = results[0].category_name
+            category_line = (
+                f"📁 Categoría: {category}." if category else
+                "📁 Quedó sin categoría. Podés crear una y después asignársela."
+            )
+            return f"{_registered_reply(single)}\n{category_line}\n{_category_hint_reply()}"
+        uncategorized = sum(1 for result in results if not result.category_name)
+        reply = f"✅ Registré los {total} movimientos."
+        if uncategorized:
+            reply += f" {uncategorized} quedaron sin categoría."
+        return reply
 
     if registered == 0:
         if total == 1:
@@ -462,6 +478,13 @@ async def _apply_movement_action(
                 intent, result.status)
     error_reply = _movement_mutation_error_reply(result.status)
     if error_reply is not None:
+        if result.status == "category_not_found" and changes.get("category"):
+            return (
+                f"No tenés la categoría {changes['category']}. "
+                f"Decime 'Creá la categoría {changes['category']}' y después "
+                "volvé a pedirme este cambio. "
+                "El movimiento sigue con su categoría anterior."
+            )
         return error_reply
     before = result.before
     if result.status == "updated":
@@ -933,14 +956,14 @@ def _category_deleted_reply(category_name: str) -> str:
 
 
 def _category_not_found_reply(category_name: str) -> str:
-    return f"No encontré una categoría '{category_name}'."
+    return f"🔎 No encontré una categoría '{category_name}'. Revisá el nombre en tu lista de categorías."
 
 
 def _format_categories_list(categories_result) -> str:
     """Formatea la lista de categorías con totales para enviar por WhatsApp."""
     cats = categories_result.categories
     if not cats:
-        return "No tenés categorías todavía. Cuando registres movimientos se irán creando."
+        return "No tenés categorías todavía. Para crear una, decime 'Creá la categoría ...'."
 
     lines = ["📊 *Tus categorías:*"]
     for c in cats:
@@ -978,6 +1001,56 @@ async def _handle_delete_category(sender_phone: str, extracted_data: dict) -> st
         return _category_not_found_reply(category_name)
     else:
         return "Hubo un problema eliminando la categoría. Intentá de nuevo."
+
+
+async def _handle_create_category(sender_phone: str, extracted_data: dict) -> str:
+    category_name = str(extracted_data.get("category") or "").strip()
+    if not category_name:
+        return "Decime el nombre con 'Creá la categoría ...'."
+    user_id = await asyncio.to_thread(_user_id_by_phone, sender_phone)
+    if user_id is None:
+        return "No encontré tu cuenta."
+    result = await asyncio.to_thread(FinanceService.create_category, user_id, category_name)
+    if result.status == "created":
+        return f"✅ Creé la categoría {result.category_name}."
+    if result.status == "already_exists":
+        return f"La categoría {result.category_name} ya existe."
+    return "No pude crear la categoría. Intentá de nuevo."
+
+
+async def _handle_rename_category(sender_phone: str, extracted_data: dict) -> str:
+    source = str(extracted_data.get("category") or "").strip()
+    changes = extracted_data.get("changes") or {}
+    target = str(changes.get("category") or "").strip() if isinstance(changes, dict) else ""
+    if not source or not target:
+        return "Decime el nombre actual y el nuevo de la categoría."
+    user_id = await asyncio.to_thread(_user_id_by_phone, sender_phone)
+    if user_id is None:
+        return "No encontré tu cuenta."
+    result = await asyncio.to_thread(FinanceService.rename_category, user_id, source, target)
+    if result.status == "renamed":
+        return f"✅ La categoría {source} ahora se llama {result.category_name}."
+    if result.status == "not_found":
+        suggestion = await asyncio.to_thread(FinanceService.suggest_category, user_id, source)
+        if suggestion.status == "suggested" and suggestion.category_id and suggestion.category_name:
+            pending = PendingCategoryRename(
+                category_id=suggestion.category_id,
+                source_name=suggestion.category_name,
+                target_name=target,
+            )
+            await ConversationService.set_pending_category_rename(sender_phone, pending)
+            stored = await ConversationService.get_pending_category_rename(sender_phone)
+            if stored != pending:
+                return "⚠️ No pude guardar la confirmación. Intentá de nuevo."
+            return (
+                f"🔎 No encontré la categoría '{source}' con ese nombre. "
+                f"¿Te referís a '{suggestion.category_name}'? "
+                f"Respondé 'sí' para renombrarla a '{target}' o 'no' para cancelar."
+            )
+        return _category_not_found_reply(source)
+    if result.status == "already_exists":
+        return f"⚠️ Ya tenés una categoría {target}. Elegí otro nombre."
+    return "⚠️ No pude renombrar la categoría. Intentá de nuevo."
 
 
 async def _handle_list_categories(sender_phone: str) -> str:
@@ -1089,6 +1162,16 @@ async def _register_and_reply_with_hint(
     """
     movements = extracted_data.get("movements") or [extracted_data]
 
+    if len(movements) == 1:
+        mov = movements[0]
+        proposed = mov.get("category")
+        explicit = category_named_in_text(text_body)
+        if explicit is None and proposed:
+            explicit = category_explicitly_named_in_text(text_body)
+        if explicit and explicit.casefold() != str(proposed or "").casefold():
+            mov = {**mov, "category": explicit}
+            movements = [mov]
+
     # Confirmación de categoría SOLO con exactamente 1 movimiento con categoría inferida.
     if len(movements) == 1 and movements[0].get("category"):
         return await _register_single_with_hint(
@@ -1155,6 +1238,7 @@ async def _register_single_with_hint(
         return _registration_dispatch_reply(result, llm_result)
 
     # Guardar el último movimiento en Redis para posible cambio de categoría
+    category_name = result.category_name
     last = LastRegisteredMovement(
         movement_id=result.movement_id,
         sender_phone=sender_phone,
@@ -2326,6 +2410,8 @@ async def _handle_query_movements(sender_phone: str, extracted_data: dict) -> st
         return "Hubo un problema al consultar tus movimientos. Por favor, intentá nuevamente."
 
     if result.status == "ok":
+        if result.resolved_category_name:
+            filters["category_name"] = result.resolved_category_name
         await ConversationService.set_recent_items(
             sender_phone, RecentItems("movement", _movement_context_items(result.movements[:5]))
         )
@@ -2390,6 +2476,8 @@ async def _handle_movement_chart(sender_phone: str, extracted_data: dict) -> Dis
         service_invoked="movement_chart",
         intent="movement_chart",
         raw_llm_response=extracted_data,
+        event_key=reply.event_key,
+        event_variables=reply.event_variables,
     )
 
 
@@ -2665,6 +2753,22 @@ async def _normalize_extracted_message(ctx: _DispatchContext, data: dict) -> dic
         ctx.text_body, data, has_context=bool(ctx.last_chart)
     )
     if data.get("chart_followup") and ctx.last_chart:
+        if (data.get("chart_type") == "pie"
+                and data.get("chart_mode") is None
+                and ctx.last_chart.get("chart_mode") == "monthly"):
+            try:
+                previous_periods = ChartRequest.model_validate(ctx.last_chart).periods(
+                    datetime.now(ARGENTINA_TZ).date()
+                )
+            except ValueError:
+                previous_periods = []
+            if len(previous_periods) == 1:
+                _, start, end = previous_periods[0]
+                data.update(
+                    chart_mode="category",
+                    date_from=start.isoformat(),
+                    date_to=end.isoformat(),
+                )
         data = {
             **ctx.last_chart,
             **chart_patch(data),
@@ -2672,7 +2776,8 @@ async def _normalize_extracted_message(ctx: _DispatchContext, data: dict) -> dic
             "chart_explicit": True,
             "error": data.get("error"),
         }
-    return normalize_movement_query_intent(ctx.text_body, data)
+    data = normalize_movement_query_intent(ctx.text_body, data)
+    return normalize_category_management_intent(ctx.text_body, data)
 
 
 def _is_new_movement_request(text_body: str) -> bool:
@@ -2894,14 +2999,19 @@ async def _resolve_pending_chart(ctx: _DispatchContext) -> DispatchResult | None
     pending = ctx.pending_chart
     if _is_cancel_request(ctx.text_body):
         await ConversationService.clear_state(ctx.sender_phone)
-        return DispatchResult("Listo, cancelé el gráfico.", intent="movement_chart")
+        return DispatchResult("Listo, cancelé el gráfico.", intent="movement_chart", event_key="chart.cancelled")
     selected = choice_patch(pending, ctx.text_body)
     if selected is not None:
         return await _handle_movement_chart(
             ctx.sender_phone, {**pending.request, **selected}
         )
-    if ctx.text_body.strip().isdigit():
-        return DispatchResult(pending.question, intent="movement_chart")
+    if ctx.text_body.strip().isdigit() or normalize_text(ctx.text_body) in {"pastel", "torta", "barras", "barra"}:
+        prompt = pending_chart_reply(pending)
+        return DispatchResult(prompt.text, intent="movement_chart", event_key=prompt.event_key, event_variables=prompt.event_variables)
+    if pending.reason == "period" and pending.request.get("chart_mode", "category") in {"category", "movement_comparison"}:
+        period = single_month_period_patch(ctx.text_body, datetime.now(ARGENTINA_TZ).date())
+        if period:
+            return await _handle_movement_chart(ctx.sender_phone, {**pending.request, **period})
     return await _resolve_pending_chart_text(ctx, pending)
 
 
@@ -2919,6 +3029,14 @@ async def _resolve_pending_chart_text(
         )
     patch_data = chart_patch(data)
     if patch_data and data.get("intent") in {"movement_chart", "out_of_scope", "unknown"}:
+        if pending.reason == "period":
+            mode = pending.request.get("chart_mode", "category")
+            if mode in {"category", "movement_comparison"}:
+                patch_data = {key: value for key, value in patch_data.items() if key in {"date_from", "date_to"}}
+            elif mode == "monthly":
+                patch_data = {key: value for key, value in patch_data.items() if key in {"chart_start_month", "chart_end_month"}}
+            elif mode == "month_comparison":
+                patch_data = {key: value for key, value in patch_data.items() if key == "chart_months"}
         return await _handle_movement_chart(
             ctx.sender_phone, {**pending.request, **patch_data}
         )
@@ -3142,6 +3260,59 @@ async def _handle_pending_category_confirmation(
             return result
     await ConversationService.clear_state(ctx.sender_phone)
     return None
+
+
+async def _handle_pending_category_rename(
+    ctx: _DispatchContext,
+) -> DispatchResult | None:
+    pending = await ConversationService.get_pending_category_rename(ctx.sender_phone)
+    if pending is None:
+        return None
+    reply = normalize_text(ctx.text_body)
+    if reply in {"no", "cancelar", "no gracias"}:
+        await ConversationService.clear_state(ctx.sender_phone)
+        return DispatchResult(
+            "👍 De acuerdo, no cambié la categoría.",
+            service_invoked="conversation", intent="rename_category",
+        )
+    confirmation = re.fullmatch(
+        r"(?:si|dale|ok|confirmo)(?: esa)?(?: cambiala por (?P<target>.+))?",
+        reply,
+    )
+    if confirmation is None:
+        await ConversationService.clear_state(ctx.sender_phone)
+        return None
+    confirmed_target = confirmation.group("target")
+    if confirmed_target and confirmed_target != normalize_text(pending.target_name):
+        await ConversationService.clear_state(ctx.sender_phone)
+        return DispatchResult(
+            "⚠️ El nombre nuevo cambió. Indicame otra vez qué categoría querés renombrar y a qué nombre.",
+            service_invoked="conversation", intent="rename_category",
+        )
+    await ConversationService.clear_state(ctx.sender_phone)
+    user_id = await asyncio.to_thread(_user_id_by_phone, ctx.sender_phone)
+    if user_id is None:
+        response = "⚠️ No encontré tu cuenta."
+    else:
+        result = await asyncio.to_thread(
+            FinanceService.rename_category,
+            user_id, pending.source_name, pending.target_name,
+            pending.category_id,
+        )
+        if result.status == "renamed":
+            response = (
+                f"✅ La categoría {pending.source_name} ahora se llama "
+                f"{result.category_name}."
+            )
+        elif result.status == "not_found":
+            response = "⚠️ Esa categoría cambió o ya no está disponible. Volvé a consultar tus categorías."
+        elif result.status == "already_exists":
+            response = f"⚠️ Ya tenés una categoría {pending.target_name}. Elegí otro nombre."
+        else:
+            response = "⚠️ No pude renombrar la categoría. Intentá de nuevo."
+    return DispatchResult(
+        response, service_invoked="finance", intent="rename_category",
+    )
 
 
 async def _handle_pending_limit_data(
@@ -3382,6 +3553,7 @@ async def _handle_pending_conversation_flows(
     ctx: _DispatchContext,
 ) -> DispatchResult | None:
     handlers = (
+        _handle_pending_category_rename,
         _handle_pending_chart,
         _handle_pending_rename,
         _handle_pending_reminder_data,
@@ -3501,6 +3673,12 @@ async def _handle_finance_intent(
         return _llm_dispatch_result(data, reply, "finance", intent)
     if intent == "delete_category":
         reply = await _handle_delete_category(ctx.sender_phone, data)
+        return _llm_dispatch_result(data, reply, "finance", intent)
+    if intent == "create_category":
+        reply = await _handle_create_category(ctx.sender_phone, data)
+        return _llm_dispatch_result(data, reply, "finance", intent)
+    if intent == "rename_category":
+        reply = await _handle_rename_category(ctx.sender_phone, data)
         return _llm_dispatch_result(data, reply, "finance", intent)
     if intent == "list_categories":
         reply = await _handle_list_categories(ctx.sender_phone)
@@ -3764,7 +3942,20 @@ async def _render_configured_event(
         variables=result.event_variables,
     )
     if configured is not None:
-        result.reply_message = configured
+        if (result.event_key == "chart.completed"
+                and isinstance(result.reply_message, WhatsAppImage)
+                and isinstance(configured, WhatsAppText)
+                and len(configured.body) <= 1024):
+            original = result.reply_message
+            result.reply_message = WhatsAppImage(
+                content=original.content,
+                filename=original.filename,
+                caption=configured.body,
+                mime_type=original.mime_type,
+            )
+            result.reply_text = configured.body
+        elif result.event_key != "chart.completed":
+            result.reply_message = configured
 
 
 def _set_movement_category_message(

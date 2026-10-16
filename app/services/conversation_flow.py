@@ -121,9 +121,14 @@ class ConversationFlowService:
     ) -> FlowSnapshot | None:
         session = (session_factory or SessionLocal)()
         try:
+            from app.services.chart_flow_journey import CHART_JOURNEY, CHART_STAGES
             from app.services.limit_flow_journey import LIMIT_JOURNEY, LIMIT_STAGES
 
-            event_keys = [event_key, LIMIT_JOURNEY] if event_key in LIMIT_STAGES else [event_key]
+            event_keys = [event_key]
+            if event_key in LIMIT_STAGES:
+                event_keys.append(LIMIT_JOURNEY)
+            if event_key in CHART_STAGES:
+                event_keys.append(CHART_JOURNEY)
             flow_id = (
                 session.query(ConversationFlow.id)
                 .join(
@@ -241,12 +246,17 @@ class ConversationFlowService:
                 flow.event_key, draft.definition
             )
 
+            from app.services.chart_flow_journey import CHART_JOURNEY, CHART_STAGES
             from app.services.limit_flow_journey import LIMIT_JOURNEY, LIMIT_STAGES
 
             competing_events = (
                 list(LIMIT_STAGES) if flow.event_key == LIMIT_JOURNEY
                 else [LIMIT_JOURNEY] if flow.event_key in LIMIT_STAGES else []
             )
+            if flow.event_key == CHART_JOURNEY:
+                competing_events = list(CHART_STAGES)
+            elif flow.event_key in CHART_STAGES:
+                competing_events = [CHART_JOURNEY]
             if competing_events and session.query(ConversationFlow.id).join(
                 ConversationFlowVersion,
                 ConversationFlowVersion.flow_id == ConversationFlow.id,
@@ -256,7 +266,7 @@ class ConversationFlowService:
                 ConversationFlowVersion.status == "published",
             ).first():
                 raise ConversationFlowConflict(
-                    "Retirá los flujos de límites anteriores antes de publicar el recorrido unificado (o viceversa)."
+                    "Retirá los flujos individuales anteriores antes de publicar el recorrido unificado (o viceversa)."
                 )
 
             published = cls._version_for_status(session, flow_id, "published")
