@@ -189,6 +189,9 @@ procesa en silencio para no repetir una confirmación ya enviada.
   están fuera de alcance.
 - El contenido y el proceso de revisión están en
   [financial-glossary.md](financial-glossary.md).
+- El cálculo del sobrante del último mes cerrado, sus límites y los escenarios
+  de prueba del simulador están en
+  [educational-surplus-guidance.md](educational-surplus-guidance.md).
 
 ## Recordatorios
 
