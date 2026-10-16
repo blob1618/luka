@@ -14,7 +14,10 @@ from app.models.database import (
     SessionLocal,
     Usuario,
 )
-from app.services.categories_taxonomy import resolve_category_for_user
+from app.services.categories_taxonomy import (
+    resolve_category_for_user,
+    suggest_user_category,
+)
 
 
 @dataclass
@@ -30,7 +33,7 @@ class MovementRegistrationResult:
 
 @dataclass
 class CategoryResult:
-    status: str                # "created" | "already_exists" | "deleted" | "not_found" | "error"
+    status: str                # "created" | "renamed" | "suggested" | "already_exists" | "deleted" | "not_found" | "error"
     message: str
     category_id: str | None = None
     category_name: str | None = None
@@ -69,6 +72,7 @@ class MovementQueryResult:
     message: str
     movements: list[MovementItem] = field(default_factory=list)
     total_found: int = 0
+    resolved_category_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -657,7 +661,8 @@ class FinanceService:
 
     @classmethod
     def rename_category(
-        cls, user_id: Any, category_name: str, new_name: str
+        cls, user_id: Any, category_name: str, new_name: str,
+        expected_category_id: str | None = None,
     ) -> CategoryResult:
         """Rename an active category owned by the user without changing its links."""
         source = cls._normalize_category_name(category_name)
@@ -668,7 +673,10 @@ class FinanceService:
         session = SessionLocal()
         try:
             category = cls._find_category(session, user_id, source)
-            if category is None:
+            if category is None or (
+                expected_category_id is not None
+                and str(category.id) != expected_category_id
+            ):
                 return CategoryResult(status="not_found", message="category not found")
             existing = cls._find_category(session, user_id, target)
             if existing is not None and existing.id != category.id:
@@ -683,6 +691,33 @@ class FinanceService:
             session.rollback()
             print(f"[FINANCE] rename_category error: {type(exc).__name__}: {exc}")
             return CategoryResult(status="error", message="could not rename category")
+        finally:
+            session.close()
+
+    @classmethod
+    def suggest_category(cls, user_id: Any, requested_name: str) -> CategoryResult:
+        """Find a unique plausible active category owned by this user."""
+        session = SessionLocal()
+        try:
+            categories = (
+                session.query(Categoria)
+                .filter(Categoria.usuario_id == user_id)
+                .filter(Categoria.esta_eliminado.is_(False))
+                .all()
+            )
+            suggestion = suggest_user_category(
+                requested_name, (category.nombre for category in categories)
+            )
+            if suggestion is None:
+                return CategoryResult(status="not_found", message="no clear match")
+            category = next(cat for cat in categories if cat.nombre == suggestion)
+            return CategoryResult(
+                status="suggested", message="clear match",
+                category_id=str(category.id), category_name=category.nombre,
+            )
+        except Exception as exc:
+            print(f"[FINANCE] suggest_category error: {type(exc).__name__}: {exc}")
+            return CategoryResult(status="error", message="could not suggest category")
         finally:
             session.close()
 
@@ -1038,6 +1073,7 @@ class FinanceService:
                 return MovementQueryResult(status="user_not_found", message="Usuario no encontrado")
 
             resolved_cat_id = None
+            resolved_category_name = None
             if categoria_id is not None:
                 try:
                     resolved_cat_id = UUID(str(categoria_id))
@@ -1060,7 +1096,9 @@ class FinanceService:
             elif category_name is not None and str(category_name).strip():
                 clean_cat = str(category_name).strip()
                 active_names = cls._active_user_category_names(session, parsed_user_id)
-                resolved_name = resolve_category_for_user(clean_cat, active_names)
+                resolved_name = resolve_category_for_user(
+                    clean_cat, active_names, allow_fuzzy=True
+                )
                 cat_obj = cls._find_category(session, parsed_user_id, resolved_name or clean_cat)
                 if cat_obj is None:
                     return MovementQueryResult(
@@ -1070,6 +1108,7 @@ class FinanceService:
                         total_found=0,
                     )
                 resolved_cat_id = cat_obj.id
+                resolved_category_name = cat_obj.nombre
 
             query = (
                 session.query(
@@ -1126,6 +1165,7 @@ class FinanceService:
                 message="ok",
                 movements=items,
                 total_found=total_found,
+                resolved_category_name=resolved_category_name,
             )
         except Exception as exc:
             print(f"[QUERY_MOVEMENTS] Error: {type(exc).__name__}: {exc}")

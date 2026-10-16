@@ -16,6 +16,10 @@ from app.models.database import (
     Usuario,
 )
 from app.services.finance import FinanceService
+from app.services.intent_routing import (
+    normalize_category_management_intent,
+    normalize_movement_query_intent,
+)
 
 
 @pytest.fixture()
@@ -571,6 +575,101 @@ def test_rename_category_preserves_movement_and_rejects_cross_user_or_duplicate(
     assert movement.categoria_id == category.id
     assert movement.cantidad == 10000
     assert movement.moneda == "ARS"
+
+
+def test_category_suggestion_is_owned_active_and_rename_checks_identity(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    other = create_user(session, "5492222222222")
+    category = create_category(session, user.id, nombre="Jardinería")
+    create_category(session, other.id, nombre="Jardinerio")
+    create_category(session, user.id, nombre="Jardines", esta_eliminado=True)
+
+    suggestion = FinanceService.suggest_category(user.id, "jardineria")
+    assert suggestion.status == "suggested"
+    assert suggestion.category_name == "Jardinería"
+    assert suggestion.category_id == str(category.id)
+    assert FinanceService.suggest_category(other.id, "Jardines").status == "not_found"
+    assert FinanceService.rename_category(
+        user.id, "Jardinería", "Plantas", str(uuid.uuid4())
+    ).status == "not_found"
+    session.refresh(category)
+    assert category.nombre == "Jardinería"
+
+
+def test_movement_query_resolves_unique_misspelled_category_without_modifying_it(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    category = create_category(session, user.id, nombre="Jardinería")
+    session.add(MovimientoFinanciero(
+        usuario_id=user.id, categoria_id=category.id, tipo="egreso",
+        cantidad=2500, moneda="ARS", descripcion="macetas",
+    ))
+    session.commit()
+
+    result = FinanceService.query_movements(
+        user.id, movement_type="egreso", category_name="jardinera"
+    )
+    assert result.status == "ok"
+    assert result.total_found == 1
+    assert result.resolved_category_name == "Jardinería"
+    session.refresh(category)
+    assert category.nombre == "Jardinería"
+
+
+def test_reclassifying_last_expense_by_por_updates_existing_movement(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    comida = create_category(session, user.id, nombre="Comida")
+    transporte = create_category(session, user.id, nombre="Transporte")
+    movement = MovimientoFinanciero(
+        usuario_id=user.id, categoria_id=comida.id, tipo="egreso",
+        cantidad=2500, moneda="ARS", descripcion="almuerzo",
+        fecha_movimiento=date(2026, 10, 10),
+    )
+    session.add(movement)
+    session.commit()
+
+    routed = normalize_category_management_intent(
+        "Cambiá la categoría del último gasto por Transporte",
+        {"intent": "update_movement", "reference": "last_registered",
+         "changes": {"category": "Transporte"}},
+    )
+    assert routed["intent"] == "update_movement"
+    result = FinanceService.update_movement(
+        user.whatsapp_id, str(movement.id), routed["changes"]
+    )
+    assert result.status == "updated"
+    session.refresh(movement)
+    assert movement.categoria_id == transporte.id
+
+
+def test_expense_query_by_category_and_month_returns_dated_movement(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    comida = create_category(session, user.id, nombre="Comida")
+    session.add(MovimientoFinanciero(
+        usuario_id=user.id, categoria_id=comida.id, tipo="egreso",
+        cantidad=2500, moneda="ARS", descripcion="almuerzo",
+        fecha_movimiento=date(2026, 10, 10),
+    ))
+    session.commit()
+
+    routed = normalize_movement_query_intent(
+        "Quiero ver los gastos referidos a Comida de octubre de 2026",
+        {"intent": "query_movements", "category": "Comida",
+         "movement_type": "egreso", "date_from": "2026-10-01",
+         "date_to": "2026-10-31"},
+    )
+    result = FinanceService.query_movements(
+        user.id, movement_type=routed["movement_type"],
+        category_name=routed["category"],
+        start_date=date.fromisoformat(routed["date_from"]),
+        end_date=date.fromisoformat(routed["date_to"]),
+    )
+    assert result.status == "ok"
+    assert result.total_found == 1
+    assert result.movements[0].descripcion == "almuerzo"
 
 
 def test_delete_category_existing(db_context):

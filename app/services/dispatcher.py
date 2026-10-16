@@ -42,6 +42,7 @@ from app.services.conversation import (
     PendingLimitDelete,
     PendingMovement,
     PendingMovementCategoryChange,
+    PendingCategoryRename,
     PendingMovementChart,
     PendingReminder,
     PendingSelection,
@@ -955,7 +956,7 @@ def _category_deleted_reply(category_name: str) -> str:
 
 
 def _category_not_found_reply(category_name: str) -> str:
-    return f"No encontré una categoría '{category_name}'."
+    return f"🔎 No encontré una categoría '{category_name}'. Revisá el nombre en tu lista de categorías."
 
 
 def _format_categories_list(categories_result) -> str:
@@ -1028,12 +1029,28 @@ async def _handle_rename_category(sender_phone: str, extracted_data: dict) -> st
         return "No encontré tu cuenta."
     result = await asyncio.to_thread(FinanceService.rename_category, user_id, source, target)
     if result.status == "renamed":
-        return f"✅ Renombré la categoría {source} a {result.category_name}."
+        return f"✅ La categoría {source} ahora se llama {result.category_name}."
     if result.status == "not_found":
+        suggestion = await asyncio.to_thread(FinanceService.suggest_category, user_id, source)
+        if suggestion.status == "suggested" and suggestion.category_id and suggestion.category_name:
+            pending = PendingCategoryRename(
+                category_id=suggestion.category_id,
+                source_name=suggestion.category_name,
+                target_name=target,
+            )
+            await ConversationService.set_pending_category_rename(sender_phone, pending)
+            stored = await ConversationService.get_pending_category_rename(sender_phone)
+            if stored != pending:
+                return "⚠️ No pude guardar la confirmación. Intentá de nuevo."
+            return (
+                f"🔎 No encontré la categoría '{source}' con ese nombre. "
+                f"¿Te referís a '{suggestion.category_name}'? "
+                f"Respondé 'sí' para renombrarla a '{target}' o 'no' para cancelar."
+            )
         return _category_not_found_reply(source)
     if result.status == "already_exists":
-        return f"Ya tenés una categoría {target}. Elegí otro nombre."
-    return "No pude renombrar la categoría. Intentá de nuevo."
+        return f"⚠️ Ya tenés una categoría {target}. Elegí otro nombre."
+    return "⚠️ No pude renombrar la categoría. Intentá de nuevo."
 
 
 async def _handle_list_categories(sender_phone: str) -> str:
@@ -2391,6 +2408,8 @@ async def _handle_query_movements(sender_phone: str, extracted_data: dict) -> st
         return "Hubo un problema al consultar tus movimientos. Por favor, intentá nuevamente."
 
     if result.status == "ok":
+        if result.resolved_category_name:
+            filters["category_name"] = result.resolved_category_name
         await ConversationService.set_recent_items(
             sender_phone, RecentItems("movement", _movement_context_items(result.movements[:5]))
         )
@@ -3241,6 +3260,59 @@ async def _handle_pending_category_confirmation(
     return None
 
 
+async def _handle_pending_category_rename(
+    ctx: _DispatchContext,
+) -> DispatchResult | None:
+    pending = await ConversationService.get_pending_category_rename(ctx.sender_phone)
+    if pending is None:
+        return None
+    reply = normalize_text(ctx.text_body)
+    if reply in {"no", "cancelar", "no gracias"}:
+        await ConversationService.clear_state(ctx.sender_phone)
+        return DispatchResult(
+            "👍 De acuerdo, no cambié la categoría.",
+            service_invoked="conversation", intent="rename_category",
+        )
+    confirmation = re.fullmatch(
+        r"(?:si|dale|ok|confirmo)(?: esa)?(?: cambiala por (?P<target>.+))?",
+        reply,
+    )
+    if confirmation is None:
+        await ConversationService.clear_state(ctx.sender_phone)
+        return None
+    confirmed_target = confirmation.group("target")
+    if confirmed_target and confirmed_target != normalize_text(pending.target_name):
+        await ConversationService.clear_state(ctx.sender_phone)
+        return DispatchResult(
+            "⚠️ El nombre nuevo cambió. Indicame otra vez qué categoría querés renombrar y a qué nombre.",
+            service_invoked="conversation", intent="rename_category",
+        )
+    await ConversationService.clear_state(ctx.sender_phone)
+    user_id = await asyncio.to_thread(_user_id_by_phone, ctx.sender_phone)
+    if user_id is None:
+        response = "⚠️ No encontré tu cuenta."
+    else:
+        result = await asyncio.to_thread(
+            FinanceService.rename_category,
+            user_id, pending.source_name, pending.target_name,
+            pending.category_id,
+        )
+        if result.status == "renamed":
+            response = (
+                f"✅ La categoría {pending.source_name} ahora se llama "
+                f"{result.category_name}."
+            )
+        elif result.status == "not_found":
+            response = "⚠️ Esa categoría cambió o ya no está disponible. Volvé a consultar tus categorías."
+        elif result.status == "already_exists":
+            response = f"⚠️ Ya tenés una categoría {pending.target_name}. Elegí otro nombre."
+        else:
+            response = "⚠️ No pude renombrar la categoría. Intentá de nuevo."
+    return DispatchResult(
+        response, service_invoked="finance", intent="rename_category",
+    )
+
+
 async def _handle_pending_limit_data(
     ctx: _DispatchContext,
 ) -> DispatchResult | None:
@@ -3479,6 +3551,7 @@ async def _handle_pending_conversation_flows(
     ctx: _DispatchContext,
 ) -> DispatchResult | None:
     handlers = (
+        _handle_pending_category_rename,
         _handle_pending_chart,
         _handle_pending_rename,
         _handle_pending_reminder_data,

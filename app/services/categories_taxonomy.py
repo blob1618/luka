@@ -1,6 +1,7 @@
 import re
 import unicodedata
 from collections.abc import Iterable
+from difflib import SequenceMatcher
 
 DEFAULT_TAXONOMY: dict[str, tuple[str, ...]] = {
     "Servicios": ("servicios", "luz", "electricidad", "agua", "gas", "internet", "wifi", "telefono", "cable"),
@@ -44,7 +45,8 @@ def resolve_category(name: str | None, user_category_names: set[str] | None = No
 
 
 def resolve_category_for_user(
-    name: str | None, user_category_names: set[str] | None = None
+    name: str | None, user_category_names: set[str] | None = None, *,
+    allow_fuzzy: bool = False,
 ) -> str | None:
     """Resuelve `name` a un nombre de categoría *adjuntable* al usuario.
 
@@ -59,9 +61,9 @@ def resolve_category_for_user(
         return None
 
     user_names = sorted(user_category_names or set(), key=lambda raw: (_normalize(raw), raw))
-    for raw in user_names:
-        if _normalize(raw) == normalized:
-            return raw
+    exact_user_names = [raw for raw in user_names if _normalize(raw) == normalized]
+    if exact_user_names:
+        return exact_user_names[0] if len(exact_user_names) == 1 else None
 
     canonical = _SYNONYM_TO_CANONICAL.get(normalized)
     if canonical:
@@ -73,7 +75,27 @@ def resolve_category_for_user(
                 return raw
         return canonical
 
-    return None
+    return suggest_user_category(name, user_names) if allow_fuzzy else None
+
+
+def suggest_user_category(name: str | None, user_category_names: Iterable[str]) -> str | None:
+    """Return one clear active-name match; never guess between close candidates."""
+    requested = _normalize(name)
+    if len(requested) < 4:
+        return None
+    names = sorted(set(user_category_names), key=lambda raw: (_normalize(raw), raw))
+    exact = [raw for raw in names if _normalize(raw) == requested]
+    if exact:
+        return exact[0] if len(exact) == 1 else None
+    scores = sorted(
+        ((SequenceMatcher(None, requested, _normalize(raw)).ratio(), raw) for raw in names),
+        reverse=True,
+    )
+    if not scores or scores[0][0] < 0.82:
+        return None
+    if len(scores) > 1 and scores[0][0] - scores[1][0] < 0.08:
+        return None
+    return scores[0][1]
 
 
 def category_explicitly_named_in_text(text: str) -> str | None:
