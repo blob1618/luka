@@ -63,6 +63,13 @@ _PERIOD_TERMS = re.compile(
     r"\b(?:mes pasado|ultimo mes|mes anterior|"
     r"periodo pasado|mes cerrado|mensual)\b"
 )
+_EXPLICIT_MONTH_TERMS = re.compile(
+    r"\b(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|"
+    r"septiembre|setiembre|octubre|noviembre|diciembre)\b"
+)
+_CATEGORY_BUDGET_TERMS = re.compile(
+    r"\b(?:presupuestos?|limites?|topes?)\b"
+)
 
 # Pedidos de un período abierto/actual o de varios meses: query_monthly_balance
 # sólo devuelve el último mes cerrado, así que se dejan al flujo existente.
@@ -196,10 +203,12 @@ def classify_educational_request(text: str) -> EducationalRequest | None:
     # con query_monthly_balance (sólo cubre el último mes cerrado), así que no
     # habilita la ruta de saldo. Puede seguir siendo educación estática.
     open_period = _OPEN_PERIOD_TERMS.search(normalized) is not None
+    unsupported_period = _EXPLICIT_MONTH_TERMS.search(normalized) is not None
+    category_budget = _CATEGORY_BUDGET_TERMS.search(normalized) is not None
     surplus_signal = bool(
         _SURPLUS_NOUNS.search(normalized) or _SURPLUS_VERBS.search(normalized)
     )
-    asks_balance = False if open_period else bool(
+    asks_balance = False if open_period or unsupported_period or category_budget else bool(
         surplus_signal
         or (_BALANCE_TERMS.search(normalized) and _PERIOD_TERMS.search(normalized))
     )

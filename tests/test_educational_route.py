@@ -158,6 +158,22 @@ def test_open_or_multi_month_requests_fall_through(text):
     assert classify_educational_request(text) is None
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "¿Cuánto me sobró del presupuesto de comida?",
+        "¿Cuánto me sobró del presupuesto de comida el mes pasado?",
+        "¿Cuánto me sobró del límite de comida el mes pasado?",
+    ],
+)
+def test_category_budget_surplus_is_not_a_monthly_balance_request(text):
+    assert classify_educational_request(text) is None
+
+
+def test_explicit_unsupported_month_does_not_use_last_closed_month_balance():
+    assert classify_educational_request("¿Cuánto me sobró en agosto?") is None
+
+
 def test_open_period_blocks_only_the_balance_calculation_not_static_education():
     topic_request = classify_educational_request(
         "quiero ahorrar para una meta en varios meses"
