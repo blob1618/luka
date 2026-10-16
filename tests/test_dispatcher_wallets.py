@@ -792,6 +792,134 @@ async def test_auto_selected_wallet_is_preserved_through_category_confirmation(i
         assert movement.fecha_movimiento == date(2026, 10, 7)
 
 
+@pytest.mark.asyncio
+async def test_deleted_wallet_during_category_confirmation_refreshes_selection(isolated_db):
+    user_id = uuid.uuid4()
+    old_wallet_id = uuid.uuid4()
+    replacement_wallet_id = uuid.uuid4()
+    sender_phone = "5491100000016"
+
+    with isolated_db() as session:
+        user = Usuario(
+            id=user_id,
+            nombre="Franco",
+            email="franco16@example.com",
+            whatsapp_id=sender_phone,
+        )
+        session.add(user)
+        session.add(
+            Billetera(
+                id=old_wallet_id,
+                usuario_id=user_id,
+                nombre="Efectivo",
+                moneda="ARS",
+            )
+        )
+        session.commit()
+
+    llm_payload = {
+        "intent": "expense",
+        "movement_type": "egreso",
+        "amount": 1750,
+        "currency": "ARS",
+        "description": "parapente",
+        "expense": "parapente",
+        "category": "Parapente",
+        "reply_text": "",
+        "fecha": "2026-10-06",
+    }
+    with (
+        patch(
+            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+            return_value=known_user(),
+        ),
+        patch(
+            "app.services.dispatcher.LLMService.process_message",
+            new_callable=AsyncMock,
+            return_value=llm_payload,
+        ),
+    ):
+        first = await process_incoming_message(
+            sender_phone,
+            "Gasté 1750 en parapente",
+            whatsapp_message_id="msg-deleted-wallet-category",
+        )
+    assert "¿Querés crearla?" in first.reply_text
+
+    with isolated_db() as session:
+        old_wallet = session.get(Billetera, old_wallet_id)
+        session.delete(old_wallet)
+        session.add(
+            Billetera(
+                id=replacement_wallet_id,
+                usuario_id=user_id,
+                nombre="Cuenta nueva",
+                moneda="ARS",
+            )
+        )
+        session.commit()
+
+    with (
+        patch(
+            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+            return_value=known_user(),
+        ),
+        patch(
+            "app.services.dispatcher.LLMService.process_message",
+            new_callable=AsyncMock,
+            return_value={"intent": "confirm_category"},
+        ),
+    ):
+        refreshed = await process_incoming_message(sender_phone, "sí")
+
+    assert "Solo hay una billetera disponible en ARS" in refreshed.reply_text
+    assert await ConversationService.is_awaiting_wallet_selection(sender_phone) is True
+    with isolated_db() as session:
+        assert session.query(MovimientoFinanciero).count() == 0
+    pending_selection = await ConversationService.get_pending_movement(sender_phone)
+    assert pending_selection is not None
+    assert pending_selection.wallet_options == [
+        {
+            "ordinal": "1",
+            "wallet_id": str(replacement_wallet_id),
+            "name": "Cuenta nueva",
+        }
+    ]
+
+    with patch(
+        "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+        return_value=known_user(),
+    ):
+        selected = await process_incoming_message(sender_phone, "1")
+    assert "¿Querés crearla?" in selected.reply_text
+    pending_category = await ConversationService.get_pending_movement(sender_phone)
+    assert pending_category is not None
+    assert pending_category.wallet_id == str(replacement_wallet_id)
+
+    with (
+        patch(
+            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+            return_value=known_user(),
+        ),
+        patch(
+            "app.services.dispatcher.LLMService.process_message",
+            new_callable=AsyncMock,
+            return_value={"intent": "confirm_category"},
+        ),
+    ):
+        confirmed = await process_incoming_message(sender_phone, "sí")
+
+    assert "Registré tu egreso" in confirmed.reply_text
+    with isolated_db() as session:
+        movements = session.query(MovimientoFinanciero).all()
+        assert len(movements) == 1
+        movement = movements[0]
+        assert movement.billetera_id == replacement_wallet_id
+        assert movement.whatsapp_message_id == "msg-deleted-wallet-category"
+        assert movement.cantidad == Decimal("1750")
+        assert movement.fecha_movimiento == date(2026, 10, 6)
+
+
 # ---------------------------------------------------------------------------
 # Test 7: Create wallet intent (success, duplicate, validation, user_not_found)
 # ---------------------------------------------------------------------------

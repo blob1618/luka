@@ -1413,7 +1413,13 @@ async def _route_needs_category_confirmation(
 
 
 def _wallet_selection_reply(options: list[dict[str, str]], currency: str) -> str:
-    lines = [f"Tenés más de una billetera en {currency}. ¿Con cuál querés registrar el movimiento?"]
+    if len(options) == 1:
+        lines = [
+            f"Solo hay una billetera disponible en {currency}. "
+            "¿Querés usarla para registrar el movimiento?"
+        ]
+    else:
+        lines = [f"Tenés más de una billetera en {currency}. ¿Con cuál querés registrar el movimiento?"]
     for opt in options:
         lines.append(f"{opt['ordinal']}. {opt['name']}")
     lines.append("Respondé con el número de la opción.")
@@ -1434,6 +1440,7 @@ async def _route_needs_wallet_selection(
     if user_id is None:
         user_id = await asyncio.to_thread(_user_id_by_phone, sender_phone)
     if user_id is None:
+        await ConversationService.clear_state(sender_phone)
         return "No encontré una cuenta vinculada a este WhatsApp. No pude registrar el movimiento."
 
     currency = str(llm_result.get("currency") or "ARS").upper()
@@ -1441,6 +1448,7 @@ async def _route_needs_wallet_selection(
         WalletService.list_wallets, user_id=user_id, currency=currency
     )
     if not wallets:
+        await ConversationService.clear_state(sender_phone)
         return f"No tenés ninguna billetera en {currency}. Creá una billetera primero para registrar movimientos en esa moneda."
 
     wallet_options = [
@@ -4972,7 +4980,11 @@ async def _resume_movement_after_category(sender_phone: str) -> DispatchResult:
             fecha_movimiento=resolved_fecha,
             wallet_id=pending.wallet_id,
         )
-    if result.status == "needs_wallet_selection":
+    if result.status in {
+        "needs_wallet_selection",
+        "invalid_selection",
+        "currency_mismatch",
+    }:
         reply_text = await _route_needs_wallet_selection(
             sender_phone=sender_phone,
             user_id=result.user_id,
