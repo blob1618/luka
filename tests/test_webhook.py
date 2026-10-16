@@ -215,7 +215,6 @@ def test_handle_webhook_registered_movement_confirms_after_persistence():
     assert isinstance(sent_message, WhatsAppReplyButtons)
     assert sent_message.body == (
         "✅ Registré tu egreso: supermercado por $5000 ARS.\n"
-        "📁 Quedó sin categoría. Podés crear una y después asignársela.\n"
         "¿No estás de acuerdo con la categoría? Indicame y lo cambiamos."
     )
     assert sent_message.buttons[0].title == "Cambiar categoría"

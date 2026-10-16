@@ -822,8 +822,8 @@ async def test_deleted_wallet_during_category_confirmation_refreshes_selection(i
         "movement_type": "egreso",
         "amount": 1750,
         "currency": "ARS",
-        "description": "parapente",
-        "expense": "parapente",
+        "description": "actividad",
+        "expense": "actividad",
         "category": "Parapente",
         "reply_text": "",
         "fecha": "2026-10-06",
@@ -841,7 +841,7 @@ async def test_deleted_wallet_during_category_confirmation_refreshes_selection(i
     ):
         first = await process_incoming_message(
             sender_phone,
-            "Gasté 1750 en parapente",
+            "Gasté 1750 en una actividad",
             whatsapp_message_id="msg-deleted-wallet-category",
         )
     assert "¿Querés crearla?" in first.reply_text
