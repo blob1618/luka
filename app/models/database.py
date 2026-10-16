@@ -3,7 +3,7 @@ import time
 import uuid
 from datetime import datetime, date
 from sqlalchemy import (
-    Column, String, DateTime, ForeignKey, create_engine,
+    Column, String, DateTime, ForeignKey, ForeignKeyConstraint, create_engine,
     Boolean, Date, Integer, Numeric, CheckConstraint, Index, UniqueConstraint, true, event
 )
 from sqlalchemy.engine import Engine
@@ -414,10 +414,36 @@ class Evento(Base):
     carga = Column(JSON)
     creado_en = Column(DateTime, default=datetime.utcnow)
 
+class Billetera(Base):
+    __tablename__ = "billetera"
+
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    usuario_id = Column(Uuid(as_uuid=True), ForeignKey("usuario.id"), nullable=False)
+    nombre = Column(String, nullable=False)
+    moneda = Column(String, nullable=False)
+    creado_en = Column(DateTime(timezone=True), nullable=False, default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("trim(nombre) <> ''", name="billetera_nombre_no_vacio_check"),
+        UniqueConstraint("id", "usuario_id", "moneda", name="billetera_id_usuario_moneda_key"),
+        Index(
+            "billetera_usuario_moneda_nombre_uidx",
+            "usuario_id",
+            "moneda",
+            func.lower(func.trim(nombre)),
+            unique=True,
+        ),
+        Index("billetera_usuario_id_idx", "usuario_id"),
+    )
+
+
 class MovimientoFinanciero(Base):
     __tablename__ = "movimientos_financieros"
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # Nullable durante la fase de expansion: el binario anterior inserta movimientos
+    # sin billetera y el contrato final (NOT NULL) pertenece al corte STK-240.
+    billetera_id = Column(Uuid(as_uuid=True), nullable=True)
     usuario_id = Column(Uuid(as_uuid=True), ForeignKey("usuario.id"), nullable=False)
     categoria_id = Column(Uuid(as_uuid=True), ForeignKey("categorias.id"))
     tipo = Column(String, nullable=False)
@@ -432,6 +458,14 @@ class MovimientoFinanciero(Base):
     anulado_en = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
+        # Un movimiento solo puede apuntar a una billetera del mismo propietario y la
+        # misma moneda. La columna nullable deja pasar las escrituras antiguas.
+        ForeignKeyConstraint(
+            ["billetera_id", "usuario_id", "moneda"],
+            ["billetera.id", "billetera.usuario_id", "billetera.moneda"],
+            name="movimientos_financieros_billetera_fkey",
+        ),
+        Index("movimientos_financieros_billetera_id_idx", "billetera_id"),
         CheckConstraint("tipo IN ('ingreso', 'egreso')", name="movimientos_financieros_tipo_check"),
         CheckConstraint("cantidad > 0", name="movimientos_financieros_cantidad_check"),
         Index(
