@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import pytest
 
 from app.services.conversation_flow_contract import (
@@ -274,6 +276,26 @@ def test_contract_exposes_only_closed_registry():
 
     assert "movement.registered" in event_keys
     assert contract["node_types"] == ["text", "reply_button", "list", "url_button"]
+
+
+def test_chart_journey_is_editable_as_one_flow_with_required_choices():
+    contract = available_contract()
+    journey = next(event for event in contract["events"] if event["event_key"] == "chart.journey")
+    assert journey["label"] == "Gráficos de movimientos · recorrido completo"
+    assert set(journey["stages"]) == set(journey["default_definition"]["event_nodes"])
+    assert validate_flow_definition("chart.journey", journey["default_definition"])
+    stage = next(event for event in contract["events"] if event["event_key"] == "chart.distribution_choice")
+    assert stage["stage_only"] is True
+    assert "options" in stage["variables"]
+
+    invalid = deepcopy(journey["default_definition"])
+    next(node for node in invalid["nodes"] if node["id"] == "distribution_choice")["body"] = "Elegí un tipo"
+    with pytest.raises(ConversationFlowDefinitionInvalid):
+        validate_flow_definition("chart.journey", invalid)
+    invalid_caption = deepcopy(journey["default_definition"])
+    next(node for node in invalid_caption["nodes"] if node["id"] == "completed")["body"] = "Listo"
+    with pytest.raises(ConversationFlowDefinitionInvalid):
+        validate_flow_definition("chart.journey", invalid_caption)
 
 
 def test_dashboard_button_contract_and_default():

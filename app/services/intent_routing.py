@@ -48,6 +48,52 @@ _DASHBOARD_ACCESS_STEMS = (
 )
 _DASHBOARD_RESOURCES = {"dashboard", "panel", "portal", "tablero"}
 _LINK_WORDS = {"acceso", "link", "enlace", "url"}
+_CREATE_CATEGORY = re.compile(
+    r"^\s*(?:cre[aá]|crear)\s+(?:(?:la|una)\s+)?categor[ií]a\s+"
+    r"(?P<name>[\wáéíóúüñ][\wáéíóúüñ -]{0,99})\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+_RENAME_CATEGORY = re.compile(
+    r"^\s*(?:renombr[aá]|renombrar)\s+(?:(?:la)\s+)?categor[ií]a\s+"
+    r"(?P<source>[\wáéíóúüñ][\wáéíóúüñ -]{0,99}?)\s+a\s+"
+    r"(?P<target>[\wáéíóúüñ][\wáéíóúüñ -]{0,99})\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+_RENAME_CATEGORY_BY_CHANGE = re.compile(
+    r"^\s*(?:quiero\s+)?(?:cambi(?:ar|a|á))\s+la\s+categor[ií]a\s+"
+    r"(?P<source>[\wáéíóúüñ][\wáéíóúüñ -]{0,99}?)\s+por\s+"
+    r"(?P<target>[\wáéíóúüñ][\wáéíóúüñ -]{0,99})\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def normalize_category_management_intent(text: str, data: dict) -> dict:
+    """Route explicit category commands even when the LLM calls them confirmations."""
+    rename = _RENAME_CATEGORY.fullmatch(text) or _RENAME_CATEGORY_BY_CHANGE.fullmatch(text)
+    if rename is not None:
+        source = rename.group("source").strip()
+        if re.fullmatch(
+            r"(?:(?:de|del)\s+)?(?:mi\s+)?(?:ultimo|ultima|ultimos|ultimas)\s+"
+            r"(?:gasto|movimiento|ingreso|egreso|compra|transaccion)s?",
+            _normalize(source),
+        ):
+            return data
+        return {
+            **data,
+            "intent": "rename_category",
+            "category": source,
+            "changes": {"category": rename.group("target").strip()},
+            "movement_type": None,
+        }
+    create = _CREATE_CATEGORY.fullmatch(text)
+    if create is not None:
+        return {
+            **data,
+            "intent": "create_category",
+            "category": create.group("name").strip(),
+            "movement_type": None,
+        }
+    return data
 
 
 def is_dashboard_access_candidate(text: str) -> bool:
@@ -145,8 +191,19 @@ _QUERY_MOVEMENTS = re.compile(
     r"?\s*(?:mis\s+|los\s+)?(?:ultimos\s+)?(?:\d+\s+)?(?:movimientos|gastos|ingresos|transacciones)"
     r"(?:\s+(?:de|del|en)\s+.*)?$"
 )
+_CATEGORY_EXPENSE_QUERY = re.compile(
+    r"^\s*(?:quiero\s+)?(?:ver|mostr(?:a|á)(?:me)?|muestra(?:me)?)\s+"
+    r"(?:(?:mis|los)\s+)?gastos\s+"
+    r"(?:referidos?\s+a|(?:de|en)\s+la\s+categor[ií]a)\s+"
+    r"(?P<category>[^?.!]{1,100}?)\s*[?.!]?\s*$",
+    re.IGNORECASE,
+)
 _QUERY_MONTH_YEAR = re.compile(
     r"\b(?:de|del|en)\s+(" + "|".join(_MONTHS) + r")\s+de\s+(\d{4})$"
+)
+_CATEGORY_QUERY_MONTH_YEAR = re.compile(
+    r"\s+(?:de|del|en)\s+(?:" + "|".join(_MONTHS) + r")\s+de\s+\d{4}$",
+    re.IGNORECASE,
 )
 
 
@@ -186,6 +243,23 @@ def normalize_movement_query_intent(
 
     # Don't override if already determined by LLM as expense with amount
     if data.get("intent") == "expense" and data.get("amount") is not None:
+        return data
+
+    category_query = _CATEGORY_EXPENSE_QUERY.fullmatch(text)
+    if category_query:
+        category_text = category_query.group("category").strip()
+        period = _CATEGORY_QUERY_MONTH_YEAR.search(category_text)
+        if period:
+            category_text = category_text[:period.start()].strip()
+            date_from, date_to = _query_month_range(normalized)
+            if not data.get("date_from"):
+                data["date_from"] = date_from
+            if not data.get("date_to"):
+                data["date_to"] = date_to
+        data["intent"] = "query_movements"
+        data["movement_type"] = "egreso"
+        data["category"] = category_text
+        data["reply_text"] = "Consultando tus gastos."
         return data
 
     if _QUERY_MOVEMENTS.fullmatch(normalized):

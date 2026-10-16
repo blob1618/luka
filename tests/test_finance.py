@@ -1,5 +1,6 @@
 import uuid
 from datetime import date
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -16,6 +17,12 @@ from app.models.database import (
     Usuario,
 )
 from app.services.finance import FinanceService
+from app.services.budget import BudgetEvaluation
+from app.services.dispatcher import _register_and_reply_with_hint
+from app.services.intent_routing import (
+    normalize_category_management_intent,
+    normalize_movement_query_intent,
+)
 
 
 @pytest.fixture()
@@ -547,6 +554,162 @@ def test_create_category_empty_name_returns_error(db_context):
     assert result.status == "error"
 
 
+def test_rename_category_preserves_movement_and_rejects_cross_user_or_duplicate(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    other = create_user(session, "5492222222222")
+    category = create_category(session, user.id, nombre="Jardinería")
+    create_category(session, user.id, nombre="Comida")
+    movement = MovimientoFinanciero(
+        usuario_id=user.id, categoria_id=category.id, tipo="egreso",
+        cantidad=10000, moneda="ARS", descripcion="plantas",
+    )
+    session.add(movement)
+    session.commit()
+
+    assert FinanceService.rename_category(other.id, "Jardinería", "Plantas").status == "not_found"
+    assert FinanceService.rename_category(user.id, "Jardinería", "Comida").status == "already_exists"
+    result = FinanceService.rename_category(user.id, "Jardinería", "Plantas")
+
+    assert result.status == "renamed"
+    session.refresh(category)
+    session.refresh(movement)
+    assert category.nombre == "Plantas"
+    assert movement.categoria_id == category.id
+    assert movement.cantidad == 10000
+    assert movement.moneda == "ARS"
+
+
+def test_category_suggestion_is_owned_active_and_rename_checks_identity(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    other = create_user(session, "5492222222222")
+    category = create_category(session, user.id, nombre="Jardinería")
+    create_category(session, other.id, nombre="Jardinerio")
+    create_category(session, user.id, nombre="Jardines", esta_eliminado=True)
+
+    suggestion = FinanceService.suggest_category(user.id, "jardineria")
+    assert suggestion.status == "suggested"
+    assert suggestion.category_name == "Jardinería"
+    assert suggestion.category_id == str(category.id)
+    assert FinanceService.suggest_category(other.id, "Jardines").status == "not_found"
+    assert FinanceService.rename_category(
+        user.id, "Jardinería", "Plantas", str(uuid.uuid4())
+    ).status == "not_found"
+    session.refresh(category)
+    assert category.nombre == "Jardinería"
+
+
+def test_movement_query_resolves_unique_misspelled_category_without_modifying_it(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    category = create_category(session, user.id, nombre="Jardinería")
+    session.add(MovimientoFinanciero(
+        usuario_id=user.id, categoria_id=category.id, tipo="egreso",
+        cantidad=2500, moneda="ARS", descripcion="macetas",
+    ))
+    session.commit()
+
+    result = FinanceService.query_movements(
+        user.id, movement_type="egreso", category_name="jardinera"
+    )
+    assert result.status == "ok"
+    assert result.total_found == 1
+    assert result.resolved_category_name == "Jardinería"
+    session.refresh(category)
+    assert category.nombre == "Jardinería"
+
+
+@pytest.mark.asyncio
+async def test_registration_respects_named_user_category_over_llm_guess(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    jardineria = create_category(session, user.id, nombre="Jardinería")
+    create_category(session, user.id, nombre="Plantas")
+    extracted = {
+        "intent": "expense", "movement_type": "egreso", "amount": 2500,
+        "currency": "ARS", "description": "macetas", "category": "Plantas",
+    }
+    with (
+        patch(
+            "app.services.dispatcher.BudgetService.evaluate_movement",
+            return_value=BudgetEvaluation(status="ok", message="no limit"),
+        ),
+        patch(
+            "app.services.dispatcher._check_pending_candidate_proposal",
+            return_value=None,
+        ),
+    ):
+        reply = await _register_and_reply_with_hint(
+            user.whatsapp_id, "wamid.explicit-jardineria",
+            "Gasté 2500 ARS en macetas, categoría Jardinería", extracted,
+        )
+
+    movement = session.query(MovimientoFinanciero).one()
+    assert movement.categoria_id == jardineria.id
+    assert "📁 Categoría: Jardinería." in reply
+    query = FinanceService.query_movements(
+        user.id, movement_type="egreso", category_name="jardinera"
+    )
+    assert query.total_found == 1
+    assert query.resolved_category_name == "Jardinería"
+
+
+def test_reclassifying_last_expense_by_por_updates_existing_movement(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    comida = create_category(session, user.id, nombre="Comida")
+    transporte = create_category(session, user.id, nombre="Transporte")
+    movement = MovimientoFinanciero(
+        usuario_id=user.id, categoria_id=comida.id, tipo="egreso",
+        cantidad=2500, moneda="ARS", descripcion="almuerzo",
+        fecha_movimiento=date(2026, 10, 10),
+    )
+    session.add(movement)
+    session.commit()
+
+    routed = normalize_category_management_intent(
+        "Cambiá la categoría del último gasto por Transporte",
+        {"intent": "update_movement", "reference": "last_registered",
+         "changes": {"category": "Transporte"}},
+    )
+    assert routed["intent"] == "update_movement"
+    result = FinanceService.update_movement(
+        user.whatsapp_id, str(movement.id), routed["changes"]
+    )
+    assert result.status == "updated"
+    session.refresh(movement)
+    assert movement.categoria_id == transporte.id
+
+
+def test_expense_query_by_category_and_month_returns_dated_movement(db_context):
+    session = db_context["session"]
+    user = create_user(session)
+    comida = create_category(session, user.id, nombre="Comida")
+    session.add(MovimientoFinanciero(
+        usuario_id=user.id, categoria_id=comida.id, tipo="egreso",
+        cantidad=2500, moneda="ARS", descripcion="almuerzo",
+        fecha_movimiento=date(2026, 10, 10),
+    ))
+    session.commit()
+
+    routed = normalize_movement_query_intent(
+        "Quiero ver los gastos referidos a Comida de octubre de 2026",
+        {"intent": "query_movements", "category": "Comida",
+         "movement_type": "egreso", "date_from": "2026-10-01",
+         "date_to": "2026-10-31"},
+    )
+    result = FinanceService.query_movements(
+        user.id, movement_type=routed["movement_type"],
+        category_name=routed["category"],
+        start_date=date.fromisoformat(routed["date_from"]),
+        end_date=date.fromisoformat(routed["date_to"]),
+    )
+    assert result.status == "ok"
+    assert result.total_found == 1
+    assert result.movements[0].descripcion == "almuerzo"
+
+
 def test_delete_category_existing(db_context):
     session = db_context["session"]
     user = create_user(session)
@@ -704,7 +867,7 @@ def test_register_movement_with_category_existing(db_context):
     assert movement.categoria_id == cat.id
 
 
-def test_register_movement_with_category_create_if_missing(db_context):
+def test_register_movement_with_category_requires_confirmation_even_for_taxonomy(db_context):
     session = db_context["session"]
     create_user(session)
 
@@ -720,11 +883,10 @@ def test_register_movement_with_category_create_if_missing(db_context):
         create_category_if_missing=True,
     )
 
-    assert result.status == "registered"
-    movement = session.query(MovimientoFinanciero).one()
-    assert movement.categoria_id is not None
-    cat = session.query(Categoria).filter(Categoria.id == movement.categoria_id).first()
-    assert cat.nombre == "Transporte"
+    assert result.status == "needs_category_confirmation"
+    assert result.category_name == "Transporte"
+    assert session.query(MovimientoFinanciero).count() == 0
+    assert session.query(Categoria).count() == 0
 
 
 def test_register_movement_with_category_not_found_no_create(db_context):
@@ -743,9 +905,8 @@ def test_register_movement_with_category_not_found_no_create(db_context):
         create_category_if_missing=False,
     )
 
-    assert result.status == "registered"
-    movement = session.query(MovimientoFinanciero).one()
-    assert movement.categoria_id is None
+    assert result.status == "category_not_found"
+    assert session.query(MovimientoFinanciero).count() == 0
 
 
 def test_register_movement_with_category_unknown_needs_confirmation(db_context):

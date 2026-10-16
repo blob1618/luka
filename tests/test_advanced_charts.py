@@ -1,6 +1,7 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -10,13 +11,13 @@ from tests.test_movement_chart import (
     _category,
     _movement,
 )
-from app.api.whatsapp import WhatsAppImage
+from app.api.whatsapp import WhatsAppImage, WhatsAppText
 from app.models.database import MovimientoFinanciero
-from app.services.conversation import ConversationService
-from app.services.dispatcher import process_incoming_message
-from app.services.chart_request import ChartRequest, normalize_chart
+from app.services.conversation import ConversationService, PendingMovementChart
+from app.services.dispatcher import DispatchResult, process_incoming_message
+from app.services.chart_request import ChartRequest, FULL_MONTH_NAMES, month_label, normalize_chart, single_month_period_patch
 from app.services.chart_query import ChartQueryResult, ChartValue, query_chart
-from app.services.chart_service import generate_chart, prepare_charts
+from app.services.chart_service import choice_patch, generate_chart, prepare_charts
 from app.services.finance import CategoryMovementTotal
 from app.services.movement_chart import MovementChartService
 from app.services.onboarding import OnboardingDecision, OnboardingResult
@@ -329,6 +330,145 @@ def test_non_financial_graph_is_not_replaced_by_expenses():
     assert not result.get("chart_explicit")
 
 
+def test_chart_request_ignores_partial_llm_date_when_message_has_no_period():
+    result = normalize_chart(
+        "Mandame un gráfico de barras de mis gastos",
+        {"intent": "movement_chart", "date_from": "2026-10-01", "chart_mode": "monthly"},
+        today=date(2026, 10, 13),
+    )
+    assert result["chart_mode"] == "category"
+    assert result["date_from"] is None
+    assert result["date_to"] is None
+
+
+def test_named_month_fills_both_dates_and_keeps_pie_distribution():
+    today = date(2026, 10, 13)
+    assert single_month_period_patch("en octubre", today) == {
+        "date_from": "2026-10-01", "date_to": "2026-10-13",
+    }
+    result = normalize_chart(
+        "Mandame un gráfico de torta de mis gastos en octubre",
+        {"intent": "movement_chart", "chart_mode": "monthly", "date_from": "2026-10-01"},
+        today=today,
+    )
+    assert result["chart_mode"] == "category"
+    assert result["chart_type"] == "pie"
+    assert (result["date_from"], result["date_to"]) == ("2026-10-01", "2026-10-13")
+
+
+def test_chart_choice_accepts_displayed_label_and_unique_short_name():
+    pending = PendingMovementChart(
+        sender_phone=PHONE, reason="distribution", request={}, question="Elegí",
+        options=[
+            {"label": "Barras por mes", "patch": {"chart_type": "bar"}},
+            {"label": "Pastel de Oct 2026", "patch": {"chart_type": "pie"}},
+        ],
+    )
+    assert choice_patch(pending, "2. Pastel de Oct 2026") == {"chart_type": "pie"}
+    assert choice_patch(pending, "pastel") == {"chart_type": "pie"}
+
+
+@pytest.mark.asyncio
+async def test_pending_chart_named_month_resolves_without_llm(chart_db):
+    today = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).date()
+    month_name = FULL_MONTH_NAMES[today.month - 1]
+    user = _user(chart_db, PHONE)
+    _movement(chart_db, user, amount="100", movement_date=today)
+    await ConversationService.set_pending_movement_chart(
+        PHONE,
+        PendingMovementChart(
+            sender_phone=PHONE, reason="period", question="Indicá el período",
+            request={"chart_mode": "category", "chart_type": "pie", "movement_type": "egreso", "date_from": today.replace(day=1).isoformat()},
+        ),
+    )
+    with (
+        patch("app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+              return_value=OnboardingResult(OnboardingDecision.KNOWN_USER)),
+        patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock) as llm,
+    ):
+        result = await process_incoming_message(PHONE, f"en {month_name}")
+    assert isinstance(result.reply_message, WhatsAppImage)
+    assert result.event_key == "chart.completed"
+    llm.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pie_followup_uses_single_month_of_previous_chart(chart_db):
+    today = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).date()
+    user = _user(chart_db, PHONE)
+    _movement(chart_db, user, amount="100", movement_date=today)
+    await ConversationService.set_last_chart(PHONE, {
+        "chart_mode": "monthly", "chart_type": "bar",
+        "chart_start_month": today.strftime("%Y-%m"),
+        "chart_end_month": today.strftime("%Y-%m"),
+        "movement_type": "egreso", "chart_currency": "ARS",
+    })
+    with (
+        patch("app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+              return_value=OnboardingResult(OnboardingDecision.KNOWN_USER)),
+        patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock,
+              return_value={"intent": "movement_chart", "chart_mode": "monthly", "chart_type": "pie"}),
+    ):
+        result = await process_incoming_message(PHONE, "ahora gráfico de torta")
+    assert isinstance(result.reply_message, WhatsAppImage)
+    assert result.event_key == "chart.completed"
+    saved = await ConversationService.get_last_chart(PHONE)
+    assert saved["chart_mode"] == "category"
+    assert saved["chart_type"] == "pie"
+    assert saved["date_from"] == today.replace(day=1).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_displayed_pie_choice_completes_chart_without_loop(chart_db):
+    today = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).date()
+    user = _user(chart_db, PHONE)
+    _movement(chart_db, user, amount="100", movement_date=today)
+    month = today.strftime("%Y-%m")
+    option_label = f"Pastel de {month_label(month)}"
+    await ConversationService.set_pending_movement_chart(
+        PHONE, PendingMovementChart(
+            sender_phone=PHONE, reason="distribution", question="Elegí una opción",
+            request={"chart_mode": "monthly", "chart_type": "pie", "chart_start_month": month, "chart_end_month": month},
+            options=[
+                {"label": "Barras por mes", "patch": {"chart_type": "bar"}},
+                {"label": option_label, "patch": {
+                    "chart_type": "pie", "chart_mode": "category",
+                    "date_from": today.replace(day=1).isoformat(), "date_to": today.isoformat(),
+                }},
+            ],
+        ),
+    )
+    with (
+        patch("app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+              return_value=OnboardingResult(OnboardingDecision.KNOWN_USER)),
+        patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock) as llm,
+    ):
+        result = await process_incoming_message(PHONE, f"2. {option_label}")
+    assert isinstance(result.reply_message, WhatsAppImage)
+    assert result.event_key == "chart.completed"
+    assert await ConversationService.get_pending_movement_chart(PHONE) is None
+    llm.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_published_chart_completion_changes_caption_but_keeps_image():
+    original = WhatsAppImage(content=b"image", caption="Original")
+    response = DispatchResult(
+        reply_text="Original", reply_message=original,
+        event_key="chart.completed", event_variables={"caption": "Original"},
+    )
+    with (
+        patch("app.services.dispatcher._dispatch_incoming_message", new_callable=AsyncMock,
+              return_value=response),
+        patch("app.services.dispatcher.ConversationFlowRuntime.render_event",
+              new_callable=AsyncMock, return_value=WhatsAppText("Tu gráfico listo")),
+    ):
+        result = await process_incoming_message(PHONE, "gráfico")
+    assert result.reply_message.content == b"image"
+    assert result.reply_message.caption == "Tu gráfico listo"
+    assert result.reply_text == "Tu gráfico listo"
+
+
 @pytest.mark.asyncio
 async def test_currency_choice_preserves_months_and_category(chart_db):
     user = _user(chart_db, PHONE)
@@ -409,6 +549,9 @@ async def test_natural_language_contract_reaches_chart_service(chart_db, text, f
     user = _user(chart_db, PHONE)
     ocio = _category(chart_db, user, "Ocio")
     _movement(chart_db, user, category=ocio, amount="100")
+    if fields.get("chart_categories"):
+        current_day = datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")).date()
+        _movement(chart_db, user, category=ocio, amount="100", movement_date=current_day)
     with (
         patch(
             "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",

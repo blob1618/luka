@@ -7,6 +7,9 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.services.category_creation import category_creation_definition
+from app.services.chart_flow_journey import (
+    CHART_JOURNEY, CHART_STAGES, CHART_TEXT_RESPONSES, chart_journey_definition,
+)
 
 from app.services.limit_flow_journey import (
     LIMIT_JOURNEY, LIMIT_STAGES, LIMIT_TEXT_RESPONSES, LIMIT_ACTION_OUTCOMES, LIMIT_SUBFLOWS,
@@ -176,6 +179,16 @@ BUDGET_THRESHOLD_MESSAGE = (
 
 
 EVENT_POLICIES: dict[str, EventPolicy] = {
+    CHART_JOURNEY: EventPolicy(),
+    "chart.period_required": EventPolicy(frozenset({"question"}), terminal_only=True),
+    "chart.distribution_choice": EventPolicy(frozenset({"options"}), terminal_only=True),
+    "chart.currency_choice": EventPolicy(frozenset({"options"}), terminal_only=True),
+    "chart.category_choice": EventPolicy(frozenset({"question", "options"}), terminal_only=True),
+    "chart.invalid_filters": EventPolicy(frozenset({"question"}), terminal_only=True),
+    "chart.completed": EventPolicy(frozenset({"caption"}), terminal_only=True),
+    "chart.no_data": EventPolicy(frozenset({"message"}), terminal_only=True),
+    "chart.failed": EventPolicy(frozenset({"message"}), terminal_only=True),
+    "chart.cancelled": EventPolicy(terminal_only=True),
     LIMIT_JOURNEY: EventPolicy(),
     "limit.started": EventPolicy(actions=frozenset({"cancel_pending_operation"})),
     "limit.cancelled": EventPolicy(terminal_only=True),
@@ -335,6 +348,8 @@ def validate_flow_definition(
 
     if event_key == LIMIT_JOURNEY:
         return _validate_journey(definition)
+    if event_key == CHART_JOURNEY:
+        return _validate_chart_journey(definition)
     if definition.event_nodes or definition.response_examples:
         raise ConversationFlowDefinitionInvalid([
             FlowValidationIssue("event_nodes", "las etapas pertenecen a un recorrido completo")
@@ -442,6 +457,46 @@ def _validate_journey(definition: FlowDefinition) -> dict[str, Any]:
     return definition.model_dump(mode="json", exclude_none=True)
 
 
+def _validate_chart_journey(definition: FlowDefinition) -> dict[str, Any]:
+    issues: list[FlowValidationIssue] = []
+    if set(definition.event_nodes) != set(CHART_STAGES):
+        issues.append(FlowValidationIssue("event_nodes", "el recorrido debe incluir todas las etapas de gráficos"))
+    ids = [node.id for node in definition.nodes]
+    if len(ids) != len(set(ids)) or set(ids) != set(definition.event_nodes.values()) or len(ids) != len(definition.event_nodes):
+        issues.append(FlowValidationIssue("nodes", "cada etapa debe tener un mensaje propio, sin duplicados"))
+    if definition.start_node != definition.event_nodes.get("chart.period_required"):
+        issues.append(FlowValidationIssue("start_node", "el recorrido empieza en Aclarar período"))
+    required_variables = {
+        "chart.distribution_choice": "{options}",
+        "chart.currency_choice": "{options}",
+        "chart.category_choice": "{options}",
+    }
+    for event, node_id in definition.event_nodes.items():
+        node = next((candidate for candidate in definition.nodes if candidate.id == node_id), None)
+        if event not in CHART_STAGES or node is None:
+            continue
+        if not isinstance(node, TextNode) or isinstance(node, URLButtonNode) or node.type != "text":
+            issues.append(FlowValidationIssue(event, "esta etapa solo admite texto; Luka conserva la selección y el gráfico"))
+            continue
+        if required_variables.get(event) and required_variables[event] not in node.body:
+            issues.append(FlowValidationIssue(event, "el mensaje debe mostrar {options} para que se pueda elegir"))
+        if event == "chart.completed" and "{caption}" not in node.body:
+            issues.append(FlowValidationIssue(event, "el mensaje debe conservar {caption} con los datos del gráfico"))
+        if event == "chart.completed" and len(node.body) > 1024:
+            issues.append(FlowValidationIssue(event, "la descripción de la imagen admite hasta 1024 caracteres"))
+        try:
+            validate_flow_definition(event, {"start_node": node_id, "nodes": [node.model_dump(exclude_none=True)]})
+        except ConversationFlowDefinitionInvalid as exc:
+            issues.extend(FlowValidationIssue(f"{event}.{issue.path}", issue.message) for issue in exc.issues)
+    response_ids = {response["id"] for responses in CHART_TEXT_RESPONSES.values() for response in responses}
+    for key, example in definition.response_examples.items():
+        if key not in response_ids or not example.strip() or len(example) > 240:
+            issues.append(FlowValidationIssue("response_examples", "usá una respuesta reconocida y un ejemplo de hasta 240 caracteres"))
+    if issues:
+        raise ConversationFlowDefinitionInvalid(issues)
+    return definition.model_dump(mode="json", exclude_none=True)
+
+
 def available_contract() -> dict[str, Any]:
     return {
         "events": [
@@ -450,7 +505,14 @@ def available_contract() -> dict[str, Any]:
                 "variables": sorted(policy.variables),
                 "actions": sorted(policy.actions),
                 "terminal_only": policy.terminal_only,
+                "stage_only": event_key in CHART_STAGES,
                 "url_variables": sorted(_url_variables(policy)),
+                **({
+                    "label": "Gráficos de movimientos · recorrido completo",
+                    "stages": CHART_STAGES,
+                    "text_responses": CHART_TEXT_RESPONSES,
+                    "default_definition": chart_journey_definition(),
+                } if event_key == CHART_JOURNEY else {}),
                 **({
                     "label": "Crear y editar límites · recorrido completo",
                     "stages": LIMIT_STAGES,

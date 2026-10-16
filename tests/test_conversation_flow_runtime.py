@@ -19,6 +19,7 @@ from app.services.conversation_flow_runtime import (
     ConfiguredFlowReply,
     ConversationFlowRuntime,
 )
+from app.services.chart_flow_journey import chart_journey_definition
 
 
 @pytest.fixture
@@ -94,6 +95,19 @@ def terminal_definition(body):
         "start_node": "done",
         "nodes": [{"id": "done", "type": "text", "body": body, "terminal": True}],
     }
+
+
+@pytest.mark.asyncio
+async def test_published_chart_journey_renders_stage_with_live_options(session_factory, flow_state):
+    definition = chart_journey_definition()
+    definition["nodes"][1]["body"] = "Elegí cómo verlo:\n{options}"
+    create_and_publish(session_factory, event_key="chart.journey", definition=definition)
+    message = await ConversationFlowRuntime.render_event(
+        sender_phone="5411", event_key="chart.distribution_choice",
+        variables={"options": "1. Barras por mes\n2. Pastel de Oct 2026"},
+    )
+    assert message == WhatsAppText("Elegí cómo verlo:\n1. Barras por mes\n2. Pastel de Oct 2026")
+    assert flow_state == {}
 
 
 def navigation_definition(final_body):
