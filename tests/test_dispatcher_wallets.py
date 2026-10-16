@@ -891,25 +891,9 @@ async def test_deleted_wallet_during_category_confirmation_refreshes_selection(i
         return_value=known_user(),
     ):
         selected = await process_incoming_message(sender_phone, "1")
-    assert "¿Querés crearla?" in selected.reply_text
-    pending_category = await ConversationService.get_pending_movement(sender_phone)
-    assert pending_category is not None
-    assert pending_category.wallet_id == str(replacement_wallet_id)
-
-    with (
-        patch(
-            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-            return_value=known_user(),
-        ),
-        patch(
-            "app.services.dispatcher.LLMService.process_message",
-            new_callable=AsyncMock,
-            return_value={"intent": "confirm_category"},
-        ),
-    ):
-        confirmed = await process_incoming_message(sender_phone, "sí")
-
-    assert "Registré tu egreso" in confirmed.reply_text
+    assert "Registré tu egreso" in selected.reply_text
+    assert "📁 Categoría: Parapente." in selected.reply_text
+    assert await ConversationService.get_pending_movement(sender_phone) is None
     with isolated_db() as session:
         movements = session.query(MovimientoFinanciero).all()
         assert len(movements) == 1
