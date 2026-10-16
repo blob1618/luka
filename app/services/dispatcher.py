@@ -77,7 +77,7 @@ from app.services.intent_routing import (
     references_recent_limit,
 )
 from app.services.category_creation import CategoryCreationService
-from app.services.categories_taxonomy import category_explicitly_named_in_text
+from app.services.categories_taxonomy import category_explicitly_named_in_text, category_named_in_text
 from app.services.limit import LimitService
 from app.services.llm import LLMService
 from app.services.chart_service import generate_chart, choice_patch, pending_chart_reply
@@ -1164,9 +1164,11 @@ async def _register_and_reply_with_hint(
 
     if len(movements) == 1:
         mov = movements[0]
-        explicit = category_explicitly_named_in_text(text_body)
         proposed = mov.get("category")
-        if explicit and proposed and str(proposed).casefold() not in text_body.casefold():
+        explicit = category_named_in_text(text_body)
+        if explicit is None and proposed:
+            explicit = category_explicitly_named_in_text(text_body)
+        if explicit and explicit.casefold() != str(proposed or "").casefold():
             mov = {**mov, "category": explicit}
             movements = [mov]
 
