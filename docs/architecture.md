@@ -11,7 +11,7 @@ decisiones de cada capa. El comportamiento visible para el usuario se describe e
 | Lenguaje | Python 3.11 |
 | API | FastAPI (async) |
 | Mensajería | Meta WhatsApp Business API (Graph API; versión en `WHATSAPP_GRAPH_API_VERSION`, por defecto `v26.0`) |
-| LLM | Fachada `app/services/llm.py` + providers `gemini` y `mistral` en `app/services/llm_providers/`; selección por `LLM_PROVIDER`, por defecto `gemini`. El system prompt vive en `prompt.md`. |
+| LLM | Fachada `app/services/llm.py` + providers `gemini`, `mistral` y `deepseek` en `app/services/llm_providers/`; selección por `LLM_PROVIDER`, por defecto `gemini`. El system prompt vive en `prompt.md`. |
 | Base de datos | SQLAlchemy; SQLite local (`sqlite:///./luka.db`) y PostgreSQL/Supabase en producción |
 | Estado y caché | Redis |
 | Tareas programadas | APScheduler |

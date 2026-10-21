@@ -14,7 +14,7 @@ El entorno vive dentro de `testing/` y se levanta únicamente con Docker o Podma
 
 - Chat que simula WhatsApp: entrada de mensajes, historial de conversación, avatar de Luka y respuesta procesada por el flujo completo del dispatcher (modo webhook). No se envía ningún mensaje real por WhatsApp.
 - Configuración desde la sidebar:
-  - Provider LLM (Gemini o Mistral, según los providers registrados en el factory).
+  - Provider LLM (Gemini, Mistral o DeepSeek, según los providers registrados en el factory).
   - Archivo de prompt (`prompts/core_prompt.md` por defecto; el selector lista los `.md` del repo en `prompts/` y los de `testing/prompts/`).
   - Modelo (lista por provider, el primer item es el default).
   - Sesiones (ver abajo).
@@ -55,6 +55,7 @@ El entorno vive dentro de `testing/` y se levanta únicamente con Docker o Podma
 3. Completar en `.env` la API key del LLM elegido según `LLM_PROVIDER`:
    - `LLM_PROVIDER=gemini` (default): setear `GEMINI_API_KEY`.
    - `LLM_PROVIDER=mistral`: setear `MISTRAL_API_KEY` y cambiar `LLM_PROVIDER=mistral`.
+   - `LLM_PROVIDER=deepseek`: setear `DEEPSEEK_API_KEY` y cambiar `LLM_PROVIDER=deepseek`.
 
 El `docker-compose.yml` usa `env_file: ../.env`, así que sin el `.env` en la raíz el compose falla. `TESTING_DATABASE_URL` y `REDIS_URL` se definen en el propio compose, por lo que no hace falta tocarlas.
 
