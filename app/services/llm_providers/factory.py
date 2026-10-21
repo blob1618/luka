@@ -1,12 +1,14 @@
 import os
 
 from .base import LLMProvider
+from .deepseek import DeepSeekProvider
 from .gemini import GeminiProvider
 from .mistral import MistralProvider
 
 _PROVIDERS: dict[str, type[LLMProvider]] = {
     "gemini": GeminiProvider,
-    "mistral": MistralProvider, # para agregar proveedores
+    "mistral": MistralProvider,
+    "deepseek": DeepSeekProvider,
 }
 
 

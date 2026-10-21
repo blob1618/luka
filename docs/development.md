@@ -48,11 +48,13 @@ Copiar `.env.example` a `.env` y completar solo lo necesario. Nunca subir `.env`
 | `WHATSAPP_PHONE_ID` | Sí para enviar por WhatsApp | ID del número de teléfono en Meta. |
 | `WHATSAPP_GRAPH_API_VERSION` | Opcional | Versión de Graph API. Default `v26.0`; un formato inválido se rechaza. |
 | `FLOW_ADMIN_API_KEY` | Solo para la API admin de conversation flows | Se envía como bearer en `/admin/conversation-flows/*`. Sin valor, esa API responde 503. |
-| `LLM_PROVIDER` | Opcional | `gemini` (default) o `mistral`. |
+| `LLM_PROVIDER` | Opcional | `gemini` (default), `mistral` o `deepseek`. |
 | `GEMINI_API_KEY` | Si `LLM_PROVIDER=gemini` | API key de Gemini. |
 | `GEMINI_MODEL` | Opcional | Default `gemini-3.1-flash-lite`. |
 | `MISTRAL_API_KEY` | Si `LLM_PROVIDER=mistral` | API key de Mistral. |
 | `MISTRAL_MODEL` | Opcional | Default `mistral-small-latest`. |
+| `DEEPSEEK_API_KEY` | Si `LLM_PROVIDER=deepseek` | API key de DeepSeek. |
+| `DEEPSEEK_MODEL` | Opcional | Default `deepseek-flash`. |
 | `DATABASE_URL` | Opcional en local, requerida en producción | Local: `sqlite:///./luka.db`. Compartido/producción: PostgreSQL/Supabase. |
 | `REDIS_URL` | Opcional en local, recomendada en producción | Default `redis://localhost:6379`. La app loguea el fallo y sigue arrancando si no responde. |
 | `CONVERSATION_MEMORY_TURNS` | Opcional | Turnos completos conservados en la memoria conversacional. Default `4`. |
@@ -128,7 +130,7 @@ gunicorn -w 1 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:${POR
 
 El worker es uno solo a propósito: el scheduler debe correr una sola vez, no una vez por worker.
 
-Variables a configurar en Render: `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_API_TOKEN`, `WHATSAPP_PHONE_ID`, `LLM_PROVIDER`, `GEMINI_API_KEY`/`GEMINI_MODEL` o `MISTRAL_API_KEY`/`MISTRAL_MODEL` según el provider, `DATABASE_URL` y `REDIS_URL`. Agregar `ONBOARDING_REGISTRATION_URL` si se usan onboarding o el link de dashboard, `WHATSAPP_REMINDER_TEMPLATE_NAME` para recordatorios de pago y `PROACTIVE_PROMPT_HOUR` para el recordatorio proactivo.
+Variables a configurar en Render: `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_API_TOKEN`, `WHATSAPP_PHONE_ID`, `LLM_PROVIDER`, `GEMINI_API_KEY`/`GEMINI_MODEL`, `MISTRAL_API_KEY`/`MISTRAL_MODEL` o `DEEPSEEK_API_KEY`/`DEEPSEEK_MODEL` según el provider, `DATABASE_URL` y `REDIS_URL`. Agregar `ONBOARDING_REGISTRATION_URL` si se usan onboarding o el link de dashboard, `WHATSAPP_REMINDER_TEMPLATE_NAME` para recordatorios de pago y `PROACTIVE_PROMPT_HOUR` para el recordatorio proactivo.
 
 Al arrancar, la app prueba Redis con un timeout de 3 segundos. Si falla, la API sigue disponible y el error queda en los logs; validar la conectividad con `GET /redis-test`. `main` es la rama de despliegue: Render la despliega automáticamente y las pruebas reales de WhatsApp dependen del número de Meta, la URL del webhook y la base compartida. Si el health check responde pero WhatsApp falla, revisar primero los logs de Render.
 

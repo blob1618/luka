@@ -15,6 +15,7 @@ class TestGetAvailableProviders:
         assert isinstance(providers, list)
         assert "gemini" in providers
         assert "mistral" in providers
+        assert "deepseek" in providers
 
     def test_reflects_factory_changes(self):
         with patch(
@@ -154,6 +155,9 @@ class TestGetAvailableModels:
         assert models[0] == "mistral-small-latest"
         assert "ministral-3b-latest" in models
 
+    def test_deepseek_flash_primero(self):
+        assert get_available_models("deepseek") == ["deepseek-flash", "deepseek-v4-pro"]
+
     def test_provider_desconocido_devuelve_lista_gemini(self):
         assert get_available_models("desconocido") == get_available_models("gemini")
 
@@ -168,6 +172,11 @@ class TestSetModelEnv:
         monkeypatch.delenv("MISTRAL_MODEL", raising=False)
         set_model_env("mistral", "mistral-small-latest")
         assert os.environ["MISTRAL_MODEL"] == "mistral-small-latest"
+
+    def test_setea_deepseek_model(self, monkeypatch):
+        monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
+        set_model_env("deepseek", "deepseek-v4-pro")
+        assert os.environ["DEEPSEEK_MODEL"] == "deepseek-v4-pro"
 
     def test_modelo_vacio_no_toca_env(self, monkeypatch):
         monkeypatch.setenv("GEMINI_MODEL", "gemini-3.1-flash-lite")

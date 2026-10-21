@@ -66,6 +66,7 @@ def new_session(label: str, phone: str, user_name: str, user_registered: bool) -
 MODEL_ENV_BY_PROVIDER = {
     "gemini": "GEMINI_MODEL",
     "mistral": "MISTRAL_MODEL",
+    "deepseek": "DEEPSEEK_MODEL",
 }
 
 # Hardcodeado desde los comentarios de .env.example (solo modelos disponibles;
@@ -96,6 +97,10 @@ AVAILABLE_MODELS = {
         "mistral-large-latest",
         "zai-glm-5-2",
         "voxtral-small-latest",
+    ],
+    "deepseek": [
+        "deepseek-flash",
+        "deepseek-v4-pro",
     ],
 }
 
