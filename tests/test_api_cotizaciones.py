@@ -57,18 +57,20 @@ def test_default_returns_the_three_quotes(client, monkeypatch):
 
     assert response.status_code == 200
     assert set(response.json()["quotes"]) == {"oficial", "mep", "blue"}
-    assert len(calls) == 1
-    requested = list(calls[0]) if calls[0] is not None else []
-    assert set(requested) == set(QuoteType)
+    assert calls == [list(QuoteType)]
 
 
 def test_subset_blue_only(client, monkeypatch):
-    install_service(monkeypatch, {QuoteType.BLUE: make_quote(QuoteType.BLUE)})
+    calls: list = []
+    install_service(
+        monkeypatch, {QuoteType.BLUE: make_quote(QuoteType.BLUE)}, calls
+    )
 
     response = client.get("/api/cotizaciones", params={"tipos": "blue"})
 
     assert response.status_code == 200
     assert set(response.json()["quotes"]) == {"blue"}
+    assert calls == [[QuoteType.BLUE]]
 
 
 @pytest.mark.parametrize(
