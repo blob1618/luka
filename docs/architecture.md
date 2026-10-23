@@ -246,9 +246,10 @@ Usuario / dashboard BFF
 - El lock de fetch es por proceso y por tipo: evita estampidas dentro de un worker,
   no entre workers. Escalar a más workers requiere un lock distribuido.
 - Los eventos `hit`, `miss` y `stale` se emiten con el mensaje `currency_cache` y
-  adjuntan `tipo`, `event` y `latency_ms` como atributos del `LogRecord` vía `extra`.
-  El formatter actual muestra solo el mensaje, así que esos campos no aparecen en la
-  línea de log. No se persisten cotizaciones en PostgreSQL: el caché es efímero.
+  adjuntan `tipo`, `event` y `latency_ms` como atributos del `LogRecord` vía `extra`
+  y, además, dentro del propio mensaje (`currency_cache tipo=... event=... latency_ms=...`),
+  que es lo que imprime el formatter actual. No se persisten cotizaciones en PostgreSQL:
+  el caché es efímero.
 - DolarAPI puede devolver `compra` ausente o inválida; en ese caso la cotización
   conserva `venta` y `compra=null`, y el capital no se calcula con ese tipo.
 - `/api/cotizaciones` acepta `tipos` separados por coma, responde `400

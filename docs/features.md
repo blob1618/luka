@@ -124,7 +124,7 @@ procesa en silencio para no repetir una confirmación ya enviada.
   la hora de actualización se muestran como referencia.
 - Una cotización se marca «desactualizada» solo cuando el refresco falla y el dato
   cacheado sigue dentro de las 24 h: se muestra ese valor vencido.
-- Si el proveedor no responde y no hay ninguna cotización cacheada, se muestran los
+- Si el proveedor no responde y no hay ninguna cotización disponible, se muestran los
   saldos originales y «No los convierto para no inventar un valor.». Si solo falta un
   tipo pedido, se informa «<Tipo>: cotización no disponible.» para ese tipo.
 - Si una cotización no trae `compra`, se informa «compra no disponible» y se muestra

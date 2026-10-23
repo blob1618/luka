@@ -142,6 +142,7 @@ async def test_hit_fresh_does_not_call_fetcher(caplog):
         if r.name == "app.services.currency"
     ]
     assert "hit" in events
+    assert any("event=hit" in r.getMessage() for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +150,8 @@ async def test_hit_fresh_does_not_call_fetcher(caplog):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_stale_20min_refresh_ok():
+async def test_stale_20min_refresh_ok(caplog):
+    caplog.set_level(logging.INFO)
     redis = TTLFakeRedis()
     ts = datetime.now(timezone.utc) - timedelta(minutes=20)
     await seed(redis, make_quote(QuoteType.OFICIAL, fetched_at=ts))
@@ -163,6 +165,7 @@ async def test_stale_20min_refresh_ok():
     assert quote.venta == Decimal("1600.00")
     cached = json.loads(await redis.get(currency._key(QuoteType.OFICIAL)))
     assert cached["venta"] == "1600.00"
+    assert any("event=miss" in r.getMessage() for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +193,7 @@ async def test_stale_20min_fetch_fails_keeps_fetched_at(caplog):
         if r.name == "app.services.currency"
     ]
     assert "stale" in events
+    assert any("event=stale" in r.getMessage() for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

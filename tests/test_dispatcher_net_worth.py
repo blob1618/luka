@@ -304,6 +304,29 @@ async def test_missing_compra_reports_venta(isolated_db):
 
 
 @pytest.mark.asyncio
+async def test_all_compra_missing_omits_valued_footer(isolated_db):
+    with isolated_db() as session:
+        seed_user(
+            session,
+            "5491100000215",
+            [
+                ("Efectivo", "ARS", [("ingreso", "80000")]),
+                ("Ahorro", "USD", [("ingreso", "90")]),
+            ],
+        )
+
+    quotes = {
+        tipo: quote(tipo, None, "1200") for tipo in QuoteType
+    }
+    with patch("app.services.dispatcher.get_usd_quotes", AsyncMock(return_value=quotes)):
+        result = await ask("5491100000215", {"intent": "query_net_worth"})
+
+    assert "Oficial: compra no disponible; venta $1.200." in result.reply_text
+    assert "Cotizaciones: DolarAPI, consultadas 23/10 12:30." in result.reply_text
+    assert "Valuado a compra." not in result.reply_text
+
+
+@pytest.mark.asyncio
 async def test_stale_quote_is_flagged(isolated_db):
     with isolated_db() as session:
         seed_user(

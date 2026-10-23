@@ -6,6 +6,9 @@
 
 Aceptado / vigente para Release 1.
 
+> **Histórico:** ADR 0002 reemplaza este baseline de DB/RLS; esta decisión se conserva
+> solo como contexto histórico y no describe el contrato vigente.
+
 ## Contexto
 
 El backend y Supabase quedaron desalineados: el código actual y la base remota contienen tablas que responden a distintos modelos de datos. Supabase tiene tablas oficiales nuevas junto con tablas legacy de versiones previas, por lo que backend, frontend y agentes necesitan una fuente técnica única para Release 1.

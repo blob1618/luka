@@ -4345,10 +4345,10 @@ def _render_net_worth(result: NetWorthResult, tipos: list[QuoteType]) -> str:
             lines.append(line)
 
     fetched_at = max(quote.fetched_at for quote in result.quotes.values())
-    lines.append(
-        f"Cotizaciones: DolarAPI, consultadas {_format_quote_when(fetched_at)}. "
-        "Valuado a compra."
-    )
+    footer = f"Cotizaciones: DolarAPI, consultadas {_format_quote_when(fetched_at)}."
+    if any(total is not None for total in result.totals.values()):
+        footer += " Valuado a compra."
+    lines.append(footer)
     return "\n".join(lines)
 
 

@@ -273,7 +273,10 @@ async def _fetch_one(fetcher: _Fetcher, tipo: QuoteType) -> UsdQuote:
 def _log(tipo: QuoteType, event: str, start: float) -> None:
     latency_ms = round((time.perf_counter() - start) * 1000, 2)
     logger.info(
-        "currency_cache",
+        "currency_cache tipo=%s event=%s latency_ms=%.2f",
+        tipo.value,
+        event,
+        latency_ms,
         extra={"tipo": tipo.value, "event": event, "latency_ms": latency_ms},
     )
 
