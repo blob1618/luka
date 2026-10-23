@@ -110,6 +110,26 @@ procesa en silencio para no repetir una confirmación ya enviada.
 - Persistencia y confirmación: Al recibir una opción válida, `FinanceService` revalida propiedad y moneda y persiste el movimiento con su importe `Decimal` exacto, fecha contable y el `whatsapp_message_id` original. Si se requiere crear una nueva categoría, se preserva la billetera seleccionada (`wallet_id`) y la fecha resuelta (`resolved_fecha_movimiento`) a través del paso de confirmación y corrección de categoría.
 - Cobertura automatizada del simulador: `tests/test_wallet_simulator_acceptance.py` valida de extremo a extremo el flujo de billeteras mediante `WebhookModeService.send_message` (mismo adaptador que utiliza el simulador Streamlit), con SQLite aislado (`StaticPool`), `FakeRedis` y respuestas LLM deterministas. Verifica la creación de billeteras, desambiguación con cero escrituras ante múltiples opciones, selección válida, consulta de saldos independientes por moneda (ARS/USD), anulación lógica y aislamiento estricto entre usuarios. La ruta automatizada no realiza llamadas reales a WhatsApp/Meta, proveedores LLM ni servicios remotos y no reemplaza la comprobación manual del simulador interactivo con Redis de testing, que permanece pendiente como criterio del DoD.
 
+## Capital consolidado y cotizaciones
+
+- «¿Cuánto tengo?» (`query_net_worth`) devuelve el capital actual: la suma de saldos
+  no anulados de todas las billeteras, sin filtro de fechas, con los saldos originales
+  en ARS y USD y el total valuado por tipo de cotización.
+- Si el usuario no especifica tipos, se devuelven los tres (`oficial`, `mep`, `blue`).
+  Si especifica uno o varios («¿cuánto tengo en blue?», «en oficial y blue»), se
+  devuelven solo los solicitados. Un tipo desconocido no se inventa.
+- La valuación es a **compra**: total ARS + total USD × cotización compra. La venta y
+  la hora de actualización se muestran como referencia.
+- Si una cotización está vencida pero dentro de las 24 h de caché, se muestra el
+  valor y se marca «desactualizada». Si el proveedor no responde y no hay dato
+  cacheado, se informa «cotización no disponible» sin inventar un número.
+- Si una cotización no trae `compra`, se informa «compra no disponible» y se muestra
+  la venta; ese tipo no suma al capital consolidado.
+- Sin saldos en USD se muestra solo el total en ARS y se aclara que no hay saldos en
+  USD; no se aplica ninguna conversión.
+- Las cotizaciones no se persisten en la base: se cachean en Redis y se consultan en
+  el momento. El dashboard consume los mismos datos por `/api/cotizaciones`.
+
 ## Límites de gasto y presupuestos
 
 - Un límite es único por usuario, categoría, inicio de período y moneda. Crear sobre una
