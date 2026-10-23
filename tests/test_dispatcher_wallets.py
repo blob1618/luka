@@ -7,12 +7,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.models.database import (
-    Base,
     Billetera,
     Categoria,
     MovimientoFinanciero,
@@ -29,29 +25,6 @@ from app.services.dispatcher import (
 )
 from app.services.finance import FinanceService
 from app.services.onboarding import OnboardingDecision, OnboardingResult
-
-
-@pytest.fixture()
-def isolated_db(monkeypatch):
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
-    Base.metadata.create_all(engine)
-    for target in (
-        "app.services.dispatcher.SessionLocal",
-        "app.services.finance.SessionLocal",
-        "app.services.wallet.SessionLocal",
-        "app.services.limit.SessionLocal",
-        "app.services.category_creation.SessionLocal",
-        "app.services.budget.SessionLocal",
-        "app.models.database.SessionLocal",
-    ):
-        monkeypatch.setattr(target, factory)
-    yield factory
-    engine.dispose()
 
 
 @pytest.fixture(autouse=True)
