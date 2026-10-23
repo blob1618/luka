@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+import httpx
 import pytest
 
 import app.services.currency as currency
@@ -15,6 +16,7 @@ from app.services.currency import (
     UsdQuote,
     QuoteUnavailableError,
     get_usd_quote,
+    get_usd_quotes,
     reset_currency_service,
 )
 
@@ -417,3 +419,146 @@ async def test_no_redis_url_direct_fetch(monkeypatch, caplog):
     assert quote.stale is False
     assert calls["n"] == 1
     assert any("REDIS_URL" in r.getMessage() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: REDIS_URL inválida, _fetch_dolarapi, get_usd_quotes y caché corrupto.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_invalid_redis_url_falls_back_to_fetch(monkeypatch, caplog):
+    # El autouse de conftest patchea redis.asyncio.from_url globalmente; usamos el real
+    # para ejercitar el ValueError de una URL malformada.
+    from redis.asyncio.utils import from_url as real_redis_from_url
+
+    monkeypatch.setattr(currency.redis, "from_url", real_redis_from_url)
+    monkeypatch.setenv("REDIS_URL", "not-a-url")
+    caplog.set_level(logging.WARNING)
+    calls = {"n": 0}
+
+    async def fetcher():
+        calls["n"] += 1
+        return {QuoteType.OFICIAL: make_quote(QuoteType.OFICIAL)}
+
+    quote = await get_usd_quote(QuoteType.OFICIAL, fetcher=fetcher)
+
+    assert quote.stale is False
+    assert calls["n"] == 1
+    assert any("REDIS_URL" in r.getMessage() for r in caplog.records)
+
+
+def _mock_dolarapi(monkeypatch, handler):
+    """Parchea httpx.AsyncClient para inyectar un MockTransport (sin red)."""
+    captured = {}
+    real_async_client = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(currency.httpx, "AsyncClient", factory)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_fetch_dolarapi_non_200_raises(monkeypatch):
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        return httpx.Response(500, json={"error": "boom"})
+
+    captured = _mock_dolarapi(monkeypatch, handler)
+
+    with pytest.raises(QuoteUnavailableError):
+        await currency._fetch_dolarapi()
+
+    assert seen["url"] == "https://dolarapi.com/v1/dolares"
+    assert captured["timeout"] == 3.0
+
+
+@pytest.mark.asyncio
+async def test_fetch_dolarapi_invalid_json_raises(monkeypatch):
+    def handler(request):
+        return httpx.Response(200, content=b"not json")
+
+    _mock_dolarapi(monkeypatch, handler)
+
+    with pytest.raises(QuoteUnavailableError):
+        await currency._fetch_dolarapi()
+
+
+@pytest.mark.asyncio
+async def test_get_usd_quotes_empty_means_all_three():
+    redis = TTLFakeRedis()
+    calls = {"n": 0}
+
+    async def fetcher():
+        calls["n"] += 1
+        return {t: make_quote(t) for t in QuoteType}
+
+    quotes = await get_usd_quotes([], fetcher=fetcher, redis_client=redis)
+
+    assert set(quotes) == {QuoteType.OFICIAL, QuoteType.MEP, QuoteType.BLUE}
+    assert calls["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_get_usd_quotes_partial_failure_returns_available():
+    redis = TTLFakeRedis()
+
+    async def fetcher():
+        return {QuoteType.OFICIAL: make_quote(QuoteType.OFICIAL)}
+
+    quotes = await get_usd_quotes(fetcher=fetcher, redis_client=redis)
+
+    assert set(quotes) == {QuoteType.OFICIAL}
+
+
+@pytest.mark.asyncio
+async def test_get_usd_quotes_all_fail_raises():
+    redis = TTLFakeRedis()
+
+    async def fetcher():
+        raise RuntimeError("provider down")
+
+    with pytest.raises(QuoteUnavailableError):
+        await get_usd_quotes(fetcher=fetcher, redis_client=redis)
+
+
+@pytest.mark.asyncio
+async def test_corrupt_cache_json_falls_back_to_fetch(caplog):
+    caplog.set_level(logging.WARNING)
+    redis = TTLFakeRedis()
+    await redis.set(currency._key(QuoteType.OFICIAL), "{not json")
+    calls = {"n": 0}
+
+    async def fetcher():
+        calls["n"] += 1
+        return {QuoteType.OFICIAL: make_quote(QuoteType.OFICIAL)}
+
+    quote = await get_usd_quote(QuoteType.OFICIAL, fetcher=fetcher, redis_client=redis)
+
+    assert quote.stale is False
+    assert calls["n"] == 1
+    assert any("corrupt" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_cache_missing_fields_falls_back_to_fetch(caplog):
+    caplog.set_level(logging.WARNING)
+    redis = TTLFakeRedis()
+    await redis.set(currency._key(QuoteType.OFICIAL), json.dumps({"tipo": "oficial"}))
+    calls = {"n": 0}
+
+    async def fetcher():
+        calls["n"] += 1
+        return {QuoteType.OFICIAL: make_quote(QuoteType.OFICIAL, venta=Decimal("1700.00"))}
+
+    quote = await get_usd_quote(QuoteType.OFICIAL, fetcher=fetcher, redis_client=redis)
+
+    assert quote.venta == Decimal("1700.00")
+    assert calls["n"] == 1
+    assert any("corrupt" in r.getMessage() for r in caplog.records)
+

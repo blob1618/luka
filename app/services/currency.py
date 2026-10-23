@@ -110,9 +110,16 @@ async def _resolve_redis_client() -> redis.Redis | None:
     if not url:
         logger.warning("currency_cache redis disabled: REDIS_URL not set; serving without cache")
         return None
-    _redis_client = redis.from_url(
-        url, decode_responses=True, socket_connect_timeout=3, socket_timeout=3
-    )
+    try:
+        _redis_client = redis.from_url(
+            url, decode_responses=True, socket_connect_timeout=3, socket_timeout=3
+        )
+    except Exception as exc:
+        logger.warning(
+            "currency_cache redis disabled: invalid REDIS_URL (%s); serving without cache",
+            exc,
+        )
+        return None
     _redis_loop_id = id(asyncio.get_running_loop())
     return _redis_client
 
