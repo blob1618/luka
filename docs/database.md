@@ -130,7 +130,8 @@ erDiagram
 El vínculo `movimientos_financieros -> billetera` es compuesto: la clave
 `(billetera_id, usuario_id, moneda)` referencia `billetera(id, usuario_id, moneda)`, de
 modo que una billetera solo puede agrupar movimientos de su mismo propietario y su
-misma moneda exacta. `billetera_id` es nullable durante la expansión.
+misma moneda exacta. El contrato versionado aplica `NOT NULL` a `billetera_id` desde la
+contracción de HU-MON-01; el estado remoto se verifica con `supabase migration list`.
 
 Este diagrama representa el contrato del ORM, no una verificación del esquema remoto.
 
@@ -164,18 +165,29 @@ WhatsApp -> Backend -> public.movimientos_financieros
 
 `public.movimientos_financieros` es la entidad central para ingresos y egresos. Los movimientos con `anulado_en` informado se excluyen de consultas y presupuestos; la fila y su `whatsapp_message_id` se conservan para impedir la recreación por reintentos de WhatsApp. La columna se incorpora mediante `20260917143651_annul_financial_movements.sql` y debe aplicarse antes del código que la consulta.
 
-## Billeteras y fase de expansión (STK-237)
+## Cotizaciones: sin persistencia
+
+Las cotizaciones USD (`oficial`, `mep`, `blue`) **no se persisten** en PostgreSQL: no
+hay tabla ni columna de cotizaciones en el contrato. `app/services/currency.py` las
+obtiene de DolarAPI y las cachea por tipo en Redis (`luka:quote:usd:{tipo}`), con TTL
+de 86400 s y ventana *fresh* de 900 s configurables por `CURRENCY_STALE_SECONDS` y
+`CURRENCY_CACHE_TTL_SECONDS`. Si el proveedor falla, se sirve el dato cacheado marcado
+`stale` hasta el TTL; si no existe, la operación devuelve «no disponible» y no se
+inventa un valor. Los saldos de las billeteras siguen siendo la única fuente de
+verdad financiera y se guardan en su moneda original (`ARS`/`USD`).
+
+## Billeteras y contrato final (STK-237 / HU-MON-01)
 
 `public.billetera` representa una billetera propia del usuario. Guarda `usuario_id`, `nombre`, `moneda` y `creado_en`; exige `nombre` no vacío e impide repetir el nombre normalizado (`lower(btrim(nombre))`) dentro de la misma pareja `(usuario_id, moneda)`. Un usuario puede tener varias billeteras en la misma moneda, por eso el nombre forma parte de su identidad lógica. La moneda histórica permanece sin reescritura para conservar la pareja exacta `(usuario_id, moneda)` de cada movimiento. STK-238 normaliza a mayúsculas las nuevas operaciones y limita la creación/selección de billeteras a `ARS` y `USD`.
 
-La integridad propietario/moneda no depende de policies ni del backend: la FK compuesta `movimientos_financieros_billetera_fkey` sobre `(billetera_id, usuario_id, moneda) -> billetera(id, usuario_id, moneda)` impide que un movimiento apunte a una billetera de otro usuario o de otra moneda. Con `MATCH SIMPLE`, `billetera_id = NULL` no se valida; ese es el estado válido de la expansión.
+La integridad propietario/moneda no depende de policies ni del backend: la FK compuesta `movimientos_financieros_billetera_fkey` sobre `(billetera_id, usuario_id, moneda) -> billetera(id, usuario_id, moneda)` impide que un movimiento apunte a una billetera de otro usuario o de otra moneda. El contrato versionado aplica `NOT NULL` a `billetera_id`, por lo que todo movimiento tiene propietario y moneda verificables por la FK; el estado remoto se verifica con `supabase migration list`.
 
-Fase y límite explícito: STK-237 implementa la **expansión**, no el contrato final. `billetera_id` queda nullable, no se aplica `NOT NULL`, no se agrega la contracción y no se asume completitud permanente del backfill. El binario anterior sigue insertando movimientos con `billetera_id = NULL` después de la expansión; el backfill transitorio de esas escrituras, la validación de cero huérfanos y el `NOT NULL` pertenecen al corte coordinado STK-240. Mientras dure esa fase, ninguna consulta de saldo debe asumir que todos los movimientos tienen billetera.
+Contrato final: las migraciones de HU-MON-01 completan la transición. `20261012215302_hu_mon_01_wallet_transition_backfill.sql` re-ejecuta el backfill (`billetera_id IS NULL`) y agrega un `CHECK NOT VALID` que rechaza nuevas escrituras nulas; su encabezado exige pausar y drenar los escritores legacy y mantener cerradas las escrituras financieras durante el corte. `20261012215307_hu_mon_01_wallet_transition_contract.sql` valida el CHECK y la FK, verifica cero huérfanos y aplica `ALTER COLUMN billetera_id SET NOT NULL`; la contracción DDL toma `ACCESS EXCLUSIVE` sobre la tabla (brevemente, dentro de la transacción del archivo), aunque `VALIDATE CONSTRAINT` usa `SHARE UPDATE EXCLUSIVE` y el `SET NOT NULL` no reescribe la tabla porque aprovecha el CHECK ya validado: no hay scan, pero sí el lock exclusivo. Eso no elimina el requisito de drenaje del paso anterior. Los modelos SQLAlchemy todavía declaran la columna nullable: es una diferencia conocida del ORM (deuda diferida en ADR 0002).
 
 Migraciones:
 
 - `20261012174855_add_billetera_expansion_stk237.sql` crea `public.billetera`, agrega la columna nullable y la FK compuesta `NOT VALID`, los índices propios de `billetera` y RLS/`REVOKE`. No crea índices sobre `movimientos_financieros`.
-- `20261012174901_backfill_billetera_historica_stk237.sql` crea una billetera `Inicial` por pareja histórica exacta `(usuario_id, moneda)` con movimientos sin billetera y completa `billetera_id` en esas filas. Incluye movimientos anulados (no filtra `anulado_en`) y solo modifica `billetera_id`: importe, moneda, fecha, categoría, tipo, anulación y origen conservan su valor. Usuarios sin movimientos no generan billeteras. Es idempotente y re-ejecutable (solo considera filas con `billetera_id IS NULL` y usa `ON CONFLICT DO NOTHING`), condición necesaria para reutilizarlo como backfill transitorio en STK-240, y al terminar valida la FK.
+- `20261012174901_backfill_billetera_historica_stk237.sql` crea una billetera `Inicial` por pareja histórica exacta `(usuario_id, moneda)` con movimientos sin billetera y completa `billetera_id` en esas filas. Incluye movimientos anulados (no filtra `anulado_en`) y solo modifica `billetera_id`: importe, moneda, fecha, categoría, tipo, anulación y origen conservan su valor. Usuarios sin movimientos no generan billeteras. Es idempotente y re-ejecutable (solo considera filas con `billetera_id IS NULL` y usa `ON CONFLICT DO NOTHING`), condición que reutiliza el backfill de transición de HU-MON-01, y al terminar valida la FK.
 - `20261012181524_add_movimientos_billetera_id_index_stk237.sql` crea el índice `movimientos_financieros_billetera_id_idx` con `CREATE INDEX` normal, después del backfill y en su propio archivo.
 
 Locks: Supabase CLI aplica cada archivo de migración en una sola transacción, así que el alcance de un lock es el archivo completo; por eso la expansión, el backfill y el índice viven en archivos separados. La expansión solo ejecuta DDL breve de metadatos: `ADD COLUMN billetera_id` toma `ACCESS EXCLUSIVE` sobre `movimientos_financieros` (bloquea lecturas y escrituras) y lo conserva hasta que termina esa transacción, pero el archivo no ejecuta DML ni construye índices sobre esa tabla; `ADD FOREIGN KEY ... NOT VALID` toma `SHARE ROW EXCLUSIVE` sobre la tabla referenciante y la referenciada, sin escanear filas. El índice se construye en su propio archivo con `CREATE INDEX` normal: toma `SHARE` y bloquea escrituras sobre `movimientos_financieros` mientras dura el build, sin bloquear lecturas. El backfill, también en su archivo, no toma bloqueo exclusivo global pero retiene row locks en las filas que modifica: DML concurrente sobre otras filas puede continuar, las lecturas no se bloquean y una escritura concurrente sobre una fila ya modificada puede esperar. `VALIDATE CONSTRAINT` usa `SHARE UPDATE EXCLUSIVE` sobre la referenciante y `ROW SHARE` sobre la referenciada.
@@ -201,11 +213,10 @@ el movimiento intacto si la selección es ambigua o incompatible.
 
 `WalletService.get_balances_own_user()` devuelve una fila por billetera propia y moneda,
 con ingresos activos menos egresos activos usando `Decimal`; excluye movimientos anulados
-y no suma movimientos de otra billetera o moneda. Mientras `billetera_id` siga nullable,
-las filas históricas o concurrentes sin billetera no aparecen en estos saldos; el cierre
-de esa ventana corresponde al backfill coordinado de STK-240.
+y no suma movimientos de otra billetera o moneda. Con el contrato `NOT NULL` aplicado,
+todo movimiento vigente pertenece a una billetera y aparece en estos saldos.
 
-El harness `supabase/tests/stk237_billetera.sql` aplica los tres archivos en orden y verifica en una base PostgreSQL local descartable (Supabase CLI, `project_id` propio y confirmación explícita) el backfill histórico, la preservación de campos, los movimientos anulados, la integridad de propietario y moneda, el `billetera_id` nullable, el índice en su archivo posterior y RLS/permisos. No se ejecuta contra Supabase remoto ni producción.
+El harness `supabase/tests/stk237_billetera.sql` aplica las migraciones de expansión, backfill e índice en orden y verifica en una base PostgreSQL local descartable (Supabase CLI, `project_id` propio y confirmación explícita) el backfill histórico, la preservación de campos, los movimientos anulados, la integridad de propietario y moneda, el índice en su archivo posterior y RLS/permisos. La contracción a `NOT NULL` se valida en las migraciones de HU-MON-01 y su harness. No se ejecuta contra Supabase remoto ni producción.
 
 ## Límites y presupuestos
 
@@ -235,7 +246,7 @@ Al crear la migración base se compararon el esquema remoto y una reconstrucció
 
 ## Migraciones y desarrollo local
 
-Supabase CLI (`supabase/migrations/`) es el flujo canónico, único responsable y la única fuente de verdad para los cambios de esquema en la base de datos de Luka. El historial previo quedó consolidado en `supabase/migrations/20260911010815_baseline_remote_schema.sql`, y el historial vigente llega hasta `20261012181524_add_movimientos_billetera_id_index_stk237.sql`.
+Supabase CLI (`supabase/migrations/`) es el flujo canónico, único responsable y la única fuente de verdad para los cambios de esquema en la base de datos de Luka. El historial previo quedó consolidado en `supabase/migrations/20260911010815_baseline_remote_schema.sql`, y el historial vigente llega hasta `20261023120000_protect_public_api.sql` (RLS/grants de ADR 0002). La cadena de billeteras cierra con la contracción `billetera_id NOT NULL` de HU-MON-01 (`20261012215302` y `20261012215307`).
 
 1. Crear cada cambio con `supabase migration new <nombre>` y editar solo el archivo nuevo.
 2. Ejecutar `supabase db reset` y `supabase db lint --level warning` antes de abrir o integrar el cambio.
@@ -329,6 +340,8 @@ No se permite que un dashboard consulte directamente los movimientos financieros
 
 La migración base declara `ENABLE ROW LEVEL SECURITY` para las tablas protegidas que ya lo tenían. `20260911011601_protect_movimientos_financieros.sql` corrige las diferencias detectadas en la tabla financiera central: habilita RLS y agrega los índices de deduplicación y consulta que faltaban. No se agregan policies públicas; el backend usa un rol con `BYPASSRLS`. `public.billetera` sigue la misma convención: RLS habilitado y `REVOKE ALL` para `anon`/`authenticated`, sin policies ni `auth.uid()`. El estado efectivo debe volver a verificarse cuando una migración toque permisos o RLS.
 
+`20261023120000_protect_public_api.sql` cierra la Data API pública (ADR 0002): habilita RLS en `public.categorias`, `public.evento` y `public.recordatorio` (las tres que seguían sin RLS), y ejecuta `REVOKE ALL` de tablas, secuencias y funciones del schema `public` a `anon` y `authenticated`, más `ALTER DEFAULT PRIVILEGES` para que `postgres` no vuelva a exponer objetos nuevos. La postura es: `anon`/`authenticated` no acceden a `public`; el dashboard se sirve por BFF y el Worker usa `postgres`, que es owner con `BYPASSRLS=true` y por eso el `REVOKE` no lo afecta. No se revoca `USAGE` del schema `public` para no romper PostgREST. Un rol de mínimo privilegio para el Worker es deuda diferida: hoy `postgres` conserva `BYPASSRLS` y acceso de owner. El harness `supabase/tests/rls_public_api.sql` verifica que ninguna tabla de `public` quede sin RLS o con privilegios de `anon`/`authenticated`.
+
 ## STK-237 / STK-240: Modelo y Contrato de Billeteras
 
 ### Contrato de Datos
@@ -344,19 +357,21 @@ La migración base declara `ENABLE ROW LEVEL SECURITY` para las tablas protegida
   - Múltiples billeteras permitidas para la misma moneda (con distinto nombre).
   - Sin saldo materializado: los saldos se calculan agregando movimientos no anulados (`anulado_en IS NULL`) en tiempo de consulta.
 - **Relación en `movimientos_financieros`**:
-  - `billetera_id`: UUID nullable en el estado actual de expansión/backfill/índice de PR #60; la restricción final `NOT NULL` es un contrato futuro separado y sujeto a gate.
-  - Clave foránea compuesta `(billetera_id, usuario_id, moneda)` referenciando `billetera(id, usuario_id, moneda)`, que garantiza la integridad de propietario y moneda cuando `billetera_id` no es nulo (la fase actual de expansión admite NULL con `MATCH SIMPLE`).
+  - `billetera_id`: UUID `NOT NULL` en el contrato versionado desde la contracción de HU-MON-01; los movimientos históricos tienen billetera tras el backfill.
+  - Clave foránea compuesta `(billetera_id, usuario_id, moneda)` referenciando `billetera(id, usuario_id, moneda)`, que garantiza la integridad de propietario y moneda.
   - Índice en `billetera_id` (`movimientos_financieros_billetera_id_idx`).
   - Sin modificaciones a tipos ni campos financieros históricos.
 
-### Migraciones de Base de Datos (PR #60 / STK-237)
+### Migraciones de Base de Datos (STK-237 / HU-MON-01)
 
-La cadena de migraciones versionadas en PR #60 comprende tres etapas:
+La cadena de migraciones versionadas comprende la expansión y la contracción:
 1. `supabase/migrations/20261012174855_add_billetera_expansion_stk237.sql`: creación de la tabla `billetera`, adición de la columna `billetera_id UUID` (nullable) en `movimientos_financieros`, FK compuesta `(billetera_id, usuario_id, moneda)` y RLS habilitada con revocación total de privilegios a roles públicos (`anon`, `authenticated`).
 2. `supabase/migrations/20261012174901_backfill_billetera_historica_stk237.sql`: creación determinista de la billetera `'Inicial'` por cada par `(usuario_id, moneda)` presente en movimientos preexistentes y asignación de `billetera_id`.
 3. `supabase/migrations/20261012181524_add_movimientos_billetera_id_index_stk237.sql`: índice en `movimientos_financieros(billetera_id)`.
+4. `supabase/migrations/20261012215302_hu_mon_01_wallet_transition_backfill.sql`: backfill final de remanentes y `CHECK NOT VALID` que bloquea nuevas escrituras nulas.
+5. `supabase/migrations/20261012215307_hu_mon_01_wallet_transition_contract.sql`: valida CHECK y FK, verifica cero huérfanos y aplica `SET NOT NULL`; retira el CHECK temporal.
 
-**Estado de la restricción y gate de release no resuelto**: El esquema SQL actual en PR #60 mantiene `billetera_id` como nullable (etapa de expansión, backfill e índice). La aplicación final del contrato `NOT NULL` exige una secuencia de release que incluya pausa y drenaje de tráfico/escrituras, backfill final de remanentes, verificación y aplicación estricta del contrato de foreign key y restricción `NOT NULL`, junto con un procedimiento verificado de rollback. Un runbook aprobado de rollout y rollback en producción para este cambio no se localizó en las fuentes revisadas/disponibles (migraciones del repositorio y documentación interna en Confluence). En consecuencia, este gate de release permanece formalmente no resuelto y no debe asumirse que dicha secuencia esté lista para ejecución productiva.
+**Estado del contrato**: el esquema versionado termina con `billetera_id NOT NULL`; no queda un gate nullable pendiente. Queda como deuda diferida (ADR 0002) alinear el modelo SQLAlchemy, que todavía declara la columna nullable para no romper SQLite.
 
 ### Verificación y Aceptación
 

@@ -37,7 +37,7 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 
 - `public.movimientos_financieros` es la entidad central para ingresos y egresos; `public.usuario` es la tabla oficial de usuarios, mapeada por `public.usuario.whatsapp_id`.
 - No ejecutar SQL ni tocar Supabase directamente; todo cambio de schema se versiona primero (ver `docs/database.md` y `supabase/migrations/`).
-- `public.movimientos_financieros` tiene RLS habilitado; no asumir policies de acceso público (roles `anon`/`authenticated`). No hay frontend -> Supabase directo salvo nueva ADR.
+- `public.movimientos_financieros` tiene RLS habilitado; no asumir policies de acceso público (roles `anon`/`authenticated`). ADR 0002: el dashboard se sirve por BFF (Astro/Workers). No hay frontend -> Data API de Supabase directo.
 
 ### Invariantes del registro por texto
 

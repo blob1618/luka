@@ -54,5 +54,8 @@ jobs:
           supabase start --exclude gotrue,realtime,storage-api,imgproxy,kong,mailpit,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor
           supabase db reset
 
+      - name: RLS/grants contract
+        run: psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" -v ON_ERROR_STOP=1 -f supabase/tests/rls_public_api.sql
+
       - name: Lint database schema
         run: supabase db lint --level warning

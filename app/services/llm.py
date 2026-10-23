@@ -190,6 +190,7 @@ _ALLOWED_INTENTS = {
     "create_limit", "change_limit", "list_limits", "delete_limit", "confirm_limit",
     "reject_limit", "compensate_budget", "confirm_compensation", "reject_compensation",
     "reset_context", "financial_education", "create_wallet", "list_wallets", "query_wallets",
+    "query_net_worth",
 }
 
 
@@ -287,6 +288,20 @@ def _normalize_compensation_fields(parsed: Dict[str, Any]) -> dict:
     }
 
 
+def _normalize_quote_types(value) -> list[str]:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    valid = {"oficial", "mep", "blue"}
+    result = []
+    for item in value:
+        tipo = str(item).strip().lower()
+        if tipo in valid and tipo not in result:
+            result.append(tipo)
+    return result
+
+
 def _normalize_wallet_fields(parsed: Dict[str, Any]) -> dict:
     return {
         "wallet_name": _strip_optional(parsed.get("wallet_name") or parsed.get("name")),
@@ -329,6 +344,7 @@ def _normalize_message_response(cls: type, parsed: Dict[str, Any]) -> Dict[str, 
         **_normalize_limit_fields(parsed),
         **_normalize_compensation_fields(parsed),
         **_normalize_wallet_fields(parsed),
+        "quote_types": _normalize_quote_types(parsed.get("quote_types")),
         "education_term": _strip_optional(parsed.get("education_term")),
         "reply_text": str(parsed.get("reply_text") or ""),
         "movements": _normalize_movements(cls, parsed, intent),
@@ -370,6 +386,7 @@ def _fallback_response(exc: Exception) -> Dict[str, Any]:
         "compensation_amount": None,
         "wallet_name": None,
         "wallet_currency": None,
+        "quote_types": [],
         "education_term": None,
         "reply_text": (
             "No he podido analizar tu mensaje en este momento. "

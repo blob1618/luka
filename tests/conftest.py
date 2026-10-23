@@ -217,6 +217,36 @@ def fake_redis() -> FakeRedis:
     return FakeRedis()
 
 
+@pytest.fixture()
+def isolated_db(monkeypatch):
+    """SQLite in-memory database whose SessionLocal is injected in the services."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.models.database import Base
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Base.metadata.create_all(engine)
+    for target in (
+        "app.services.dispatcher.SessionLocal",
+        "app.services.finance.SessionLocal",
+        "app.services.wallet.SessionLocal",
+        "app.services.limit.SessionLocal",
+        "app.services.category_creation.SessionLocal",
+        "app.services.budget.SessionLocal",
+        "app.models.database.SessionLocal",
+    ):
+        monkeypatch.setattr(target, factory)
+    yield factory
+    engine.dispose()
+
+
 @pytest.fixture(autouse=True)
 def isolate_redis_and_conversation(monkeypatch, fake_redis: FakeRedis):
     """Aisla ConversationService y Redis para cada prueba."""

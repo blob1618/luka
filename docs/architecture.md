@@ -21,9 +21,10 @@ decisiones de cada capa. El comportamiento visible para el usuario se describe e
 ## Componentes y responsabilidades
 
 - `app/main.py`: app FastAPI. Expone `GET /webhook` (verificación con `WHATSAPP_VERIFY_TOKEN`),
-  `POST /webhook` (ingesta desacoplada), endpoints administrativos
-  `/admin/conversation-flows*` (protegidos por `FLOW_ADMIN_API_KEY`) y health. En el
-  `lifespan` inicializa el cliente Redis global y arranca el scheduler.
+  `POST /webhook` (ingesta desacoplada), `GET /api/cotizaciones` (cotizaciones USD para
+  el dashboard), endpoints administrativos `/admin/conversation-flows*` (protegidos por
+  `FLOW_ADMIN_API_KEY`) y health. En el `lifespan` inicializa el cliente Redis global y
+  arranca el scheduler.
 - `app/services/dispatcher.py`: orquesta el mensaje entrante. Verifica onboarding y
   prioridades globales, resuelve estados multi-turno, llama al LLM, normaliza el
   intent, deriva al servicio de dominio y construye la respuesta segura. No persiste
@@ -36,6 +37,12 @@ decisiones de cada capa. El comportamiento visible para el usuario se describe e
   movimientos; categorías del usuario.
 - `app/services/wallet.py`: altas y consultas de billeteras propias, selección por
   propietario y moneda, y saldos por billetera.
+- `app/services/currency.py`: cotizaciones USD (`oficial`, `mep`, `blue`) desde
+  DolarAPI, con caché Redis, deduplicación de fetch por tipo y degradación a dato
+  `stale` si el proveedor falla. No escribe en la base de datos.
+- `app/services/net_worth.py`: consolida los saldos all-time de las billeteras del
+  usuario en un total ARS y un total por tipo de cotización. Solo agrega y aplica las
+  cotizaciones recibidas; no hace red ni DB writes.
 - `app/services/limit.py`: alta, edición, listado y eliminación de límites mensuales por
   categoría y moneda.
 - `app/services/budget.py`: consumo, disponible, porcentaje y exceso derivados de los
@@ -143,7 +150,7 @@ Puntos clave del flujo:
   `confirm_category`, `reject_category`, `delete_category`, `list_categories`,
   `create_limit`, `change_limit`, `list_limits`, `delete_limit`, `confirm_limit`,
   `reject_limit`, `update_movement`, `delete_movement`, `compensate_budget`,
-  `confirm_compensation`, `reject_compensation` y `reset_context`.
+  `confirm_compensation`, `reject_compensation`, `reset_context` y `query_net_worth`.
 - `compensate_budget` calcula una propuesta de compensación entre límites de la misma
   moneda y período, la deja pendiente y emite el evento `budget.compensation_proposed`.
   Solo se persiste al confirmar (`confirm_compensation`), previa revalidación; el
@@ -214,12 +221,58 @@ usa `gunicorn -w 1`).
   como máximo un aviso diario y se libera si el envío falla.
 - Un pedido de acceso al dashboard también refresca `ultimo_mensaje` y reabre esa ventana.
 
+## Cotizaciones y capital consolidado
+
+`query_net_worth` («¿cuánto tengo?») consolida los saldos actuales de todas las
+billeteras del usuario, sin filtro de fechas: un total en ARS y un total en USD
+expresados en sus monedas originales. El LLM puede devolver `quote_types`; si no lo
+hace, el backend cotiza los tres tipos (`oficial`, `mep`, `blue`) y si los especifica
+solo usa los pedidos.
+
+Flujo de cotizaciones:
+
+```text
+Usuario / dashboard BFF
+  -> GET /api/cotizaciones?tipos=oficial,mep,blue (o dispatcher -> get_usd_quotes)
+  -> app/services/currency.py
+  -> Redis (luka:quote:usd:{tipo})
+  -> si no hay dato fresh: DolarAPI /v1/dolares
+```
+
+- Cada cotización se cachea por tipo en Redis con TTL `CURRENCY_STALE_SECONDS`
+  (86400 s por defecto). Se considera *fresh* durante `CURRENCY_CACHE_TTL_SECONDS`
+  (900 s por defecto); fuera de esa ventana se intenta refrescar. Solo si ese refresco
+  falla y el dato sigue dentro del TTL se devuelve marcado `stale=true` (hasta 24 h).
+- El lock de fetch es por proceso y por tipo: evita estampidas dentro de un worker,
+  no entre workers. Escalar a más workers requiere un lock distribuido.
+- Los eventos `hit`, `miss` y `stale` se emiten con el mensaje `currency_cache` y
+  adjuntan `tipo`, `event` y `latency_ms` como atributos del `LogRecord` vía `extra`
+  y, además, dentro del propio mensaje (`currency_cache tipo=... event=... latency_ms=...`),
+  que es lo que imprime el formatter actual. No se persisten cotizaciones en PostgreSQL:
+  el caché es efímero.
+- DolarAPI puede devolver `compra` ausente o inválida; en ese caso la cotización
+  conserva `venta` y `compra=null`, y el capital no se calcula con ese tipo.
+- `/api/cotizaciones` acepta `tipos` separados por coma, responde `400
+  tipo_invalido` ante un tipo desconocido y `503 cotizaciones_no_disponibles` si no
+  hay ningún dato; el dashboard muestra el saldo original en ese caso.
+
+La valuación del capital es a **compra**: `total_ars + total_usd * compra`. El
+backend nunca inventa una tasa. Si falta un tipo pedido, responde «<Tipo>: cotización
+no disponible.» para ese tipo. Si no hay ninguna cotización (proveedor caído o
+`QuoteUnavailableError`), muestra los saldos originales y «No los convierto para no
+inventar un valor.». Si falta solo la compra, informa «compra no disponible» y muestra
+la venta. Sin saldos USD no hay conversión: se muestra solo el total ARS.
+
 ## Acceso a datos
 
-- El backend es el único mediador. WhatsApp → backend → Supabase y dashboard →
-  backend → Supabase; el frontend no consulta tablas financieras directamente.
+- El backend Python es dueño del schema, las migraciones, las cotizaciones y WhatsApp.
+  El dashboard se sirve por BFF (Astro/Workers con Hyperdrive, ADR 0002): el navegador
+  no llama a la Data API de Supabase y cada query del BFF filtra por `usuario_id`.
+  WhatsApp → backend → Supabase; dashboard → BFF → Supabase, y cotizaciones → backend.
 - `public.movimientos_financieros` tiene RLS habilitado sin policies públicas para
-  `anon` ni `authenticated`; la autorización se centraliza en el backend.
+  `anon` ni `authenticated`; la autorización se centraliza en el backend. La migración
+  `20261023120000_protect_public_api.sql` revoca `anon`/`authenticated` sobre todo
+  `public`; el Worker usa `postgres` (BYPASSRLS) y por eso no queda afectado.
 - El engine SQLAlchemy es síncrono (`pool_pre_ping`) y el dispatcher deriva a
   `asyncio.to_thread` las operaciones de dominio para no bloquear el event loop.
 - El esquema se versiona en `supabase/migrations/` (forward-only). Los modelos
