@@ -11,7 +11,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -50,6 +50,8 @@ from app.services.conversation import (
 )
 from app.services.conversation_flow_runtime import ConversationFlowRuntime
 from app.services.conversation_flow_contract import BUDGET_THRESHOLD_MESSAGE
+from app.services.currency import QuoteType, QuoteUnavailableError, get_usd_quotes
+from app.services.net_worth import NetWorthResult, NetWorthStatus, calculate_net_worth
 from app.services.budget import BudgetEvaluation, BudgetService, BudgetStatus
 from app.services.compensation import (
     BudgetCompensationService,
@@ -4260,6 +4262,128 @@ async def _handle_misc_intent(
     return _llm_dispatch_result(data, _safe_non_persisted_reply(data), "llm", intent)
 
 
+_NET_WORTH_QUOTE_LABELS = {
+    QuoteType.OFICIAL: "Oficial",
+    QuoteType.MEP: "MEP",
+    QuoteType.BLUE: "Blue",
+}
+
+
+def _parse_quote_types(value) -> list[QuoteType]:
+    """Lista pedida por el LLM; vacía o inválida pide los tres tipos."""
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        value = []
+    parsed: list[QuoteType] = []
+    for item in value:
+        try:
+            tipo = QuoteType(str(item).strip().lower())
+        except ValueError:
+            continue
+        if tipo not in parsed:
+            parsed.append(tipo)
+    return parsed or list(QuoteType)
+
+
+def _format_net_worth_amount(amount, currency: str) -> str:
+    """ARS sin decimales ($80.000), USD con dos (u$s90,00), signo antes del prefijo."""
+    try:
+        value = Decimal(str(amount))
+    except (InvalidOperation, ValueError):
+        return str(amount)
+
+    if currency.upper() == "USD":
+        prefix = "u$s"
+        formatted = f"{abs(value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)):,.2f}"
+    else:
+        prefix = "$"
+        formatted = f"{abs(value.quantize(Decimal('1'), rounding=ROUND_HALF_UP)):,.0f}"
+    integer, dot, decimals = formatted.partition(".")
+    result = f"{prefix}{integer.replace(',', '.')}"
+    if dot:
+        result += f",{decimals}"
+    return f"-{result}" if value < 0 else result
+
+
+def _format_quote_when(value: datetime) -> str:
+    return value.astimezone(ARGENTINA_TZ).strftime("%d/%m %H:%M")
+
+
+def _render_net_worth(result: NetWorthResult, tipos: list[QuoteType]) -> str:
+    if result.status is NetWorthStatus.NO_WALLETS:
+        return "No veo saldos en tus billeteras."
+
+    ars_total = _format_net_worth_amount(result.ars_total, "ARS")
+    if result.usd_total == 0:
+        return f"Tu capital consolidado es {ars_total} ARS. No tenés saldos en USD."
+
+    usd_total = _format_net_worth_amount(result.usd_total, "USD")
+    lines = [f"Saldos originales: {ars_total} ARS + {usd_total} USD."]
+    if not result.quotes:
+        lines.append("No los convierto para no inventar un valor.")
+        return "\n".join(lines)
+
+    for tipo in tipos:
+        label = _NET_WORTH_QUOTE_LABELS[tipo]
+        quote = result.quotes.get(tipo)
+        if quote is None:
+            lines.append(f"{label}: cotización no disponible.")
+        elif quote.compra is None:
+            venta = _format_net_worth_amount(quote.venta, "ARS")
+            lines.append(f"{label}: compra no disponible; venta {venta}.")
+        else:
+            total = _format_net_worth_amount(result.totals[tipo], "ARS")
+            compra = _format_net_worth_amount(quote.compra, "ARS")
+            venta = _format_net_worth_amount(quote.venta, "ARS")
+            line = (
+                f"{label}: {total} (compra {compra}, venta {venta}; "
+                f"actualizada {_format_quote_when(quote.as_of)})."
+            )
+            if quote.stale:
+                line += " (desactualizada)"
+            lines.append(line)
+
+    fetched_at = max(quote.fetched_at for quote in result.quotes.values())
+    lines.append(
+        f"Cotizaciones: DolarAPI, consultadas {_format_quote_when(fetched_at)}. "
+        "Valuado a compra."
+    )
+    return "\n".join(lines)
+
+
+async def _handle_net_worth_intent(
+    ctx: _DispatchContext, data: dict
+) -> DispatchResult | None:
+    if data.get("intent") != "query_net_worth":
+        return None
+
+    user_id = await asyncio.to_thread(_user_id_by_phone, ctx.sender_phone)
+    if user_id is None:
+        return _llm_dispatch_result(
+            data,
+            "No encontré una cuenta vinculada a este WhatsApp.",
+            "net_worth",
+            "query_net_worth",
+        )
+
+    tipos = _parse_quote_types(data.get("quote_types"))
+    result = await asyncio.to_thread(calculate_net_worth, user_id)
+    if result.usd_total != 0:
+        try:
+            quotes = await get_usd_quotes(tipos)
+        except QuoteUnavailableError:
+            quotes = {}
+        result = await asyncio.to_thread(calculate_net_worth, user_id, None, quotes)
+
+    return _llm_dispatch_result(
+        data,
+        _render_net_worth(result, tipos),
+        "net_worth",
+        "query_net_worth",
+    )
+
+
 async def _handle_wallet_intent(
     ctx: _DispatchContext, data: dict
 ) -> DispatchResult | None:
@@ -4346,6 +4470,7 @@ async def _dispatch_intent(ctx: _DispatchContext, data: dict) -> DispatchResult:
         _handle_limit_intent,
         _handle_chart_intent,
         _handle_financial_education_intent,
+        _handle_net_worth_intent,
         _handle_wallet_intent,
         _handle_finance_intent,
         _handle_reminder_intent,
