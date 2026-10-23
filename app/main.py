@@ -4,12 +4,13 @@ import os
 import secrets
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from uuid import UUID
 
 import redis.asyncio as redis
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,12 @@ from app.services.telemetry import (  # noqa: E402
     finish_message_telemetry,
     start_message_telemetry,
     track_phase,
+)
+from app.services.currency import (  # noqa: E402
+    QuoteType,
+    QuoteUnavailableError,
+    UsdQuote,
+    get_usd_quotes,
 )
 from app.services.conversation_flow import (  # noqa: E402
     ConversationFlowConflict,
@@ -183,6 +190,55 @@ def _raise_flow_http_error(exc: Exception):
 @app.get("/")
 def read_root():
     return {"message": "Luka API is running"}
+
+
+# Valores válidos de `tipos`; el endpoint comparte el vocabulario de QuoteType.
+_QUOTE_TYPES = {tipo.value: tipo for tipo in QuoteType}
+
+
+def _parse_quote_types(raw: str | None) -> list[QuoteType]:
+    if raw is None:
+        return list(QuoteType)
+    selected: list[QuoteType] = []
+    for token in raw.split(","):
+        tipo = _QUOTE_TYPES.get(token.strip().lower())
+        if tipo is None:
+            raise ValueError(raw)
+        if tipo not in selected:
+            selected.append(tipo)
+    return selected
+
+
+def _quote_datetime(value: datetime) -> str:
+    # Si as_of llega naive se asume UTC, igual que _parse_datetime en currency.py.
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return aware.isoformat()
+
+
+def _serialize_quote(quote: UsdQuote) -> dict:
+    return {
+        "compra": str(quote.compra) if quote.compra is not None else None,
+        "venta": str(quote.venta),
+        "fuente": quote.fuente,
+        "as_of": _quote_datetime(quote.as_of),
+        "fetched_at": _quote_datetime(quote.fetched_at),
+        "stale": quote.stale,
+    }
+
+
+@app.get("/api/cotizaciones")
+async def get_cotizaciones(tipos: str | None = None):
+    try:
+        selected = _parse_quote_types(tipos)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "tipo_invalido"})
+    try:
+        quotes = await get_usd_quotes(selected)
+    except QuoteUnavailableError:
+        return JSONResponse(
+            status_code=503, content={"error": "cotizaciones_no_disponibles"}
+        )
+    return {"quotes": {q.tipo.value: _serialize_quote(q) for q in quotes.values()}}
 
 
 @app.get("/admin/conversation-flows/contracts")
