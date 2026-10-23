@@ -241,12 +241,14 @@ Usuario / dashboard BFF
 
 - Cada cotización se cachea por tipo en Redis con TTL `CURRENCY_STALE_SECONDS`
   (86400 s por defecto). Se considera *fresh* durante `CURRENCY_CACHE_TTL_SECONDS`
-  (900 s por defecto); fuera de esa ventana se intenta refrescar. Si el proveedor
-  falla y el dato sigue dentro del TTL, se devuelve marcado `stale=true` hasta 24 h.
+  (900 s por defecto); fuera de esa ventana se intenta refrescar. Solo si ese refresco
+  falla y el dato sigue dentro del TTL se devuelve marcado `stale=true` (hasta 24 h).
 - El lock de fetch es por proceso y por tipo: evita estampidas dentro de un worker,
   no entre workers. Escalar a más workers requiere un lock distribuido.
-- Los eventos `hit`, `miss` y `stale` se registran como logs estructurados con tipo y
-  `latency_ms`. No se persisten cotizaciones en PostgreSQL: el caché es efímero.
+- Los eventos `hit`, `miss` y `stale` se emiten con el mensaje `currency_cache` y
+  adjuntan `tipo`, `event` y `latency_ms` como atributos del `LogRecord` vía `extra`.
+  El formatter actual muestra solo el mensaje, así que esos campos no aparecen en la
+  línea de log. No se persisten cotizaciones en PostgreSQL: el caché es efímero.
 - DolarAPI puede devolver `compra` ausente o inválida; en ese caso la cotización
   conserva `venta` y `compra=null`, y el capital no se calcula con ese tipo.
 - `/api/cotizaciones` acepta `tipos` separados por coma, responde `400
@@ -254,9 +256,11 @@ Usuario / dashboard BFF
   hay ningún dato; el dashboard muestra el saldo original en ese caso.
 
 La valuación del capital es a **compra**: `total_ars + total_usd * compra`. El
-backend nunca inventa una tasa: si falta una cotización, informa «cotización no
-disponible» para ese tipo; si falta solo la compra, informa «compra no disponible» y
-muestra la venta. Sin saldos USD no hay conversión: se muestra solo el total ARS.
+backend nunca inventa una tasa. Si falta un tipo pedido, responde «<Tipo>: cotización
+no disponible.» para ese tipo. Si no hay ninguna cotización (proveedor caído o
+`QuoteUnavailableError`), muestra los saldos originales y «No los convierto para no
+inventar un valor.». Si falta solo la compra, informa «compra no disponible» y muestra
+la venta. Sin saldos USD no hay conversión: se muestra solo el total ARS.
 
 ## Acceso a datos
 

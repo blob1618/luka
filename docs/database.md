@@ -130,8 +130,8 @@ erDiagram
 El vínculo `movimientos_financieros -> billetera` es compuesto: la clave
 `(billetera_id, usuario_id, moneda)` referencia `billetera(id, usuario_id, moneda)`, de
 modo que una billetera solo puede agrupar movimientos de su mismo propietario y su
-misma moneda exacta. En la base, `billetera_id` es `NOT NULL` desde la contracción de
-HU-MON-01.
+misma moneda exacta. El contrato versionado aplica `NOT NULL` a `billetera_id` desde la
+contracción de HU-MON-01; el estado remoto se verifica con `supabase migration list`.
 
 Este diagrama representa el contrato del ORM, no una verificación del esquema remoto.
 
@@ -176,13 +176,13 @@ de 86400 s y ventana *fresh* de 900 s configurables por `CURRENCY_STALE_SECONDS`
 inventa un valor. Los saldos de las billeteras siguen siendo la única fuente de
 verdad financiera y se guardan en su moneda original (`ARS`/`USD`).
 
-## Billeteras y fase de expansión (STK-237)
+## Billeteras y contrato final (STK-237 / HU-MON-01)
 
 `public.billetera` representa una billetera propia del usuario. Guarda `usuario_id`, `nombre`, `moneda` y `creado_en`; exige `nombre` no vacío e impide repetir el nombre normalizado (`lower(btrim(nombre))`) dentro de la misma pareja `(usuario_id, moneda)`. Un usuario puede tener varias billeteras en la misma moneda, por eso el nombre forma parte de su identidad lógica. La moneda histórica permanece sin reescritura para conservar la pareja exacta `(usuario_id, moneda)` de cada movimiento. STK-238 normaliza a mayúsculas las nuevas operaciones y limita la creación/selección de billeteras a `ARS` y `USD`.
 
-La integridad propietario/moneda no depende de policies ni del backend: la FK compuesta `movimientos_financieros_billetera_fkey` sobre `(billetera_id, usuario_id, moneda) -> billetera(id, usuario_id, moneda)` impide que un movimiento apunte a una billetera de otro usuario o de otra moneda. `billetera_id` es `NOT NULL`, por lo que todo movimiento tiene propietario y moneda verificables por la FK.
+La integridad propietario/moneda no depende de policies ni del backend: la FK compuesta `movimientos_financieros_billetera_fkey` sobre `(billetera_id, usuario_id, moneda) -> billetera(id, usuario_id, moneda)` impide que un movimiento apunte a una billetera de otro usuario o de otra moneda. El contrato versionado aplica `NOT NULL` a `billetera_id`, por lo que todo movimiento tiene propietario y moneda verificables por la FK; el estado remoto se verifica con `supabase migration list`.
 
-Contrato final: las migraciones de HU-MON-01 completan la transición. `20261012215302_hu_mon_01_wallet_transition_backfill.sql` re-ejecuta el backfill (`billetera_id IS NULL`) y agrega un `CHECK NOT VALID` que rechaza nuevas escrituras nulas; `20261012215307_hu_mon_01_wallet_transition_contract.sql` valida el CHECK y la FK, verifica cero huérfanos y aplica `ALTER COLUMN billetera_id SET NOT NULL`. Cada archivo corre en su propia transacción; no requiere pausa global porque `VALIDATE CONSTRAINT` usa `SHARE UPDATE EXCLUSIVE` y el `SET NOT NULL` aprovecha el CHECK validado. Los modelos SQLAlchemy todavía declaran la columna nullable: es una diferencia conocida del ORM (deuda diferida en ADR 0002) y la base sigue siendo la fuente de verdad.
+Contrato final: las migraciones de HU-MON-01 completan la transición. `20261012215302_hu_mon_01_wallet_transition_backfill.sql` re-ejecuta el backfill (`billetera_id IS NULL`) y agrega un `CHECK NOT VALID` que rechaza nuevas escrituras nulas; su encabezado exige pausar y drenar los escritores legacy y mantener cerradas las escrituras financieras durante el corte. `20261012215307_hu_mon_01_wallet_transition_contract.sql` valida el CHECK y la FK, verifica cero huérfanos y aplica `ALTER COLUMN billetera_id SET NOT NULL`; la contracción DDL en sí no toma un `ACCESS EXCLUSIVE` global sobre la tabla (`VALIDATE CONSTRAINT` usa `SHARE UPDATE EXCLUSIVE` y el `SET NOT NULL` aprovecha el CHECK validado), pero eso no elimina el requisito de drenaje del paso anterior. Los modelos SQLAlchemy todavía declaran la columna nullable: es una diferencia conocida del ORM (deuda diferida en ADR 0002).
 
 Migraciones:
 
@@ -213,8 +213,8 @@ el movimiento intacto si la selección es ambigua o incompatible.
 
 `WalletService.get_balances_own_user()` devuelve una fila por billetera propia y moneda,
 con ingresos activos menos egresos activos usando `Decimal`; excluye movimientos anulados
-y no suma movimientos de otra billetera o moneda. Con `billetera_id NOT NULL`, todo
-movimiento vigente pertenece a una billetera y aparece en estos saldos.
+y no suma movimientos de otra billetera o moneda. Con el contrato `NOT NULL` aplicado,
+todo movimiento vigente pertenece a una billetera y aparece en estos saldos.
 
 El harness `supabase/tests/stk237_billetera.sql` aplica las migraciones de expansión, backfill e índice en orden y verifica en una base PostgreSQL local descartable (Supabase CLI, `project_id` propio y confirmación explícita) el backfill histórico, la preservación de campos, los movimientos anulados, la integridad de propietario y moneda, el índice en su archivo posterior y RLS/permisos. La contracción a `NOT NULL` se valida en las migraciones de HU-MON-01 y su harness. No se ejecuta contra Supabase remoto ni producción.
 
@@ -357,7 +357,7 @@ La migración base declara `ENABLE ROW LEVEL SECURITY` para las tablas protegida
   - Múltiples billeteras permitidas para la misma moneda (con distinto nombre).
   - Sin saldo materializado: los saldos se calculan agregando movimientos no anulados (`anulado_en IS NULL`) en tiempo de consulta.
 - **Relación en `movimientos_financieros`**:
-  - `billetera_id`: UUID `NOT NULL` desde la contracción de HU-MON-01; los movimientos históricos tienen billetera tras el backfill.
+  - `billetera_id`: UUID `NOT NULL` en el contrato versionado desde la contracción de HU-MON-01; los movimientos históricos tienen billetera tras el backfill.
   - Clave foránea compuesta `(billetera_id, usuario_id, moneda)` referenciando `billetera(id, usuario_id, moneda)`, que garantiza la integridad de propietario y moneda.
   - Índice en `billetera_id` (`movimientos_financieros_billetera_id_idx`).
   - Sin modificaciones a tipos ni campos financieros históricos.

@@ -117,12 +117,16 @@ procesa en silencio para no repetir una confirmación ya enviada.
   en ARS y USD y el total valuado por tipo de cotización.
 - Si el usuario no especifica tipos, se devuelven los tres (`oficial`, `mep`, `blue`).
   Si especifica uno o varios («¿cuánto tengo en blue?», «en oficial y blue»), se
-  devuelven solo los solicitados. Un tipo desconocido no se inventa.
+  devuelven solo los solicitados. Un tipo desconocido se ignora; si no queda ningún
+  tipo válido, por WhatsApp se muestran los tres estándar. El endpoint
+  `/api/cotizaciones` en cambio responde `400 tipo_invalido` ante un tipo desconocido.
 - La valuación es a **compra**: total ARS + total USD × cotización compra. La venta y
   la hora de actualización se muestran como referencia.
-- Si una cotización está vencida pero dentro de las 24 h de caché, se muestra el
-  valor y se marca «desactualizada». Si el proveedor no responde y no hay dato
-  cacheado, se informa «cotización no disponible» sin inventar un número.
+- Una cotización se marca «desactualizada» solo cuando el refresco falla y el dato
+  cacheado sigue dentro de las 24 h: se muestra ese valor vencido.
+- Si el proveedor no responde y no hay ninguna cotización cacheada, se muestran los
+  saldos originales y «No los convierto para no inventar un valor.». Si solo falta un
+  tipo pedido, se informa «<Tipo>: cotización no disponible.» para ese tipo.
 - Si una cotización no trae `compra`, se informa «compra no disponible» y se muestra
   la venta; ese tipo no suma al capital consolidado.
 - Sin saldos en USD se muestra solo el total en ARS y se aclara que no hay saldos en
