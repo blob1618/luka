@@ -1,5 +1,7 @@
 # ADR 0001 — Contrato DB MVP
 
+> **Status:** Superseded by [ADR 0002](0002-bff-dashboard.md) for the DB contract/RLS baseline (2026-10-23). The read-path decision (frontend → backend) is reaffirmed, not reversed; the old contract remains historical context.
+
 ## Estado
 
 Aceptado / vigente para Release 1.
