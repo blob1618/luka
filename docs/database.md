@@ -329,6 +329,8 @@ No se permite que un dashboard consulte directamente los movimientos financieros
 
 La migración base declara `ENABLE ROW LEVEL SECURITY` para las tablas protegidas que ya lo tenían. `20260911011601_protect_movimientos_financieros.sql` corrige las diferencias detectadas en la tabla financiera central: habilita RLS y agrega los índices de deduplicación y consulta que faltaban. No se agregan policies públicas; el backend usa un rol con `BYPASSRLS`. `public.billetera` sigue la misma convención: RLS habilitado y `REVOKE ALL` para `anon`/`authenticated`, sin policies ni `auth.uid()`. El estado efectivo debe volver a verificarse cuando una migración toque permisos o RLS.
 
+`20261023120000_protect_public_api.sql` cierra la Data API pública (ADR 0002): habilita RLS en `public.categorias`, `public.evento` y `public.recordatorio` (las tres que seguían sin RLS), y ejecuta `REVOKE ALL` de tablas, secuencias y funciones del schema `public` a `anon` y `authenticated`, más `ALTER DEFAULT PRIVILEGES` para que `postgres` no vuelva a exponer objetos nuevos. La postura es: `anon`/`authenticated` no acceden a `public`; el dashboard se sirve por BFF y el Worker usa `postgres`, que es owner con `BYPASSRLS=true` y por eso el `REVOKE` no lo afecta. No se revoca `USAGE` del schema `public` para no romper PostgREST. Un rol de mínimo privilegio para el Worker es deuda diferida: hoy `postgres` conserva `BYPASSRLS` y acceso de owner. El harness `supabase/tests/rls_public_api.sql` verifica que ninguna tabla de `public` quede sin RLS o con privilegios de `anon`/`authenticated`.
+
 ## STK-237 / STK-240: Modelo y Contrato de Billeteras
 
 ### Contrato de Datos
