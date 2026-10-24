@@ -4310,46 +4310,55 @@ def _format_quote_when(value: datetime) -> str:
     return value.astimezone(ARGENTINA_TZ).strftime("%d/%m %H:%M")
 
 
-def _render_net_worth(result: NetWorthResult, tipos: list[QuoteType]) -> str:
+def _financial_fact(key: str, label: str, value: str) -> dict[str, str]:
+    return {"key": key, "label": label, "value": value}
+
+
+def _net_worth_facts(
+    result: NetWorthResult, tipos: list[QuoteType]
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Facts verificados del patrimonio y los tipos de cotización pedidos."""
     if result.status is NetWorthStatus.NO_WALLETS:
-        return "No veo saldos en tus billeteras."
+        return [_financial_fact("STATUS", "Estado", "sin billeteras registradas")], []
 
     ars_total = _format_net_worth_amount(result.ars_total, "ARS")
     if result.usd_total == 0:
-        return f"Tu capital consolidado es {ars_total} ARS. No tenés saldos en USD."
+        return [
+            _financial_fact("ARS_TOTAL", "Saldos ARS", ars_total),
+            _financial_fact("USD_TOTAL", "Saldos USD", "sin saldo"),
+        ], []
 
-    usd_total = _format_net_worth_amount(result.usd_total, "USD")
-    lines = [f"Saldos originales: {ars_total} ARS + {usd_total} USD."]
-    if not result.quotes:
-        lines.append("No los convierto para no inventar un valor.")
-        return "\n".join(lines)
-
+    facts = [
+        _financial_fact("ARS_TOTAL", "Saldos ARS", ars_total),
+        _financial_fact(
+            "USD_TOTAL",
+            "Saldos USD",
+            _format_net_worth_amount(result.usd_total, "USD"),
+        ),
+    ]
     for tipo in tipos:
         label = _NET_WORTH_QUOTE_LABELS[tipo]
-        quote = result.quotes.get(tipo)
-        if quote is None:
-            lines.append(f"{label}: cotización no disponible.")
-        elif quote.compra is None:
-            venta = _format_net_worth_amount(quote.venta, "ARS")
-            lines.append(f"{label}: compra no disponible; venta {venta}.")
-        else:
-            total = _format_net_worth_amount(result.totals[tipo], "ARS")
-            compra = _format_net_worth_amount(quote.compra, "ARS")
-            venta = _format_net_worth_amount(quote.venta, "ARS")
-            line = (
-                f"{label}: {total} (compra {compra}, venta {venta}; "
-                f"actualizada {_format_quote_when(quote.as_of)})."
+        total = result.totals[tipo]
+        value = (
+            "total no disponible"
+            if total is None
+            else f"{_format_net_worth_amount(total, 'ARS')} ARS"
+        )
+        facts.append(_financial_fact(f"{tipo.name}_TOTAL", label, value))
+        if tipo in result.stale:
+            facts.append(
+                _financial_fact(
+                    f"{tipo.name}_STALE",
+                    f"Aviso {label}",
+                    "cotización desactualizada",
+                )
             )
-            if quote.stale:
-                line += " (desactualizada)"
-            lines.append(line)
+    return facts, [tipo.value for tipo in tipos]
 
-    fetched_at = max(quote.fetched_at for quote in result.quotes.values())
-    footer = f"Cotizaciones: DolarAPI, consultadas {_format_quote_when(fetched_at)}."
-    if any(total is not None for total in result.totals.values()):
-        footer += " Valuado a compra."
-    lines.append(footer)
-    return "\n".join(lines)
+
+async def _render_net_worth(result: NetWorthResult, tipos: list[QuoteType]) -> str:
+    facts, requested_types = _net_worth_facts(result, tipos)
+    return await LLMService.render_financial_reply("net_worth", facts, requested_types)
 
 
 async def _handle_net_worth_intent(
@@ -4378,7 +4387,7 @@ async def _handle_net_worth_intent(
 
     return _llm_dispatch_result(
         data,
-        _render_net_worth(result, tipos),
+        await _render_net_worth(result, tipos),
         "net_worth",
         "query_net_worth",
     )
