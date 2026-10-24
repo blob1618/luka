@@ -302,7 +302,7 @@ _ALLOWED_INTENTS = {
     "create_limit", "change_limit", "list_limits", "delete_limit", "confirm_limit",
     "reject_limit", "compensate_budget", "confirm_compensation", "reject_compensation",
     "reset_context", "financial_education", "create_wallet", "list_wallets", "query_wallets",
-    "query_net_worth",
+    "query_net_worth", "query_usd_quotes",
 }
 
 

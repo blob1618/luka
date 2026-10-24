@@ -12,6 +12,7 @@ PROMPT_INTENTS = {
     "dashboard_link",
     "query_movements",
     "movement_chart",
+    "query_usd_quotes",
     "out_of_scope",
 }
 
@@ -99,7 +100,7 @@ SUPPORTED_INTENTS = {
     "delete_movement", "create_limit", "change_limit", "list_limits",
     "delete_limit", "confirm_limit", "reject_limit", "reset_context",
     "compensate_budget", "confirm_compensation", "reject_compensation",
-    "query_net_worth",
+    "query_net_worth", "query_usd_quotes",
 }
 
 
@@ -107,6 +108,18 @@ def test_prompt_documents_net_worth_quote_types():
     text = _prompt_text()
     assert "`query_net_worth`" in text
     assert "`quote_types`" in text or '"quote_types"' in text
+
+
+def test_prompt_documents_usd_quote_examples():
+    text = _prompt_text()
+    assert "`query_usd_quotes`" in text
+    _assert_prompt_intent_pair(text, "a cuánto está el blue", "query_usd_quotes")
+    _assert_prompt_intent_pair(
+        text,
+        "mostrame compra y venta del oficial y MEP",
+        "query_usd_quotes",
+    )
+    assert "«cuánto tengo en blue» sigue siendo" in text
 
 
 def test_prompt_covers_all_supported_intents():

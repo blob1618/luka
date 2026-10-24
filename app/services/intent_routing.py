@@ -119,6 +119,27 @@ def _normalize(text: str) -> str:
     return re.sub(r"[^a-z0-9%]+", " ", without_accents).strip()
 
 
+_QUOTE_DEFINITION = re.compile(
+    r"^(?:que\s+es|que\s+significa|como\s+funciona|definicion)\b"
+)
+_QUOTE_TERMS = re.compile(r"\bcotizacion(?:es)?\b")
+_QUOTE_PRICE_TERMS = re.compile(r"\b(?:valor|precio)\b")
+_QUOTE_DOLLAR_TYPES = re.compile(r"\b(?:dolar|blue|mep|oficial)\b")
+
+
+def is_usd_quote_candidate(text: str) -> bool:
+    """Cheap candidate check; the LLM remains responsible for the final intent."""
+    normalized = _normalize(text)
+    if not normalized or _QUOTE_DEFINITION.search(normalized):
+        return False
+    if _QUOTE_TERMS.search(normalized):
+        return True
+    return (
+        _QUOTE_PRICE_TERMS.search(normalized) is not None
+        and _QUOTE_DOLLAR_TYPES.search(normalized) is not None
+    )
+
+
 def references_recent_limit(text: str) -> bool:
     normalized = _normalize(text)
     return (
