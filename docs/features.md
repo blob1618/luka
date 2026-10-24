@@ -115,22 +115,30 @@ procesa en silencio para no repetir una confirmación ya enviada.
 - «¿Cuánto tengo?» (`query_net_worth`) devuelve el capital actual: la suma de saldos
   no anulados de todas las billeteras, sin filtro de fechas, con los saldos originales
   en ARS y USD y el total valuado por tipo de cotización.
+- La respuesta es una lista breve de datos, redactada por el LLM sobre valores
+  verificados del backend. No incluye compra, venta, fuente, horas de consulta ni
+  aclaraciones al pie; solo saldos y totales.
 - Si el usuario no especifica tipos, se devuelven los tres (`oficial`, `mep`, `blue`).
   Si especifica uno o varios («¿cuánto tengo en blue?», «en oficial y blue»), se
   devuelven solo los solicitados. Un tipo desconocido se ignora; si no queda ningún
   tipo válido, por WhatsApp se muestran los tres estándar. El endpoint
   `/api/cotizaciones` en cambio responde `400 tipo_invalido` ante un tipo desconocido.
-- La valuación es a **compra**: total ARS + total USD × cotización compra. La venta y
-  la hora de actualización se muestran como referencia.
+- La valuación es a **compra**: total ARS + total USD × cotización compra.
 - Una cotización se marca «desactualizada» solo cuando el refresco falla y el dato
-  cacheado sigue dentro de las 24 h: se muestra ese valor vencido.
-- Si el proveedor no responde y no hay ninguna cotización disponible, se muestran los
-  saldos originales y «No los convierto para no inventar un valor.». Si solo falta un
-  tipo pedido, se informa «<Tipo>: cotización no disponible.» para ese tipo.
-- Si una cotización no trae `compra`, se informa «compra no disponible» y se muestra
-  la venta; ese tipo no suma al capital consolidado.
-- Sin saldos en USD se muestra solo el total en ARS y se aclara que no hay saldos en
-  USD; no se aplica ninguna conversión.
+  cacheado sigue dentro de las 24 h.
+- Si falta la cotización de un tipo o su compra, ese tipo informa «total no disponible»
+  y no suma al capital consolidado. El resto de los tipos se muestra igual.
+- Sin saldos en USD no hay conversión ni tipos de cotización: se informan los saldos ARS
+  y la línea `Saldos USD: sin saldo`.
+- «¿A cuánto está el blue?» y pedidos equivalentes usan `query_usd_quotes`, que muestra
+  solo cotizaciones: compra, venta, hora de actualización, fuente y hora de consulta.
+  Si el pedido nombra tipos de dólar, se muestran solo esos; sin tipos se usan los tres
+  estándar. No incluye saldos, patrimonio ni totales convertidos.
+- Las cotizaciones se muestran con los decimales exactos que devuelve el proveedor: no
+  se cuantizan ni se redondean. Cada tipo pedido informa «cotización no disponible» si
+  no hay dato.
+- «Cuánto tengo en blue» sigue siendo `query_net_worth`: mencionar un tipo de dólar no
+  convierte la consulta en pedido de cotización.
 - Las cotizaciones no se persisten en la base: se cachean en Redis y se consultan en
   el momento. El dashboard consume los mismos datos por `/api/cotizaciones`.
 
@@ -228,6 +236,9 @@ procesa en silencio para no repetir una confirmación ya enviada.
   y un ejemplo ilustrativo.
 - Las consultas educativas no crean ni cambian movimientos, categorías, límites,
   presupuestos ni recordatorios, incluso si el ejemplo incluye un importe.
+- Un pedido explícito de cotización («cotización del blue», «precio del dólar») no se
+  responde como educación financiera: pasa al clasificador y usa `query_usd_quotes` o
+  `query_net_worth`.
 - Ante «interés» sin más contexto pide aclaración entre interés simple y compuesto. Si
   se solicita un valor actual, una tasa vigente o un concepto no revisado, reconoce el
   límite en vez de inventar información. Las recomendaciones personalizadas de inversión

@@ -11,7 +11,7 @@ decisiones de cada capa. El comportamiento visible para el usuario se describe e
 | Lenguaje | Python 3.11 |
 | API | FastAPI (async) |
 | Mensajería | Meta WhatsApp Business API (Graph API; versión en `WHATSAPP_GRAPH_API_VERSION`, por defecto `v26.0`) |
-| LLM | Fachada `app/services/llm.py` + providers `gemini`, `mistral` y `deepseek` en `app/services/llm_providers/`; selección por `LLM_PROVIDER`, por defecto `gemini`. El system prompt vive en `prompt.md`. |
+| LLM | Fachada `app/services/llm.py` + providers `gemini`, `mistral` y `deepseek` en `app/services/llm_providers/`; selección por `LLM_PROVIDER`, por defecto `gemini`. El prompt de clasificación vive en `prompts/core_prompt.md` (`prompt.md` es legacy); la redacción financiera usa `prompts/financial_reply_prompt.md`. |
 | Base de datos | SQLAlchemy; SQLite local (`sqlite:///./luka.db`) y PostgreSQL/Supabase en producción |
 | Estado y caché | Redis |
 | Tareas programadas | APScheduler |
@@ -29,8 +29,9 @@ decisiones de cada capa. El comportamiento visible para el usuario se describe e
   prioridades globales, resuelve estados multi-turno, llama al LLM, normaliza el
   intent, deriva al servicio de dominio y construye la respuesta segura. No persiste
   datos financieros por sí mismo.
-- `app/services/llm.py`: fachada de interpretación. Carga el prompt, delega en el
-  provider activo y normaliza la respuesta estructurada.
+- `app/services/llm.py`: fachada de interpretación y redacción. Carga el prompt de
+  clasificación, delega en el provider activo, normaliza la respuesta estructurada y
+  redacta las respuestas financieras con `render_financial_reply`.
 - `app/services/llm_contract.py`: normalización del JSON del proveedor y resolución de
   fechas relativas.
 - `app/services/finance.py`: validación, alta, consulta, edición y anulación de
@@ -150,7 +151,8 @@ Puntos clave del flujo:
   `confirm_category`, `reject_category`, `delete_category`, `list_categories`,
   `create_limit`, `change_limit`, `list_limits`, `delete_limit`, `confirm_limit`,
   `reject_limit`, `update_movement`, `delete_movement`, `compensate_budget`,
-  `confirm_compensation`, `reject_compensation`, `reset_context` y `query_net_worth`.
+  `confirm_compensation`, `reject_compensation`, `reset_context`, `query_net_worth`
+  y `query_usd_quotes`.
 - `compensate_budget` calcula una propuesta de compensación entre límites de la misma
   moneda y período, la deja pendiente y emite el evento `budget.compensation_proposed`.
   Solo se persiste al confirmar (`confirm_compensation`), previa revalidación; el
@@ -166,6 +168,48 @@ Puntos clave del flujo:
   cortas o referenciales de alta confianza (por ejemplo correcciones de importe,
   «borrá ese movimiento», listas de límites). El LLM sigue siendo el parser general; el
   backend nunca acepta IDs de registros propuestos por el modelo.
+- `query_usd_quotes` solo existe para pedidos explícitos de cotización, compra, venta,
+  fuente o actualización del dólar. «Cuánto tengo en blue» sigue siendo
+  `query_net_worth`. El intent no lee saldos ni billeteras, pero el alta sigue siendo
+  obligatoria: sin usuario vinculado el webhook responde con la invitación de onboarding
+  y el pedido nunca llega al dispatcher.
+
+### Flujo de dos llamadas
+
+La clasificación y la redacción son llamadas separadas al proveedor:
+
+```text
+mensaje -> LLMService (prompts/core_prompt.md) -> intent + facts del dominio
+        -> LLMService.render_financial_reply (prompts/financial_reply_prompt.md)
+        -> reply_text final
+```
+
+- La primera llamada elige el intent y extrae `quote_types`. El dispatcher calcula los
+  datos con los servicios de dominio y arma una lista de facts `{key, label, value}`.
+- La segunda llamada recibe `{"kind", "quote_types", "facts"}` y devuelve solo
+  `{"reply_text": "..."}`, donde cada fact aparece como `{{KEY}}`. El backend sustituye
+  los placeholders después de validar el contrato; el LLM no escribe cifras.
+- `kind="net_worth"` usa facts `ARS_TOTAL`, `USD_TOTAL`, `{TIPO}_TOTAL` y
+  `{TIPO}_STALE`; sin billeteras registradas emite un único fact `STATUS`.
+  `kind="usd_quotes"` usa `{TIPO}_COMPRA`, `{TIPO}_VENTA`, `{TIPO}_AS_OF`,
+  `{TIPO}_STALE`, `{TIPO}_STATUS`, `SOURCE` y `FETCHED_AT`. `{TIPO}_STATUS` solo se
+  emite cuando falta la cotización de ese tipo; `SOURCE` y `FETCHED_AT` solo cuando hay
+  datos.
+- Si la salida viola el contrato (token faltante o repetido, cifras fuera de los
+  tokens, tipos no pedidos, metadatos prohibidos en patrimonio) se reintenta una vez.
+  Agotado el reintento o ante error del proveedor, se devuelve una lista determinística
+  con los mismos facts.
+- `raw_llm_response` conserva el JSON del clasificador; la redacción solo afecta a
+  `reply_text`.
+
+### Guard de la ruta educativa
+
+`FinancialEducationService.is_conceptual_query` responde antes de llamar al
+clasificador. La excepción es `is_usd_quote_candidate` (`app/services/intent_routing.py`):
+un pedido que menciona `cotización`, o `valor`/`precio` junto con `dólar`, `blue`, `mep`
+u `oficial`, evita el cortocircuito educativo y sigue al clasificador para llegar a
+`query_usd_quotes` o `query_net_worth`. Los prefijos «qué es», «qué significa», «cómo
+funciona» y «definición» se mantienen educativos.
 
 ## Estado conversacional en Redis
 
@@ -256,12 +300,21 @@ Usuario / dashboard BFF
   tipo_invalido` ante un tipo desconocido y `503 cotizaciones_no_disponibles` si no
   hay ningún dato; el dashboard muestra el saldo original en ese caso.
 
-La valuación del capital es a **compra**: `total_ars + total_usd * compra`. El
-backend nunca inventa una tasa. Si falta un tipo pedido, responde «<Tipo>: cotización
-no disponible.» para ese tipo. Si no hay ninguna cotización (proveedor caído o
-`QuoteUnavailableError`), muestra los saldos originales y «No los convierto para no
-inventar un valor.». Si falta solo la compra, informa «compra no disponible» y muestra
-la venta. Sin saldos USD no hay conversión: se muestra solo el total ARS.
+La valuación del capital es a **compra**: `total_ars + total_usd * compra`, calculada en
+`app/services/net_worth.py`. El backend nunca inventa una tasa. Cada tipo pedido aporta un
+fact `{TIPO}_TOTAL` (`total no disponible` si falta la cotización o su compra) y un fact
+`{TIPO}_STALE` cuando el refresco falló pero el dato sigue vigente en caché. El dispatcher
+entrega esos facts a `LLMService.render_financial_reply("net_worth", ...)` y sustituye los
+placeholders; el texto no incluye compra, venta, fuente, horas de consulta ni footer. Sin
+saldos USD no hay conversión ni tipos de cotización: se informan los saldos ARS y el fact
+`Saldos USD: sin saldo`.
+
+`query_usd_quotes` no calcula patrimonio. Entrega únicamente el detalle de las
+cotizaciones pedidas: `{TIPO}_COMPRA`, `{TIPO}_VENTA`, `{TIPO}_AS_OF`, `{TIPO}_STALE` y
+`{TIPO}_STATUS`, más `SOURCE` y `FETCHED_AT` cuando hay datos. Los importes se formatean en
+es-AR sin cuantizar ni redondear (`_format_quote_amount`), así que conservan los decimales
+exactos del proveedor. Si `QuoteUnavailableError` deja el mapa vacío, solo se informa
+`{TIPO}_STATUS` con «cotización no disponible».
 
 ## Acceso a datos
 
