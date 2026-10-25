@@ -2,17 +2,19 @@
 
 - **Historias:** [STK-45](https://philippem.atlassian.net/browse/STK-45) y [STK-217](https://philippem.atlassian.net/browse/STK-217)
 - **Rama revisada:** `feature/STK-45-STK-217-respuestas-concisas`
-- **Último commit de código validado:** `4f4fcd6` — `fix(STK-45/STK-217): reconocer consultas de fuente y actualización de cotizaciones`
-- **Documentación:** este archivo se agrega en un commit posterior sobre el mismo head validado.
+- **Último commit de código validado:** `be76c0e` — `fix(STK-45/STK-217): alinear contrato de redacción y facts`
+- **Head de la matriz manual:** `4f4fcd6` — `fix(STK-45/STK-217): reconocer consultas de fuente y actualización de cotizaciones`
+- **Documentación:** este archivo se actualiza en un commit posterior de docs sobre el head `be76c0e`.
 - **Última corrida registrada:** 2026-10-24
 
 ## Estado general
 
-La validación automatizada pasó completa sobre el head `4f4fcd6` y la matriz
-manual se ejecutó en el simulador aislado con un LLM real. Las respuestas
-observadas son concisas y coinciden con lo pedido: patrimonio con tres totales,
-detalle de cotizaciones solo de los tipos solicitados, y guard educativo para
-las preguntas conceptuales.
+La validación automatizada pasó completa sobre el head final `be76c0e`, y la
+matriz manual se ejecutó antes, sobre `4f4fcd6`, en el simulador aislado con un
+LLM real. Después del head final se repitió un smoke test en el mismo simulador.
+Las respuestas observadas son concisas y coinciden con lo pedido: patrimonio con
+tres totales, detalle de cotizaciones solo de los tipos solicitados, y guard
+educativo para las preguntas conceptuales.
 
 Esta bitácora registra lo verificado en el simulador y en las suites locales.
 **No** registra entrega real por WhatsApp, despliegue en Render ni validación
@@ -22,7 +24,8 @@ sobre datos de producción. Esos puntos quedan listados como pendientes.
 
 | Elemento | Valor |
 | --- | --- |
-| Head de código validado | `4f4fcd6` (más el commit de documentación que agrega este archivo) |
+| Head de código validado | `be76c0e` (más el commit de documentación posterior que actualiza este archivo) |
+| Head de la matriz manual | `4f4fcd6` |
 | Rama base | `main` |
 | Rama de trabajo | `feature/STK-45-STK-217-respuestas-concisas` |
 | Stack de pruebas | Docker Compose de `testing/docker-compose.yml`: Streamlit en `:8501` y Redis |
@@ -62,7 +65,9 @@ Totales base resultantes:
 ## Matriz manual
 
 Las respuestas de abajo son, en todos los casos, el texto crudo exportado por el
-simulador, sin parafrasear ni normalizar.
+simulador, sin parafrasear ni normalizar. La matriz se ejecutó sobre el head
+`4f4fcd6`; el head final `be76c0e` se validó con el smoke test de la sección
+siguiente.
 
 ### 1. «¿Cuánto tengo?»
 
@@ -160,6 +165,25 @@ No tengo una definición verificada de ese concepto en mi glosario actual. Puedo
 Se mantuvo como `financial_education`: respuesta educativa, sin cotizaciones de
 mercado. **Aprobado.**
 
+## Smoke test del head final (`be76c0e`)
+
+Después del arreglo final de contrato de redacción, el controlador repitió
+«¿Cuánto tengo?» en el mismo simulador aislado. Texto crudo:
+
+```text
+• Saldos ARS: $1.000.000
+• Saldos USD: u$s300,00
+• Oficial: $1.450.000 ARS
+• MEP: $1.467.220 ARS
+• Blue: $1.463.500 ARS
+```
+
+Datos exactos por ítem y sin compra, venta, fuente, timestamps ni footer.
+**Cumple.** Esta respuesta no incluyó encabezado; el encabezado es opcional
+según el contrato, así que la ausencia no es una desviación. Es un smoke test de
+una sola consulta: la matriz completa de siete consultas sigue siendo la de
+`4f4fcd6`.
+
 ## Evidencia de debug
 
 - Última captura de `query_usd_quotes`: `"intent":"query_usd_quotes"`,
@@ -194,10 +218,10 @@ mercado. **Aprobado.**
 | `.venv/bin/python -m pytest -v` | **1589 passed**, 129,28 s |
 | `docker compose -f testing/docker-compose.yml exec streamlit python -m pytest -v testing/tests` | **152 passed**, 10,64 s |
 
-### Head final (`4f4fcd6`)
+### Head de la matriz manual (`4f4fcd6`)
 
 Estas cifras corresponden a la re-ejecución del **controlador** sobre el head
-final `4f4fcd6`, después del arreglo de prompt; son la fuente autoritativa de la
+`4f4fcd6`, después del arreglo de prompt; son la fuente autoritativa de la
 validación de ese head. Los logs completos **no** se commitean: los números y las
 advertencias se transcriben acá y en el reporte interno de la tarea.
 
@@ -220,6 +244,29 @@ deprecado en SQLAlchemy, deprecación de `httpx` en `starlette.testclient`, un
 en `tests/test_webhook.py::test_handle_webhook_duplicate_message_is_suppressed_before_dispatch`.
 Este último ya existía en las corridas previas; no es un efecto de estos cambios.
 
+### Head final (`be76c0e`)
+
+Re-ejecución del **controlador** sobre el head final `be76c0e`
+(`fix(STK-45/STK-217): alinear contrato de redacción y facts`). Estas cifras son
+la validación autoritativa del head final; los logs completos **no** se
+commitean.
+
+| Comando | Resultado |
+| --- | --- |
+| `.venv/bin/python -m pytest -q tests/test_llm_financial_reply.py tests/test_dispatcher_net_worth.py tests/test_dispatcher_usd_quotes.py tests/test_prompt_contract.py` | **63 passed** |
+| `.venv/bin/ruff check .` | sin hallazgos, exit 0 |
+| `.venv/bin/python -m pytest -q` | **1595 passed**, 299 warnings, 123,87 s |
+| `docker compose -f testing/docker-compose.yml exec -T streamlit python -m pytest -q testing/tests` | **152 passed**, 1 warning, 8,76 s |
+
+El aumento de 1589 a 1595 es por las 6 pruebas nuevas de contrato
+renderizador/facts que agregó el arreglo final. El smoke test de «¿Cuánto tengo?»
+en el mismo simulador también corresponde a este head.
+
+Cambios del arreglo final revisados en este head: tope de 12 líneas en el prompt
+con agrupamiento permitido; pruebas reales de contrato dispatcher-facts ↔
+renderizador; limitación de atribución semántica documentada; guard de llaves
+sueltas; regex con límites de palabra.
+
 ## Límites no verificados
 
 - **No** se probó entrega real por WhatsApp ni la API de Meta; el envío saliente
@@ -238,5 +285,7 @@ Este último ya existía en las corridas previas; no es un efecto de estos cambi
 | --- | --- |
 | 2026-10-24 | Suites automatizadas aprobadas sobre `83f2e68`: unit 147, focalizadas 45/37/62/41, backend 1589, testing 152, ruff limpio. |
 | 2026-10-24 | Se detectó que «¿De dónde salen y cuándo se actualizaron las cotizaciones?» caía en `out_of_scope`; se corrigió el prompt en `4f4fcd6`. |
-| 2026-10-24 | Head `4f4fcd6` revalidado por el controlador tras el fix de prompt: 42 focalizadas (1,49 s), backend 1589 (128,02 s), testing 152 (10,16 s), ruff limpio. |
+| 2026-10-24 | Head de matriz manual `4f4fcd6` revalidado por el controlador tras el fix de prompt: 42 focalizadas (1,49 s), backend 1589 (128,02 s), testing 152 (10,16 s), ruff limpio. |
 | 2026-10-24 | Matriz manual de siete consultas ejecutada en el simulador con Gemini 3.1 Flash Lite; respuestas concisas y sin datos sobrantes. |
+| 2026-10-24 | Head final `be76c0e` (`fix(STK-45/STK-217): alinear contrato de redacción y facts`) validado por el controlador: 63 focalizadas, ruff exit 0, backend 1595 (123,87 s, 299 warnings), testing 152 (8,76 s, 1 warning). Las 6 pruebas nuevas explican el salto desde 1589. |
+| 2026-10-24 | Smoke test posterior a `be76c0e` en el mismo simulador: «¿Cuánto tengo?» devolvió los cinco ítems exactos, sin compra, venta, fuente, timestamps ni footer; sin encabezado, que es opcional. Cumple. |
