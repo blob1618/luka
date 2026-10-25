@@ -119,6 +119,11 @@ def test_prompt_documents_usd_quote_examples():
         "mostrame compra y venta del oficial y MEP",
         "query_usd_quotes",
     )
+    _assert_prompt_intent_pair(
+        text,
+        "de dónde salen y cuándo se actualizaron las cotizaciones",
+        "query_usd_quotes",
+    )
     assert "«cuánto tengo en blue» sigue siendo" in text
 
 
