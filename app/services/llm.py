@@ -26,7 +26,7 @@ _QUOTE_TYPE_ALIASES = {
     "blue": "blue",
 }
 _NET_WORTH_FORBIDDEN = re.compile(
-    r"compra|venta|DolarAPI|consultad[oa]s?|actualizad[oa]s?", re.IGNORECASE
+    r"\b(?:compra|venta|DolarAPI|consultad[oa]s?|actualizad[oa]s?)\b", re.IGNORECASE
 )
 
 
@@ -65,7 +65,7 @@ def _violates_financial_reply_contract(
 
     # Todo placeholder debe ser canónico; el resto del texto no puede tener llaves.
     prose = _FACT_TOKEN.sub(" ", reply_text)
-    if "{{" in prose or "}}" in prose:
+    if "{" in prose or "}" in prose:
         return True
 
     if any(char.isdigit() for char in prose):

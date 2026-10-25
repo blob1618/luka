@@ -189,6 +189,9 @@ mensaje -> LLMService (prompts/core_prompt.md) -> intent + facts del dominio
 - La segunda llamada recibe `{"kind", "quote_types", "facts"}` y devuelve solo
   `{"reply_text": "..."}`, donde cada fact aparece como `{{KEY}}`. El backend sustituye
   los placeholders después de validar el contrato; el LLM no escribe cifras.
+- El validador de placeholders garantiza la sustitución exacta de cada token por su
+  valor, pero no prueba la atribución semántica: que la etiqueta de la línea corresponda
+  al token lo indica el prompt, no el código.
 - `kind="net_worth"` usa facts `ARS_TOTAL`, `USD_TOTAL`, `{TIPO}_TOTAL` y
   `{TIPO}_STALE`; sin billeteras registradas emite un único fact `STATUS`.
   `kind="usd_quotes"` usa `{TIPO}_COMPRA`, `{TIPO}_VENTA`, `{TIPO}_AS_OF`,

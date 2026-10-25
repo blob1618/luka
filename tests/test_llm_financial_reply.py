@@ -1,13 +1,25 @@
 """Contrato de redacción financiera con placeholders (STK-45 / STK-217)."""
 
 import json
+from datetime import datetime, timezone
+from decimal import Decimal
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.services.llm import LLMService
+from app.services.currency import QuoteType, UsdQuote
+from app.services.dispatcher import _net_worth_facts, _usd_quote_facts
+from app.services.llm import LLMService, _violates_financial_reply_contract
+from app.services.net_worth import NetWorthResult, NetWorthStatus
 
 pytestmark = pytest.mark.unit
+
+PROMPT_PATH = (
+    Path(__file__).resolve().parent.parent / "prompts" / "financial_reply_prompt.md"
+)
+FETCHED_AT = datetime(2026, 10, 23, 15, 30, tzinfo=timezone.utc)
+ALL_TYPES = [QuoteType.OFICIAL, QuoteType.MEP, QuoteType.BLUE]
 
 FACTS = [
     {"key": "ARS_TOTAL", "label": "Saldos ARS", "value": "$80.000"},
@@ -185,3 +197,132 @@ async def test_render_always_returns_string_when_facts_are_malformed():
 
     assert provider.generate_json.await_count == 1
     assert isinstance(result, str)
+
+
+def test_prompt_allows_grouped_facts_within_twelve_line_cap():
+    text = PROMPT_PATH.read_text(encoding="utf-8")
+
+    assert "Máximo 12 líneas" in text
+    assert "agrupar varios facts en una misma línea" in text
+    assert "cada `key` exactamente una vez" in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("brace", ["{", "}"])
+async def test_render_falls_back_on_single_brace_left_in_prose(brace):
+    bad_reply = f"*Tu patrimonio*\n• ARS: {{{{ARS_TOTAL}}}}\n• Blue: {{{{BLUE_TOTAL}}}} {brace}"
+    result, provider = await _render([{"reply_text": bad_reply}, {"reply_text": bad_reply}])
+
+    assert provider.generate_json.await_count == 2
+    assert result == EXPECTED_FALLBACK
+
+
+@pytest.mark.asyncio
+async def test_render_accepts_words_that_only_start_like_forbidden_metadata():
+    # `ventaja` y `comprar` no son los metadatos prohibidos `venta` y `compra`.
+    reply = "*Ventaja de comprar blue*\n• ARS: {{ARS_TOTAL}}\n• Blue: {{BLUE_TOTAL}}"
+    result, provider = await _render([{"reply_text": reply}], quote_types=["blue"])
+
+    assert provider.generate_json.await_count == 1
+    assert result == "*Ventaja de comprar blue*\n• ARS: $80.000\n• Blue: $188.000 ARS"
+
+
+def _quote(tipo, compra="1000", venta="1100", *, stale=False):
+    return UsdQuote(
+        tipo=tipo,
+        compra=Decimal(compra) if compra is not None else None,
+        venta=Decimal(venta),
+        fuente="DolarAPI",
+        as_of=FETCHED_AT,
+        fetched_at=FETCHED_AT,
+        stale=stale,
+    )
+
+
+def _template(facts, title, field):
+    lines = [title] + [f"• {fact['label']}: {fact[field]}" for fact in facts]
+    return "\n".join(lines)
+
+
+def _token_template(facts, title):
+    return "\n".join(
+        [title] + ["• " + fact["label"] + ": {{" + fact["key"] + "}}" for fact in facts]
+    )
+
+
+async def _render_facts(reply, facts, quote_types, kind):
+    with patch.object(LLMService, "_get_provider") as get_provider:
+        provider = AsyncMock()
+        provider.generate_json.return_value = {"reply_text": reply}
+        get_provider.return_value = provider
+        result = await LLMService.render_financial_reply(kind, facts, quote_types)
+    return result, provider
+
+
+@pytest.mark.asyncio
+async def test_net_worth_facts_match_renderer_contract():
+    result = NetWorthResult(
+        status=NetWorthStatus.OK,
+        ars_total=Decimal("80000"),
+        usd_total=Decimal("100"),
+        totals={
+            QuoteType.OFICIAL: Decimal("180000"),
+            QuoteType.MEP: Decimal("190000"),
+            QuoteType.BLUE: Decimal("200000"),
+        },
+        quotes={
+            QuoteType.OFICIAL: _quote(QuoteType.OFICIAL),
+            QuoteType.MEP: _quote(QuoteType.MEP),
+            QuoteType.BLUE: _quote(QuoteType.BLUE, stale=True),
+        },
+        missing=(),
+        stale=(QuoteType.BLUE,),
+    )
+    facts, quote_types = _net_worth_facts(result, ALL_TYPES)
+
+    assert [fact["key"] for fact in facts] == [
+        "ARS_TOTAL",
+        "USD_TOTAL",
+        "OFICIAL_TOTAL",
+        "MEP_TOTAL",
+        "BLUE_TOTAL",
+        "BLUE_STALE",
+    ]
+    assert quote_types == ["oficial", "mep", "blue"]
+
+    reply = _token_template(facts, "*Tu patrimonio*")
+    assert _violates_financial_reply_contract(reply, facts, quote_types, "net_worth") is False
+
+    rendered, provider = await _render_facts(reply, facts, quote_types, "net_worth")
+    assert provider.generate_json.await_count == 1
+    assert rendered == _template(facts, "*Tu patrimonio*", "value")
+
+
+@pytest.mark.asyncio
+async def test_usd_quote_facts_match_renderer_contract_with_stale_and_missing():
+    quotes = {
+        QuoteType.OFICIAL: _quote(QuoteType.OFICIAL, stale=True),
+        QuoteType.MEP: _quote(QuoteType.MEP, compra=None),
+    }
+    facts, quote_types = _usd_quote_facts(quotes, ALL_TYPES)
+
+    assert [fact["key"] for fact in facts] == [
+        "OFICIAL_COMPRA",
+        "OFICIAL_VENTA",
+        "OFICIAL_AS_OF",
+        "OFICIAL_STALE",
+        "MEP_COMPRA",
+        "MEP_VENTA",
+        "MEP_AS_OF",
+        "BLUE_STATUS",
+        "SOURCE",
+        "FETCHED_AT",
+    ]
+    assert quote_types == ["oficial", "mep", "blue"]
+
+    reply = _token_template(facts, "*Cotizaciones*")
+    assert _violates_financial_reply_contract(reply, facts, quote_types, "usd_quotes") is False
+
+    rendered, provider = await _render_facts(reply, facts, quote_types, "usd_quotes")
+    assert provider.generate_json.await_count == 1
+    assert rendered == _template(facts, "*Cotizaciones*", "value")

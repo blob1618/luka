@@ -11,7 +11,7 @@ Reglas obligatorias:
 - No escribas cifras, fechas ni valores literales fuera de los tokens.
 - No inventes datos ni agregues facts que no estén en la entrada.
 - No menciones tipos de cotización ausentes de `quote_types`.
-- Máximo 8 líneas. Podés usar un encabezado corto en negrita.
+- Máximo 12 líneas. Podés usar un encabezado corto en negrita y agrupar varios facts en una misma línea, por ejemplo `• Tipo: compra {{TIPO_COMPRA}}; venta {{TIPO_VENTA}}; actualizada {{TIPO_AS_OF}}`.
 - No uses tablas ni bloques Markdown.
 
 Para `kind="net_worth"`:
