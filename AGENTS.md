@@ -5,7 +5,7 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 ## Arquitectura y stack
 
 - **Framework**: FastAPI (async). Python 3.11.
-- **LLM**: fachada en `app/services/llm.py` -> `app/services/llm_providers/` (implementaciones `gemini` y `mistral`, selección por env `LLM_PROVIDER`, default `gemini`). La respuesta normalizada del proveedor se define en `prompt.md`, no en código.
+- **LLM**: fachada en `app/services/llm.py` -> `app/services/llm_providers/` (implementaciones `gemini` y `mistral`, selección por env `LLM_PROVIDER`, default `gemini`). El prompt de clasificación de producción es `prompts/core_prompt.md`; `prompt.md` es legacy y solo se usa si el anterior falta. La redacción de respuestas financieras usa `prompts/financial_reply_prompt.md`. El contrato de la respuesta normalizada vive en esos prompts, no en código.
 - **Mensajería**: Meta WhatsApp Business API.
 - **Base de datos**: SQLAlchemy (SQLite local, PostgreSQL/Supabase en producción).
 - **Estado de conversación y caché**: Redis (`app/services/conversation.py`).
@@ -17,7 +17,7 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 
 - `app/main.py`: entrypoint y webhook. **Nota: hoy es un archivo grande (~900 líneas) que todavía contiene bastante lógica de reply y de dispatcher; el ideal del repo es mover esa lógica a los services, no agregar más inline.**
 - `app/api/whatsapp.py`: único cliente saliente de WhatsApp. Normaliza teléfonos argentinos `549...` -> `54...`.
-- `app/services/llm.py` + `app/services/llm_providers/`: fachada LLM y providers. `LLMService` es singleton por clase (usar `reset_provider()` y `set_prompt_path()` en tests).
+- `app/services/llm.py` + `app/services/llm_providers/`: fachada LLM y providers. `LLMService` es singleton por clase (usar `reset_provider()` y `set_prompt_path()` en tests). `LLMService.render_financial_reply(kind, facts, quote_types)` redacta respuestas de patrimonio y cotizaciones: el LLM solo ubica placeholders `{{KEY}}` y los valores salen del backend.
 - `app/services/finance.py`: validación y persistencia de movimientos y categorías.
 - `app/services/onboarding.py`: alta/vinculación de usuarios e invitaciones.
 - `app/services/reminder.py`: recordatorios (CRUD, título único, multi-turno).
@@ -48,6 +48,15 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 - `categoria_id` solo si existe una categoría activa del usuario; si no, queda `null`. No crear categorías automáticamente.
 - No persistir como movimientos los intents `greeting`, `out_of_scope`, `reminder`, `budget_query`, `expense_summary`.
 - No asumir que una migración versionada o el snapshot local prueban el estado aplicado en Supabase; comprobar el historial con `supabase migration list` y verificar los objetos afectados en remoto.
+
+### Respuestas financieras en dos llamadas
+
+- Clasificación y redacción son dos llamadas separadas al proveedor. La primera usa `prompts/core_prompt.md` y produce el JSON de intent; la segunda usa `prompts/financial_reply_prompt.md` y produce solo `{"reply_text": "..."}`.
+- `render_financial_reply` recibe `kind` (`net_worth` o `usd_quotes`), una lista de facts `{key, label, value}` y los `quote_types` pedidos.
+- Reglas del prompt (`prompts/financial_reply_prompt.md`): usar cada `key` una sola vez como `{{KEY}}`, no escribir cifras, fechas ni valores literales fuera de los tokens, no inventar datos, no mencionar tipos ausentes de `quote_types`, máximo 12 líneas (se pueden agrupar varios facts en una línea) y sin tablas. Para `net_worth` el prompt pide no mostrar compra, venta, fuente, hora de consulta ni hora de actualización.
+- Validación en runtime (`_violates_financial_reply_contract` en `app/services/llm.py`): cada `{{KEY}}` debe existir en los facts y aparecer una sola vez, cada línea con placeholder debe empezar con `• `, no se aceptan llaves sueltas ni dígitos fuera de los placeholders, y no se aceptan nombres de tipos no pedidos. Para `net_worth` rechaza el texto que mencione `compra`, `venta`, `DolarAPI`, `consultad[oa]s?` o `actualizad[oa]s?`.
+- Si la salida viola el contrato se reintenta una vez; ante cualquier fallo devuelve una lista determinística con los mismos facts. Los valores nunca se toman del texto generado.
+- La redacción no cambia `raw_llm_response`: ese campo conserva el JSON del clasificador. Solo se reemplaza `reply_text`.
 
 ## Gotchas específicos
 

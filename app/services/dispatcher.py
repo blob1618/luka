@@ -50,7 +50,7 @@ from app.services.conversation import (
 )
 from app.services.conversation_flow_runtime import ConversationFlowRuntime
 from app.services.conversation_flow_contract import BUDGET_THRESHOLD_MESSAGE
-from app.services.currency import QuoteType, QuoteUnavailableError, get_usd_quotes
+from app.services.currency import QuoteType, QuoteUnavailableError, UsdQuote, get_usd_quotes
 from app.services.net_worth import NetWorthResult, NetWorthStatus, calculate_net_worth
 from app.services.budget import BudgetEvaluation, BudgetService, BudgetStatus
 from app.services.compensation import (
@@ -78,6 +78,7 @@ from app.services.finance import (
 )
 from app.services.intent_routing import (
     is_dashboard_access_candidate,
+    is_usd_quote_candidate,
     normalize_category_management_intent,
     normalize_limit_intent,
     normalize_movement_query_intent,
@@ -4310,46 +4311,55 @@ def _format_quote_when(value: datetime) -> str:
     return value.astimezone(ARGENTINA_TZ).strftime("%d/%m %H:%M")
 
 
-def _render_net_worth(result: NetWorthResult, tipos: list[QuoteType]) -> str:
+def _financial_fact(key: str, label: str, value: str) -> dict[str, str]:
+    return {"key": key, "label": label, "value": value}
+
+
+def _net_worth_facts(
+    result: NetWorthResult, tipos: list[QuoteType]
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Facts verificados del patrimonio y los tipos de cotización pedidos."""
     if result.status is NetWorthStatus.NO_WALLETS:
-        return "No veo saldos en tus billeteras."
+        return [_financial_fact("STATUS", "Estado", "sin billeteras registradas")], []
 
     ars_total = _format_net_worth_amount(result.ars_total, "ARS")
     if result.usd_total == 0:
-        return f"Tu capital consolidado es {ars_total} ARS. No tenés saldos en USD."
+        return [
+            _financial_fact("ARS_TOTAL", "Saldos ARS", ars_total),
+            _financial_fact("USD_TOTAL", "Saldos USD", "sin saldo"),
+        ], []
 
-    usd_total = _format_net_worth_amount(result.usd_total, "USD")
-    lines = [f"Saldos originales: {ars_total} ARS + {usd_total} USD."]
-    if not result.quotes:
-        lines.append("No los convierto para no inventar un valor.")
-        return "\n".join(lines)
-
+    facts = [
+        _financial_fact("ARS_TOTAL", "Saldos ARS", ars_total),
+        _financial_fact(
+            "USD_TOTAL",
+            "Saldos USD",
+            _format_net_worth_amount(result.usd_total, "USD"),
+        ),
+    ]
     for tipo in tipos:
         label = _NET_WORTH_QUOTE_LABELS[tipo]
-        quote = result.quotes.get(tipo)
-        if quote is None:
-            lines.append(f"{label}: cotización no disponible.")
-        elif quote.compra is None:
-            venta = _format_net_worth_amount(quote.venta, "ARS")
-            lines.append(f"{label}: compra no disponible; venta {venta}.")
-        else:
-            total = _format_net_worth_amount(result.totals[tipo], "ARS")
-            compra = _format_net_worth_amount(quote.compra, "ARS")
-            venta = _format_net_worth_amount(quote.venta, "ARS")
-            line = (
-                f"{label}: {total} (compra {compra}, venta {venta}; "
-                f"actualizada {_format_quote_when(quote.as_of)})."
+        total = result.totals[tipo]
+        value = (
+            "total no disponible"
+            if total is None
+            else f"{_format_net_worth_amount(total, 'ARS')} ARS"
+        )
+        facts.append(_financial_fact(f"{tipo.name}_TOTAL", label, value))
+        if tipo in result.stale:
+            facts.append(
+                _financial_fact(
+                    f"{tipo.name}_STALE",
+                    f"Aviso {label}",
+                    "cotización desactualizada",
+                )
             )
-            if quote.stale:
-                line += " (desactualizada)"
-            lines.append(line)
+    return facts, [tipo.value for tipo in tipos]
 
-    fetched_at = max(quote.fetched_at for quote in result.quotes.values())
-    footer = f"Cotizaciones: DolarAPI, consultadas {_format_quote_when(fetched_at)}."
-    if any(total is not None for total in result.totals.values()):
-        footer += " Valuado a compra."
-    lines.append(footer)
-    return "\n".join(lines)
+
+async def _render_net_worth(result: NetWorthResult, tipos: list[QuoteType]) -> str:
+    facts, requested_types = _net_worth_facts(result, tipos)
+    return await LLMService.render_financial_reply("net_worth", facts, requested_types)
 
 
 async def _handle_net_worth_intent(
@@ -4378,9 +4388,99 @@ async def _handle_net_worth_intent(
 
     return _llm_dispatch_result(
         data,
-        _render_net_worth(result, tipos),
+        await _render_net_worth(result, tipos),
         "net_worth",
         "query_net_worth",
+    )
+
+
+def _format_quote_amount(value: Decimal | None) -> str:
+    """Cotización exacta en formato es-AR, sin cuantizar ni redondear."""
+    if value is None:
+        return "no disponible"
+    formatted = (
+        f"{abs(value):,f}"
+        .replace(",", "\x00")
+        .replace(".", ",")
+        .replace("\x00", ".")
+    )
+    sign = "-" if value < 0 else ""
+    return f"{sign}${formatted}"
+
+
+def _usd_quote_facts(
+    quotes: dict[QuoteType, UsdQuote], tipos: list[QuoteType]
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Facts verificados de cotizaciones; nunca saldos ni patrimonio."""
+    facts: list[dict[str, str]] = []
+    for tipo in tipos:
+        label = _NET_WORTH_QUOTE_LABELS[tipo]
+        quoted = quotes.get(tipo)
+        if quoted is None:
+            facts.append(
+                _financial_fact(
+                    f"{tipo.name}_STATUS", f"Estado {label}", "cotización no disponible"
+                )
+            )
+            continue
+        facts.append(
+            _financial_fact(
+                f"{tipo.name}_COMPRA", f"Compra {label}", _format_quote_amount(quoted.compra)
+            )
+        )
+        facts.append(
+            _financial_fact(
+                f"{tipo.name}_VENTA", f"Venta {label}", _format_quote_amount(quoted.venta)
+            )
+        )
+        facts.append(
+            _financial_fact(
+                f"{tipo.name}_AS_OF", f"Actualizado {label}", _format_quote_when(quoted.as_of)
+            )
+        )
+        if quoted.stale:
+            facts.append(
+                _financial_fact(
+                    f"{tipo.name}_STALE", f"Aviso {label}", "cotización desactualizada"
+                )
+            )
+
+    sources = sorted({quoted.fuente for quoted in quotes.values()})
+    if sources:
+        facts.append(_financial_fact("SOURCE", "Fuente", ", ".join(sources)))
+        facts.append(
+            _financial_fact(
+                "FETCHED_AT",
+                "Consultado",
+                _format_quote_when(max(quoted.fetched_at for quoted in quotes.values())),
+            )
+        )
+    return facts, [tipo.value for tipo in tipos]
+
+
+async def _render_usd_quotes(
+    quotes: dict[QuoteType, UsdQuote], tipos: list[QuoteType]
+) -> str:
+    facts, requested_types = _usd_quote_facts(quotes, tipos)
+    return await LLMService.render_financial_reply("usd_quotes", facts, requested_types)
+
+
+async def _handle_usd_quotes_intent(
+    ctx: _DispatchContext, data: dict
+) -> DispatchResult | None:
+    intent = data.get("intent")
+    if intent != "query_usd_quotes":
+        return None
+    tipos = _parse_quote_types(data.get("quote_types"))
+    try:
+        quotes = await get_usd_quotes(tipos)
+    except QuoteUnavailableError:
+        quotes = {}
+    return _llm_dispatch_result(
+        data,
+        await _render_usd_quotes(quotes, tipos),
+        "currency",
+        intent,
     )
 
 
@@ -4471,6 +4571,7 @@ async def _dispatch_intent(ctx: _DispatchContext, data: dict) -> DispatchResult:
         _handle_chart_intent,
         _handle_financial_education_intent,
         _handle_net_worth_intent,
+        _handle_usd_quotes_intent,
         _handle_wallet_intent,
         _handle_finance_intent,
         _handle_reminder_intent,
@@ -4513,7 +4614,9 @@ async def _dispatch_after_onboarding(
     pending = await _handle_pending_conversation_flows(ctx)
     if pending is not None:
         return pending
-    if FinancialEducationService.is_conceptual_query(ctx.text_body):
+    if FinancialEducationService.is_conceptual_query(
+        ctx.text_body
+    ) and not is_usd_quote_candidate(ctx.text_body):
         education = FinancialEducationService.answer(ctx.text_body)
         return DispatchResult(
             reply_text=education.text,

@@ -49,6 +49,16 @@ async def test_query_net_worth_drops_non_list_quote_types():
 
 
 @pytest.mark.asyncio
+async def test_query_usd_quotes_normalizes_quote_types():
+    result = await _process(
+        {"intent": "query_usd_quotes", "quote_types": ["BLUE", "blue"]}
+    )
+
+    assert result["intent"] == "query_usd_quotes"
+    assert result["quote_types"] == ["blue"]
+
+
+@pytest.mark.asyncio
 async def test_unknown_intent_remains_out_of_scope():
     result = await _process({"intent": "query_net_worth_unknown"})
 

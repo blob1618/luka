@@ -5,12 +5,20 @@ import pytest
 
 from app.services.conversation import LastCreatedLimit
 from app.services.intent_routing import (
+    is_usd_quote_candidate,
     normalize_limit_intent,
     normalize_movement_action,
     normalize_movement_chart_intent,
     normalize_movement_query_intent,
     references_recent_limit,
 )
+
+
+def test_usd_quote_candidate_keeps_explicit_requests_away_from_education():
+    assert is_usd_quote_candidate("cotización actual del blue")
+    assert is_usd_quote_candidate("valor de hoy del oficial")
+    assert not is_usd_quote_candidate("qué es una cotización")
+    assert not is_usd_quote_candidate("Ahorré 1000 pesos hoy")
 
 
 def test_colloquial_amount_corrections_override_new_expense_classification():
