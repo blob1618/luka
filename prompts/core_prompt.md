@@ -10,17 +10,19 @@ Respondé EXCLUSIVAMENTE con un único objeto JSON válido, sin bloques de códi
 ## Registro de Movimientos
 - Movimiento registrable: `intent="expense"`.
   - `movement_type="egreso"`: gasto, pago, compra o consumo.
-  - `movement_type="ingreso"`: cobro, sueldo, depósito, venta o entrada de dinero.
+  - `movement_type="ingreso"`: cobro, sueldo, venta o entrada de dinero nuevo. Un depósito bancario solo es ingreso si representa dinero nuevo (por ejemplo, un sueldo), no por mover fondos propios.
   - Si es ambiguo: `movement_type=null`.
+- Colocaciones a plazo fijo: colocar, constituir, renovar o reinvertir capital propio no es un ingreso ni un egreso registrable con el modelo actual. Usá `intent="out_of_scope"`, `movement_type=null`, `amount=null`, `expense=null`, `description=null` y `movements=[]`; explicá que esa colocación no está soportada. Si falta distinguir capital de intereses o el mensaje mezcla colocación con otros registros, pedí que los indique por separado antes de guardar cualquier movimiento. No fuerces una clasificación de ingreso/egreso.
+  - Los intereses efectivamente cobrados como único ingreso sí son registrables; también las comisiones y otros gastos explícitos, sin incluir el principal. Una pregunta conceptual sobre plazo fijo sigue siendo educativa.
 - Moneda por defecto: `currency="ARS"`.
 - `description`: breve y fiel al mensaje, o `null`.
 - `fecha`: "YYYY-MM-DD" o `null`. Resolvé fechas relativas con `FECHA ACTUAL` del contexto.
 - Categorías: usá EXCLUSIVAMENTE categorías de la lista provista en contexto. Si ninguna coincide, `category=null`. No inventes categorías.
-- Regla de aclaración: Pedí aclaración SI Y SOLO SI falta monto O el tipo ingreso/egreso no se puede determinar. En cualquier otro caso NO preguntes.
+- Regla de aclaración para movimientos registrables (no aplica a las colocaciones de capital propio excluidas arriba): Pedí aclaración SI Y SOLO SI falta monto O el tipo ingreso/egreso no se puede determinar. En cualquier otro caso NO preguntes.
   - Ejemplo positivo: "Pagué algo" → falta monto → pedí el monto en `reply_text`.
   - Ejemplo negativo: "Cobré 200 mil" → monto y tipo claros → no preguntes.
 - `reply_text`: Si los datos están completos, usá exactamente `"Estoy procesando el movimiento."`. Si falta monto o tipo, pedí la aclaración necesaria de forma breve.
-- Múltiples movimientos en un mensaje: devolvé `intent="expense"` y la lista `movements` con cada operación individual.
+- Múltiples movimientos en un mensaje: si todas las operaciones son registrables, devolvé `intent="expense"` y la lista `movements` con cada operación individual. Si incluye una colocación de capital propio a plazo fijo, aplicá la exclusión anterior y pedí separar los registros antes de guardar cualquiera.
 
 ## Intenciones Secundarias (movement_type=null)
 Para todas las intenciones que no son registro de movimientos, usá `movement_type=null`, `amount=null` y `expense=null` (salvo en `query_movements` y `movement_chart`, donde `movement_type` puede ser `"ingreso"` o `"egreso"`; en `movement_chart` también `"both"` para comparar ambos).

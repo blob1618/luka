@@ -90,6 +90,7 @@ from app.services.category_creation import CategoryCreationService
 from app.services.categories_taxonomy import category_explicitly_named_in_text, category_named_in_text
 from app.services.limit import LimitService
 from app.services.llm import LLMService
+from app.services.movement_policy import fixed_deposit_registration_reply
 from app.services.chart_service import generate_chart, choice_patch, pending_chart_reply
 from app.services.chart_request import ChartRequest, chart_patch, single_month_period_patch
 from app.services.llm_contract import resolve_relative_date
@@ -224,6 +225,9 @@ def _registration_reply(
     result: MovementRegistrationResult,
     extracted_data: dict,
 ) -> str:
+    if result.status == "unsupported_operation":
+        return result.message
+
     if result.status == "registered":
         return _registered_reply(extracted_data)
 
@@ -1181,6 +1185,10 @@ async def _register_and_reply_with_hint(
     guarda el último movimiento en Redis y devuelve el mensaje con hint.
     Soporta varios movimientos por mensaje (multiop).
     """
+    # Preflight the original request before any item, category or wallet write.
+    policy_reply = fixed_deposit_registration_reply(text_body)
+    if policy_reply:
+        return policy_reply
     movements = extracted_data.get("movements") or [extracted_data]
 
     if len(movements) == 1:
@@ -4245,6 +4253,14 @@ async def _handle_misc_intent(
     ctx: _DispatchContext, data: dict
 ) -> DispatchResult:
     intent = data.get("intent", "out_of_scope")
+    policy_reply = fixed_deposit_registration_reply(ctx.text_body)
+    if policy_reply:
+        # An out_of_scope/greeting reply must not falsely confirm a placement.
+        # Domain handlers (including explicit annulment) retain their own routing.
+        return DispatchResult(
+            reply_text=policy_reply, service_invoked="finance",
+            intent="out_of_scope", raw_llm_response=data,
+        )
     if intent in {"confirm_category", "reject_category"}:
         return _llm_dispatch_result(
             data,
@@ -5249,7 +5265,7 @@ async def _resume_movement_after_category(sender_phone: str) -> DispatchResult:
             event_key="wallet.creation_required",
             event_variables={"currency": currency},
         )
-    if result.status in {"registered", "duplicate"}:
+    if result.status in {"registered", "duplicate", "unsupported_operation"}:
         await ConversationService.clear_state(sender_phone)
     if result.status == "registered" and result.movement_id:
         await ConversationService.set_last_movement(
