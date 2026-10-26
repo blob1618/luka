@@ -20,6 +20,7 @@ from app.services.categories_taxonomy import (
     suggest_user_category,
 )
 from app.services.wallet import WalletService
+from app.services.movement_policy import fixed_deposit_registration_reply
 
 
 @dataclass
@@ -508,6 +509,10 @@ class FinanceService:
         if not isinstance(llm_result, dict):
             return cls._result("invalid_data", "llm_result must be a dict")
 
+        policy_reply = fixed_deposit_registration_reply(original_text)
+        if policy_reply:
+            return cls._result("unsupported_operation", policy_reply)
+
         intent = cls._normalize_optional_text(llm_result.get("intent"))
         intent = intent.lower() if intent else None
         raw_movement_type = cls._normalize_optional_text(llm_result.get("movement_type"))
@@ -957,6 +962,10 @@ class FinanceService:
         sender_phone = cls._normalize_optional_text(sender_phone)
         if not sender_phone:
             return cls._result("invalid_data", "sender_phone is required")
+
+        policy_reply = fixed_deposit_registration_reply(original_text)
+        if policy_reply:
+            return cls._result("unsupported_operation", policy_reply)
 
         if movement_type not in cls.VALID_MOVEMENT_TYPES:
             return cls._result("invalid_data", "movement_type must be ingreso or egreso")
