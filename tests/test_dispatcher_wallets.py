@@ -146,7 +146,7 @@ async def test_ambiguity_prompts_wallet_selection_zero_writes(isolated_db):
         patch("app.services.dispatcher.OnboardingService.prepare_whatsapp_message", return_value=known_user()),
         patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock, return_value=llm_payload),
     ):
-        result = await process_incoming_message(sender_phone, "Gasté 5000 en nafta", whatsapp_message_id="msg-amb-1")
+        result = await process_incoming_message(sender_phone, "Gasté 5000 en nafta el 09/10/2026", whatsapp_message_id="msg-amb-1")
 
     assert "Tenés más de una billetera en ARS" in result.reply_text
     assert "1. Efectivo" in result.reply_text
@@ -204,7 +204,7 @@ async def test_ambiguity_prompts_wallet_selection_zero_writes_without_category(i
         patch("app.services.dispatcher.OnboardingService.prepare_whatsapp_message", return_value=known_user()),
         patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock, return_value=llm_payload),
     ):
-        result = await process_incoming_message(sender_phone, "Gasté 3500 en kiosco", whatsapp_message_id="msg-amb-nocat")
+        result = await process_incoming_message(sender_phone, "Gasté 3500 en kiosco el 10/10/2026", whatsapp_message_id="msg-amb-nocat")
 
     assert "Tenés más de una billetera en ARS" in result.reply_text
     assert "1. Efectivo" in result.reply_text
@@ -719,7 +719,7 @@ async def test_auto_selected_wallet_is_preserved_through_category_confirmation(i
     ):
         first = await process_incoming_message(
             sender_phone,
-            "Gasté 1250 en parapente",
+            "Gasté 1250 en parapente el 07/10/2026",
             whatsapp_message_id="msg-auto-wallet-category",
         )
 
@@ -814,7 +814,7 @@ async def test_deleted_wallet_during_category_confirmation_refreshes_selection(i
     ):
         first = await process_incoming_message(
             sender_phone,
-            "Gasté 1750 en una actividad",
+            "Gasté 1750 en una actividad el 06/10/2026",
             whatsapp_message_id="msg-deleted-wallet-category",
         )
     assert "¿Querés crearla?" in first.reply_text
@@ -1061,7 +1061,7 @@ async def test_multiturn_wallet_deleted_after_prompt_refreshes_remaining_choices
         patch("app.services.dispatcher.OnboardingService.prepare_whatsapp_message", return_value=known_user()),
         patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock, return_value=llm_payload),
     ):
-        res1 = await process_incoming_message(sender_phone, "Gasté 12000 en el super", whatsapp_message_id="msg-del-1")
+        res1 = await process_incoming_message(sender_phone, "Gasté 12000 en el super el 10/10/2026", whatsapp_message_id="msg-del-1")
 
     assert "Tenés más de una billetera en ARS" in res1.reply_text
     assert "1. Efectivo" in res1.reply_text
@@ -1152,7 +1152,7 @@ async def test_multiturn_wallet_deleted_after_prompt_clears_stale_context_when_i
         patch("app.services.dispatcher.OnboardingService.prepare_whatsapp_message", return_value=known_user()),
         patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock, return_value=llm_payload),
     ):
-        res1 = await process_incoming_message(sender_phone, "Gasté 4500 en farmacia", whatsapp_message_id="msg-stale-1")
+        res1 = await process_incoming_message(sender_phone, "Gasté 4500 en farmacia el 10/10/2026", whatsapp_message_id="msg-stale-1")
 
     assert "Tenés más de una billetera en ARS" in res1.reply_text
     assert await ConversationService.is_awaiting_wallet_selection(sender_phone) is True
@@ -1215,7 +1215,7 @@ async def test_multiturn_wallet_currency_changed_after_prompt_refreshes_choices_
         patch("app.services.dispatcher.OnboardingService.prepare_whatsapp_message", return_value=known_user()),
         patch("app.services.dispatcher.LLMService.process_message", new_callable=AsyncMock, return_value=llm_payload),
     ):
-        res1 = await process_incoming_message(sender_phone, "Gasté 2500 en librería", whatsapp_message_id="msg-curr-1")
+        res1 = await process_incoming_message(sender_phone, "Gasté 2500 en librería el 10/10/2026", whatsapp_message_id="msg-curr-1")
 
     assert "Tenés más de una billetera en ARS" in res1.reply_text
     assert await ConversationService.is_awaiting_wallet_selection(sender_phone) is True

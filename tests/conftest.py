@@ -185,12 +185,14 @@ class FakeRedis:
         script: str,
         numkeys: int,
         *keys_and_args: Any,
-    ) -> int:
+    ) -> Any:
         del numkeys
         self.eval_calls += 1
         if not keys_and_args:
             return 0
         key = str(keys_and_args[0])
+        if "local value = redis.call('GET'" in script:
+            return self._storage.pop(key, None)
         if "LRANGE" in script and "RPUSH" in script:
             return await self._eval_memory_append(key, keys_and_args[1:])
         expected = str(keys_and_args[1]) if len(keys_and_args) > 1 else ""

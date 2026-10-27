@@ -332,7 +332,25 @@ def normalize_movement_action(text: str, extracted_data: dict) -> dict:
     numeric_text = unicodedata.normalize("NFKD", text.lower())
     numeric_text = "".join(char for char in numeric_text if not unicodedata.combining(char))
     correction = _AMOUNT_CORRECTION.search(numeric_text.strip())
-    if correction:
+    explicit_date_change = re.search(
+        r"\b(?:cambi\w*|modific\w*|correg\w*|ajust\w*)\s+(?:la\s+)?fecha\b", normalized
+    )
+    date_correction = correction and re.match(r"\s*[/\-]\s*\d", numeric_text.strip()[correction.end(1):])
+    if explicit_date_change:
+        changes = dict(data.get("changes") or {})
+        changes.setdefault("fecha", "")
+        data.update(intent="update_movement", changes=changes)
+        if not data.get("reference"):
+            if re.search(r"\b(?:ultimo|ultima|ese|esa)\b", normalized):
+                data["reference"] = "last_registered"
+            else:
+                data["_date_reference_unresolved"] = True
+    elif date_correction:
+        changes = dict(data.get("changes") or {})
+        changes.pop("amount", None)
+        changes.setdefault("fecha", "")
+        data.update(intent="update_movement", reference=data.get("reference") or "last_registered", changes=changes)
+    elif correction:
         raw = correction.group(1).replace(".", "").replace(",", ".")
         try:
             amount = float(raw) * (1000 if correction.group(2) else 1)

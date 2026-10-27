@@ -7,14 +7,24 @@ _WEEKDAY_ES = {
 }
 
 
-def resolve_relative_date(raw_fecha: str | None, today: date) -> date:
-    """Resuelve una fecha relativa o ISO; devuelve `today` si falta/inválida/futura."""
-    if not isinstance(raw_fecha, str) or not raw_fecha.strip():
+def resolve_relative_date(raw_fecha: str | None, today: date) -> date | None:
+    """Resuelve una fecha relativa o ISO; una fecha inválida no se reemplaza."""
+    if raw_fecha is None:
         return today
+    if not isinstance(raw_fecha, str) or not raw_fecha.strip():
+        return None
 
     token = raw_fecha.strip().lower()
+    if token == "hoy":
+        return today
     if token == "ayer":
         return today - timedelta(days=1)
+    if token in {"anteayer", "antes de ayer"}:
+        return today - timedelta(days=2)
+    if token in {"mañana", "manana"}:
+        return today + timedelta(days=1)
+    if token in {"pasado mañana", "pasado manana"}:
+        return today + timedelta(days=2)
 
     if token in _WEEKDAY_ES:
         delta = (today.weekday() - _WEEKDAY_ES[token]) % 7
@@ -24,10 +34,8 @@ def resolve_relative_date(raw_fecha: str | None, today: date) -> date:
     try:
         parsed = date.fromisoformat(token)
     except ValueError:
-        return today
+        return None
 
-    if parsed > today + timedelta(days=1):
-        return today
     return parsed
 
 

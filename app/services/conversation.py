@@ -656,6 +656,29 @@ class ConversationService:
     _state_cache = _state_cache
 
     @classmethod
+    async def save_pending_date(cls, whatsapp_id: str, pending: dict) -> bool:
+        """Persist a date clarification or report that continuation is unavailable."""
+        try:
+            client = await cls._get_client()
+            await client.setex(f"pending_date:{whatsapp_id}", CONVERSATION_TTL, json.dumps(_json_safe(pending)))
+            return True
+        except Exception:
+            return False
+
+    @classmethod
+    async def take_pending_date(cls, whatsapp_id: str) -> dict | None:
+        """Atomically consume a pending clarification; duplicate replies cannot claim it."""
+        try:
+            client = await cls._get_client()
+            raw = await client.eval(
+                "local value = redis.call('GET', KEYS[1]); redis.call('DEL', KEYS[1]); return value",
+                1, f"pending_date:{whatsapp_id}",
+            )
+            return json.loads(raw) if raw else None
+        except Exception:
+            return None
+
+    @classmethod
     def reset_cache(cls) -> None:
         """Reinicia la caché de estado de la corrutina/contexto actual."""
         _state_cache.set(None)

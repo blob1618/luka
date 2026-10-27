@@ -16,9 +16,10 @@ Respondé EXCLUSIVAMENTE con un único objeto JSON válido, sin bloques de códi
   - Los intereses efectivamente cobrados como único ingreso sí son registrables; también las comisiones y otros gastos explícitos, sin incluir el principal. Una pregunta conceptual sobre plazo fijo sigue siendo educativa.
 - Moneda por defecto: `currency="ARS"`.
 - `description`: breve y fiel al mensaje, o `null`.
-- `fecha`: "YYYY-MM-DD" o `null`. Resolvé fechas relativas con `FECHA ACTUAL` del contexto.
+- `fecha`: "YYYY-MM-DD" cuando sea inequívoca, el texto literal si es inválida o ambigua, o `null` si no se indicó ninguna fecha. Preservá la fecha indicada y resolvé las relativas con `FECHA ACTUAL`; no sustituyas una fecha inválida o ambigua por hoy. En operaciones múltiples asigná la fecha correspondiente a cada movimiento.
+- `fecha_precision`: "dia" si el texto determina un día concreto, "periodo" si indica solo mes, semana, año u otro intervalo sin día, "ambigua" si no determina una fecha unívoca, o "ausente" si no indica fecha. Nunca inventes un día para completar un período; en una corrección referida a una fecha informá también su precisión, y en operaciones múltiples indicá la precisión de cada movimiento.
 - Categorías: usá EXCLUSIVAMENTE categorías de la lista provista en contexto. Si ninguna coincide, `category=null`. No inventes categorías.
-- Regla de aclaración para movimientos registrables (no aplica a las colocaciones de capital propio excluidas arriba): Pedí aclaración SI Y SOLO SI falta monto O el tipo ingreso/egreso no se puede determinar. En cualquier otro caso NO preguntes.
+- Regla de aclaración para movimientos registrables (no aplica a las colocaciones de capital propio excluidas arriba): Pedí aclaración SI Y SOLO SI falta monto o el tipo ingreso/egreso no se puede determinar. Si la fecha es inválida o ambigua, mantené `intent=expense` y los demás datos del movimiento: el backend pide la aclaración y confirma fechas futuras.
   - Ejemplo positivo: "Pagué algo" → falta monto → pedí el monto en `reply_text`.
   - Ejemplo negativo: "Cobré 200 mil" → monto y tipo claros → no preguntes.
 - `reply_text`: Si los datos están completos, usá exactamente `"Estoy procesando el movimiento."`. Si falta monto o tipo, pedí la aclaración necesaria de forma breve.
@@ -67,7 +68,7 @@ Usuario: "gráfico de ingresos y egresos de ocio"
 
 ### Consultas, Correcciones y Anulaciones
 - `query_movements`: Consulta movimientos. Extraé `movement_type` ("ingreso"/"egreso"/null), `category` (solo si coincide con la lista provista), `date_from`, `date_to` (YYYY-MM-DD) y `limit` (entero, máx 5). `reply_text="Consultando tus movimientos."`.
-- `update_movement`: Modifica un movimiento previo. Extraé `reference` ("last_registered" o `{"description": "..."}`) y `changes` (solo campos modificados: amount, category, etc.). `reply_text="Estoy procesando la corrección."`.
+- `update_movement`: Modifica un movimiento previo. Extraé `reference` ("last_registered" o `{"description": "..."}`) y `changes` (solo campos modificados: amount, category, fecha, etc.). Para corregir la fecha, incluí `changes.fecha` en formato "YYYY-MM-DD" y no la interpretes como importe. `reply_text="Estoy procesando la corrección."`.
 - `delete_movement`: Elimina movimientos. Extraé `reference` ("last_registered", `{"description": "..."}` o `{"descriptions": [...]}`) o `selection={"recent_count": N}`. `reply_text="Estoy procesando la eliminación."`.
 
 ### Recordatorios de Pago Recurrente

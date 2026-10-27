@@ -9,7 +9,7 @@ import asyncio
 import contextlib
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
@@ -91,6 +91,9 @@ from app.services.categories_taxonomy import category_explicitly_named_in_text, 
 from app.services.limit import LimitService
 from app.services.llm import LLMService
 from app.services.movement_policy import fixed_deposit_registration_reply
+from app.services.movement_dates import (
+    argentina_today, incomplete_period, interpret_date, movement_temporal_text, numeric_dates, relative_dates,
+)
 from app.services.chart_service import generate_chart, choice_patch, pending_chart_reply
 from app.services.chart_request import ChartRequest, chart_patch, single_month_period_patch
 from app.services.llm_contract import resolve_relative_date
@@ -137,6 +140,7 @@ class _DispatchContext:
     last_limit_loaded: bool = False
     last_chart: dict | None = None
     pending_chart: PendingMovementChart | None = None
+    today: date = field(default_factory=argentina_today)
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +176,10 @@ def _registered_reply(extracted_data: dict) -> str:
     description = _movement_description(extracted_data)
     amount = _format_amount(extracted_data.get("amount"))
     currency = str(extracted_data.get("currency") or "ARS").upper()
-    return f"✅ Registré tu {movement_type}: {description} por ${amount} {currency}."
+    reply = f"✅ Registré tu {movement_type}: {description} por ${amount} {currency}."
+    if extracted_data.get("_mostrar_fecha") and extracted_data.get("fecha"):
+        reply += f" Fecha: {date.fromisoformat(extracted_data['fecha']).strftime('%d/%m/%Y')}."
+    return reply
 
 
 def _category_hint_reply() -> str:
@@ -331,12 +338,12 @@ def _safe_non_persisted_reply(extracted_data: dict) -> str:
     return reply_text or "No pude interpretar tu mensaje. ¿Podés reformularlo?"
 
 
-def build_user_context(sender_phone: str) -> str:
+def build_user_context(sender_phone: str, today: date | None = None) -> str:
     """Contexto para el LLM: fecha actual + categorías activas del usuario.
 
     Degrada silenciosamente (solo fecha) si la BD falla, nunca rompe el flujo.
     """
-    date_line = f"FECHA ACTUAL: {date.today().isoformat()}."  # noqa: DTZ011
+    date_line = f"FECHA ACTUAL: {(today or argentina_today()).isoformat()}."
     session = None
     try:
         session = SessionLocal()
@@ -484,6 +491,7 @@ def _movement_mutation_error_reply(status: str) -> str | None:
 async def _apply_movement_action(
     sender_phone: str, intent: str, target_id: str, changes: dict,
     event_data: dict | None = None, expected: dict | None = None,
+    date_confirmed: bool = False,
 ) -> str:
     if intent == "update_movement":
         if not changes:
@@ -492,6 +500,20 @@ async def _apply_movement_action(
                     sender_phone, RecentItems("movement", [expected])
                 )
             return "¿Qué dato querés corregir del movimiento?"
+        if "fecha" in changes:
+            today = date.fromisoformat((event_data or {}).get("_date_today") or argentina_today().isoformat())
+            value = resolve_relative_date(changes["fecha"], today)
+            if value is None or (value > today and not date_confirmed):
+                snapshot = await asyncio.to_thread(
+                    FinanceService.movement_snapshot, sender_phone, target_id, expected
+                )
+                if snapshot is None:
+                    return "El movimiento cambió o ya no está disponible. Volvé a seleccionarlo."
+                return await _request_date_clarification(sender_phone, {
+                    "operation": "update", "target_id": target_id,
+                    "changes": changes, "expected": snapshot,
+                }, value)
+            changes = {**changes, "fecha": value.isoformat()}
         result = await asyncio.to_thread(
             FinanceService.update_movement, sender_phone, target_id, changes, expected
         )
@@ -518,6 +540,8 @@ async def _apply_movement_action(
             f"✅ Corregí {before.descripcion}: ahora es ${_format_amount(after.cantidad)} "
             f"{after.moneda}. Categoría: {after.categoria_nombre or 'sin categoría'}."
         )
+        if "fecha" in changes:
+            reply += f" Fecha: {after.fecha_movimiento.strftime('%d/%m/%Y')}."
         await ConversationService.set_recent_items(
             sender_phone, RecentItems("movement", _movement_context_items([after]))
         )
@@ -536,6 +560,7 @@ async def _apply_movement_action(
                 "description": after.descripcion or "movimiento",
                 "amount": _format_amount(after.cantidad), "currency": after.moneda,
                 "category": after.categoria_nombre or "sin categoría",
+                "fecha_mostrada": after.fecha_movimiento.strftime("%d/%m/%Y") if "fecha" in changes else "",
             }
     else:
         reply = f"✅ Eliminé {before.descripcion} por ${_format_amount(before.cantidad)} {before.moneda}."
@@ -582,7 +607,42 @@ async def _handle_movement_action(
     sender_phone: str, text_body: str, extracted_data: dict
 ) -> str:
     intent = extracted_data["intent"]
-    changes = extracted_data.get("changes") or {}
+    if intent == "update_movement" and extracted_data.get("_date_reference_unresolved"):
+        return "¿Qué movimiento querés modificar? Indicame su descripción."
+    changes = dict(extracted_data.get("changes") or {})
+    today = date.fromisoformat(extracted_data.get("_date_today") or argentina_today().isoformat())
+    normalized_text = normalize_text(text_body)
+    mentions_date = bool(re.search(r"\bfecha\b", normalized_text))
+    has_temporal = bool(
+        numeric_dates(text_body, today) or relative_dates(text_body, today)
+        or incomplete_period(text_body, extracted_data.get("fecha_precision"), today)
+    )
+    if intent == "update_movement" and (mentions_date or has_temporal):
+        has_other_field = re.search(
+            r"\b(?:monto|importe|cantidad|categoria|descripcion|billetera|moneda)\b", normalized_text
+        )
+        has_money = re.search(
+            r"\$\s*\d|\b\d+(?:[.,]\d+)?\s*(?:pesos?|ars|usd|d[oó]lares?)\b", text_body, re.IGNORECASE
+        )
+        if has_other_field or has_money:
+            return "Para evitar cambios equivocados, pedime la fecha y los demás cambios por separado."
+        if has_temporal and not mentions_date and (
+            "fecha" not in changes or "amount" in changes
+        ):
+            return "Necesito aclarar el cambio: ¿querés corregir la fecha o el importe?"
+        if not extracted_data.get("reference"):
+            if re.search(r"\b(?:ultimo|ultima|ese|esa)\b", normalized_text):
+                extracted_data["reference"] = "last_registered"
+            else:
+                return "¿Qué movimiento querés modificar? Indicame su descripción."
+        changes = {"fecha": changes.get("fecha") or ""}
+    if intent == "update_movement" and (
+        "fecha" in changes or (not changes and re.search(r"\bfecha\b", text_body, re.IGNORECASE))
+    ):
+        value, _ = interpret_date(
+            text_body, changes.get("fecha"), today, extracted_data.get("fecha_precision")
+        )
+        changes["fecha"] = value.isoformat() if value else ""
     reference = extracted_data.get("reference")
     recent = await ConversationService.get_recent_items(sender_phone)
     items = recent.items if recent is not None and recent.entity == "movement" else []
@@ -1174,6 +1234,143 @@ def _record_proposal_sent(candidate_id: str | UUID) -> None:
 record_proposal_sent_sync = _record_proposal_sent
 
 
+async def _request_date_clarification(sender_phone: str, pending: dict, value: date | None) -> str:
+    pending["proposed_date"] = value.isoformat() if value else None
+    if not await ConversationService.save_pending_date(sender_phone, pending):
+        return "No pude guardar el contexto. Volvé a enviar la operación con una fecha clara."
+    if value is not None:
+        return (f"La fecha {value.strftime('%d/%m/%Y')} es futura. "
+                "¿Es correcta? Respondé sí, indicá otra fecha o escribí cancelar.")
+    if pending.get("reason") == "uncertain_association":
+        return ("La fecha mencionada podría referirse a otra acción. ¿Qué fecha corresponde "
+                "al movimiento? Indicá día/mes/año o escribí cancelar.")
+    return "No entendí la fecha. Indicame una fecha válida (día/mes/año) o escribí cancelar."
+
+
+def _explicit_per_item_dates(text: str, movements: list, tokens: list) -> bool:
+    """Accept only unique item labels followed by their own date in the input."""
+    if len(movements) != len(tokens):
+        return False
+    labels = []
+    for mov in movements:
+        label = str(mov.get("description") or "").strip()
+        if not label:
+            return False
+        matches = list(re.finditer(r"(?<!\w)" + re.escape(label) + r"(?!\w)", text, re.IGNORECASE))
+        if len(matches) != 1:
+            return False
+        labels.append(matches[0].start())
+    if labels != sorted(set(labels)):
+        return False
+    date_positions = []
+    start = 0
+    for token, _, _ in tokens:
+        found = text.find(token, start)
+        if found < 0:
+            return False
+        date_positions.append(found)
+        start = found + len(token)
+    return all(
+        labels[index] < position < (labels[index + 1] if index + 1 < len(labels) else len(text))
+        for index, position in enumerate(date_positions)
+    )
+
+
+async def _preflight_registration_dates(
+    sender_phone: str, message_id: str | None, text: str, data: dict, movements: list,
+) -> str | None:
+    today = date.fromisoformat(data.get("_date_today") or argentina_today().isoformat())
+    temporal_text = text
+    if len(movements) == 1 and not movements[0].get("_fecha_clarificada"):
+        temporal_text = movement_temporal_text(text, today)
+        if temporal_text is None:
+            return await _request_date_clarification(sender_phone, {
+                "operation": "register", "message_id": message_id, "text": text,
+                "data": {**data, "movements": movements}, "index": 0, "indices": [0], "no_year": False,
+                "reason": "uncertain_association",
+            }, None)
+    elif len(movements) > 1 and movement_temporal_text(text, today) != text:
+        return "No puedo asociar la fecha con cada movimiento. Enviá cada operación por separado."
+    tokens = numeric_dates(temporal_text, today)
+    relatives = relative_dates(temporal_text, today)
+    common_date = bool(data.get("_common_movement_date"))
+    if len(movements) > 1 and not data.get("_validated_date_mapping"):
+        separate = "No puedo asociar la fecha con cada movimiento. Enviá cada operación por separado."
+        common_prefix = (
+            r"\b(?:ambos|ambas|los dos|las dos|todos los|todas las)\s+"
+            r"(?:movimientos|gastos|ingresos|egresos)\s+"
+        )
+        if tokens and relatives:
+            return separate
+        if len(tokens) == 1 and not re.search(
+            common_prefix + r"(?:del|de fecha)\s+" + re.escape(tokens[0][0]) + r"(?!\d)",
+            text, re.IGNORECASE,
+        ):
+            return separate
+        if len(tokens) > 1 and not _explicit_per_item_dates(text, movements, tokens):
+            return separate
+        if not tokens and relatives:
+            if len(relatives) != 1 or not re.search(
+                common_prefix + r"de\s+(?:anteayer|ayer|hoy|ma[ñn]ana)\b", text, re.IGNORECASE
+            ):
+                return separate
+            common = relatives[0]
+            if any(m.get("fecha") is None or resolve_relative_date(m.get("fecha"), today) != common
+                   for m in movements):
+                return separate
+            common_date = True
+            data["_common_movement_date"] = True
+            data["_validated_date_mapping"] = True
+            for mov in movements:
+                mov["fecha"] = common.isoformat()
+                mov["_fecha_clarificada"] = True
+        elif not tokens and any(m.get("fecha") is not None for m in movements):
+            return separate
+    if len(movements) > 1 and tokens and not data.get("_validated_date_mapping"):
+        # Accept a common date, or one date per item in order, only when the
+        # provider supplied matching dates. Never guess an ambiguous association.
+        pairs = [tokens[0]] * len(movements) if len(tokens) == 1 else tokens
+        def dates_match(mov: dict, value: date | None, no_year: bool) -> bool:
+            inferred = resolve_relative_date(mov.get("fecha"), today) if mov.get("fecha") else None
+            if value is None or inferred is None:
+                return False
+            return ((inferred.month, inferred.day) == (value.month, value.day)
+                    if no_year else inferred == value)
+
+        if len(pairs) != len(movements) or any(
+            not dates_match(m, value, no_year)
+            for m, (_, value, no_year) in zip(movements, pairs)
+        ):
+            return "No puedo asociar la fecha con cada movimiento. Enviá cada operación por separado."
+        common_date = len(tokens) == 1
+        data["_common_movement_date"] = common_date
+        data["_validated_date_mapping"] = True
+        for mov, (_, value, no_year) in zip(movements, pairs):
+            mov["fecha"] = value.isoformat()
+            mov["_fecha_clarificada"] = True
+            mov["_mostrar_fecha"] = no_year
+    for index, mov in enumerate(movements):
+        if mov.get("_fecha_clarificada"):
+            value = resolve_relative_date(mov.get("fecha"), today)
+            no_year = bool(mov.get("_mostrar_fecha"))
+        else:
+            value, no_year = interpret_date(temporal_text, mov.get("fecha"), today, mov.get("fecha_precision"))
+        if value is None or (value > today and not mov.get("_fecha_confirmada")):
+            pending = {
+                "operation": "register", "message_id": message_id, "text": text,
+                "data": {**data, "movements": movements}, "index": index,
+                "indices": list(range(len(movements))) if common_date else [index],
+                "no_year": no_year,
+            }
+            return await _request_date_clarification(sender_phone, pending, value)
+        mov["fecha"] = value.isoformat()
+        mov["_fecha_clarificada"] = True
+        if no_year:
+            mov["_mostrar_fecha"] = True
+    data["movements"] = movements
+    return None
+
+
 async def _register_and_reply_with_hint(
     sender_phone: str,
     whatsapp_message_id: str | None,
@@ -1189,7 +1386,12 @@ async def _register_and_reply_with_hint(
     policy_reply = fixed_deposit_registration_reply(text_body)
     if policy_reply:
         return policy_reply
-    movements = extracted_data.get("movements") or [extracted_data]
+    movements = extracted_data.get("movements") or [dict(extracted_data)]
+    date_reply = await _preflight_registration_dates(
+        sender_phone, whatsapp_message_id, text_body, extracted_data, movements
+    )
+    if date_reply:
+        return date_reply
 
     if len(movements) == 1:
         mov = movements[0]
@@ -1222,7 +1424,7 @@ async def _register_single_with_hint(
     category_name = mov.get("category")
     llm_result = {**extracted_data, **mov}
     norm_amount = Decimal(str(llm_result.get("amount") or 0))
-    resolved_date = resolve_relative_date(mov.get("fecha"), date.today())  # noqa: DTZ011
+    resolved_date = resolve_relative_date(mov.get("fecha"), argentina_today())
     wallet_id = mov.get("wallet_id") or extracted_data.get("wallet_id")
     with track_phase("db"):
         result = await asyncio.to_thread(
@@ -1362,9 +1564,12 @@ async def _register_single_with_hint(
         "category": category_name or "sin categoría",
         "wallet_id": result.wallet_id or "",
         "wallet_name": result.wallet_name or "",
+        "fecha_mostrada": resolved_date.strftime("%d/%m/%Y") if mov.get("_mostrar_fecha") else "",
     }
 
     reply = f"✅ Registré tu {movement_type}: {description} por ${amount} {currency}."
+    if mov.get("_mostrar_fecha"):
+        reply += f" Fecha: {resolved_date.strftime('%d/%m/%Y')}."
     if category_name:
         reply += f"\n📁 Categoría: {category_name}."
     else:
@@ -1510,7 +1715,7 @@ async def _register_multiop(
                 whatsapp_message_id=item_message_id,
                 original_text=text_body,
                 llm_result=llm_result,
-                fecha_movimiento=resolve_relative_date(mov.get("fecha"), date.today()),  # noqa: DTZ011
+                fecha_movimiento=resolve_relative_date(mov.get("fecha"), argentina_today()),
             )
         print(
             "[MOVEMENT_REGISTRATION]",
@@ -1520,6 +1725,12 @@ async def _register_multiop(
         )
         results.append(result)
     reply = _multiop_registration_reply(results, extracted_data, movements)
+    if len(movements) > 1:
+        shown_dates = sorted({mov["fecha"] for mov, result in zip(movements, results)
+                              if mov.get("_mostrar_fecha") and result.status == "registered"})
+        if shown_dates:
+            formatted = ", ".join(date.fromisoformat(item).strftime("%d/%m/%Y") for item in shown_dates)
+            reply += f"\nFecha interpretada: {formatted}."
     registered_ids = [
         result.movement_id
         for result in results
@@ -2864,7 +3075,7 @@ async def _append_movement_context(
 async def _extract_message_once(ctx: _DispatchContext) -> dict:
     if ctx.llm_result_cache is not None:
         return ctx.llm_result_cache
-    context = _append_chart_context(build_user_context(ctx.sender_phone), ctx)
+    context = _append_chart_context(build_user_context(ctx.sender_phone, ctx.today), ctx)
     if references_recent_limit(ctx.text_body):
         recent_limit = await _get_last_limit_once(ctx)
         if recent_limit is not None:
@@ -3047,6 +3258,22 @@ async def _handle_pending_wallet_selection(
             "Se perdió el contexto. Volvé a registrar el movimiento.",
             service_invoked="wallet",
         )
+    if pending.resolved_fecha_movimiento is None:
+        inferred, _ = interpret_date(pending.original_text, pending.llm_result_extra.get("fecha"), ctx.today)
+        if inferred != ctx.today or numeric_dates(pending.original_text, ctx.today):
+            await ConversationService.clear_state(ctx.sender_phone)
+            return DispatchResult(
+                "Se perdió la fecha del movimiento. Volvé a enviar el pedido completo.",
+                service_invoked="wallet",
+            )
+        pending.resolved_fecha_movimiento = ctx.today
+    if (pending.resolved_fecha_movimiento > ctx.today
+            and not pending.llm_result_extra.get("_fecha_confirmada")):
+        await ConversationService.clear_state(ctx.sender_phone)
+        return DispatchResult(
+            "No tengo confirmación de esa fecha futura. Volvé a enviar el pedido completo.",
+            service_invoked="wallet",
+        )
 
     if _is_reset_request(ctx.text_body):
         return await _handle_reset_context(ctx.sender_phone)
@@ -3218,6 +3445,8 @@ async def _handle_pending_wallet_selection(
     currency = str(pending.currency).upper()
     wallet_name = result.wallet_name or chosen_opt["name"]
     reply = f"✅ Registré tu {movement_type}: {description} por ${amount} {currency} en *{wallet_name}*."
+    if pending.llm_result_extra.get("_mostrar_fecha"):
+        reply += f" Fecha: {pending.resolved_fecha_movimiento.strftime('%d/%m/%Y')}."
     if pending.inferred_category:
         reply += f"\n📁 Categoría: {pending.inferred_category}."
     reply += f"\n{_category_hint_reply()}"
@@ -3244,6 +3473,8 @@ async def _handle_pending_wallet_selection(
             "category": pending.inferred_category or "",
             "wallet_id": selected_wallet_id,
             "wallet_name": wallet_name,
+            "fecha_mostrada": (pending.resolved_fecha_movimiento.strftime("%d/%m/%Y")
+                               if pending.llm_result_extra.get("_mostrar_fecha") else ""),
         },
     )
 
@@ -4634,12 +4865,63 @@ async def _handle_educational_request(
     )
 
 
+async def _handle_pending_date(ctx: _DispatchContext) -> DispatchResult | None:
+    pending = await ConversationService.take_pending_date(ctx.sender_phone)
+    if pending is None:
+        return None
+    answer = ctx.text_body.strip().lower().strip(" .!¡?¿")
+    if _is_reset_request(ctx.text_body):
+        return await _handle_reset_context(ctx.sender_phone)
+    if answer in {"cancelar", "cancelá", "cancela", "no", "cancelalo", "cancelala"}:
+        return DispatchResult("Listo, cancelé la operación. No hice cambios.", service_invoked="conversation")
+    proposed = pending.get("proposed_date")
+    confirmed = answer in {"sí", "si", "confirmo", "sí, es correcta", "si, es correcta"}
+    value = date.fromisoformat(proposed) if confirmed and proposed else None
+    no_year = bool(pending.get("no_year"))
+    if not confirmed:
+        tokens = numeric_dates(answer, ctx.today)
+        if len(tokens) == 1 and not _is_explicit_new_request(answer):
+            _, value, no_year = tokens[0]
+        elif answer in {"ayer", "hoy", "anteayer", "antes de ayer", "mañana", "manana",
+                        "pasado mañana", "pasado manana"}:
+            value, no_year = interpret_date(answer, None, ctx.today)
+        if value and value > ctx.today:
+            pending["no_year"] = no_year
+            reply = await _request_date_clarification(ctx.sender_phone, pending, value)
+            return DispatchResult(reply, service_invoked="conversation")
+    if value is None:
+        reply = await _request_date_clarification(
+            ctx.sender_phone, pending, date.fromisoformat(proposed) if proposed else None
+        )
+        return DispatchResult(reply, service_invoked="conversation")
+    if pending["operation"] == "update":
+        data: dict = {}
+        changes = {**pending["changes"], "fecha": value.isoformat()}
+        reply = await _apply_movement_action(
+            ctx.sender_phone, "update_movement", pending["target_id"], changes,
+            data, pending["expected"], date_confirmed=True,
+        )
+        return _llm_dispatch_result(data, reply, "finance", "update_movement")
+    data = pending["data"]
+    for index in pending.get("indices", [pending["index"]]):
+        mov = data["movements"][index]
+        mov.update(fecha=value.isoformat(), _fecha_clarificada=True,
+                   _fecha_confirmada=True, _mostrar_fecha=no_year)
+    reply = await _register_and_reply_with_hint(
+        ctx.sender_phone, pending["message_id"], pending["text"], data
+    )
+    return _llm_dispatch_result(data, reply, "finance", "expense")
+
+
 async def _dispatch_after_onboarding(
     ctx: _DispatchContext,
     educational_request: EducationalRequest | None = None,
 ) -> DispatchResult:
     if educational_request is not None:
         return await _handle_educational_request(ctx.sender_phone, educational_request)
+    pending_date = await _handle_pending_date(ctx)
+    if pending_date is not None:
+        return pending_date
     pending = await _handle_pending_wallet_selection(ctx)
     if pending is not None:
         return pending
@@ -4666,9 +4948,20 @@ async def _dispatch_after_onboarding(
             },
         )
     data = await _extract_message_once(ctx)
+    bare = ctx.text_body.strip().lower()
+    tokens = numeric_dates(bare, ctx.today)
+    if ((len(tokens) == 1 and bare == tokens[0][0])
+            or (bare in {"si", "sí", "confirmo"} and data.get("intent") not in {
+                "confirm_category", "confirm_limit", "confirm_compensation",
+            })):
+        return DispatchResult(
+            "No tengo una operación pendiente para esa respuesta. Volvé a enviar el pedido completo.",
+            service_invoked="conversation",
+        )
     if data.get("intent") == "reset_context":
         return await _handle_reset_context(ctx.sender_phone)
     data = await _normalize_extracted_message(ctx, data)
+    data["_date_today"] = ctx.today.isoformat()
     return await _dispatch_intent(ctx, data)
 
 
@@ -4738,6 +5031,14 @@ async def _render_configured_event(
         variables=result.event_variables,
     )
     if configured is not None:
+        visible_date = result.event_variables.get("fecha_mostrada")
+        if visible_date and hasattr(configured, "body"):
+            suffix = f"\nFecha: {visible_date}."
+            max_length = 4096 if isinstance(configured, WhatsAppText) else 1024
+            if len(configured.body + suffix) <= max_length:
+                configured = replace(configured, body=configured.body + suffix)
+            else:
+                result.followup_messages.append(WhatsAppText(body=suffix.strip()))
         if (result.event_key == "chart.completed"
                 and isinstance(result.reply_message, WhatsAppImage)
                 and isinstance(configured, WhatsAppText)
@@ -5230,9 +5531,22 @@ async def _resume_movement_after_category(sender_phone: str) -> DispatchResult:
         if pending.resolved_fecha_movimiento is not None
         else resolve_relative_date(
             pending.llm_result_extra.get("fecha"),
-            date.today(),  # noqa: DTZ011
+            argentina_today(),
         )
     )
+    if resolved_fecha is None:
+        await ConversationService.clear_state(sender_phone)
+        return DispatchResult(
+            "Se perdió la fecha del movimiento. Volvé a enviar el pedido completo.",
+            service_invoked="conversation",
+        )
+    if (resolved_fecha > argentina_today()
+            and not pending.llm_result_extra.get("_fecha_confirmada")):
+        await ConversationService.clear_state(sender_phone)
+        return DispatchResult(
+            "No tengo confirmación de esa fecha futura. Volvé a enviar el pedido completo.",
+            service_invoked="conversation",
+        )
     with track_phase("db"):
         result = await asyncio.to_thread(
             FinanceService.register_movement_with_category,
@@ -5324,6 +5638,8 @@ async def _resume_movement_after_category(sender_phone: str) -> DispatchResult:
             "amount": pending.amount,
             "currency": pending.currency,
             "description": pending.description,
+            "fecha": resolved_fecha.isoformat() if resolved_fecha else None,
+            "_mostrar_fecha": pending.llm_result_extra.get("_mostrar_fecha"),
         },
     )
     budget_threshold_alerts = []
@@ -5347,6 +5663,8 @@ async def _resume_movement_after_category(sender_phone: str) -> DispatchResult:
             "category": pending.inferred_category,
             "wallet_id": result.wallet_id or pending.wallet_id or "",
             "wallet_name": result.wallet_name or "",
+            "fecha_mostrada": (resolved_fecha.strftime("%d/%m/%Y")
+                               if resolved_fecha and pending.llm_result_extra.get("_mostrar_fecha") else ""),
         },
     )
 

@@ -79,14 +79,22 @@ def test_last_weekday_resolves_backward():
     assert resolve_relative_date("martes", TODAY) == date(2026, 8, 18)
 
 
-def test_invalid_or_missing_returns_today():
+def test_missing_returns_today_but_invalid_is_preserved_as_invalid():
     assert resolve_relative_date(None, TODAY) == TODAY
-    assert resolve_relative_date("no-fecha", TODAY) == TODAY
-    assert resolve_relative_date("2026-13-99", TODAY) == TODAY
+    assert resolve_relative_date("no-fecha", TODAY) is None
+    assert resolve_relative_date("2026-13-99", TODAY) is None
 
 
-def test_future_beyond_tolerance_returns_today():
-    assert resolve_relative_date("2027-01-01", TODAY) == TODAY
+def test_future_is_not_silently_replaced():
+    assert resolve_relative_date("2027-01-01", TODAY) == date(2027, 1, 1)
+
+
+def test_date_correction_is_not_an_amount_correction():
+    from app.services.intent_routing import normalize_movement_action
+
+    data = {"intent": "update_movement", "reference": "last_registered",
+            "changes": {"fecha": "2026-09-16"}}
+    assert normalize_movement_action("era de 16/09/2026", data)["changes"] == data["changes"]
 
 
 @pytest.mark.asyncio
@@ -97,7 +105,7 @@ async def test_process_message_normalizes_fecha():
         "intent": "expense", "movement_type": "egreso", "amount": 100,
         "fecha": "ayer", "reply_text": "",
     })
-    assert result["movements"][0]["fecha"] == str(date.today() - timedelta(days=1))  # noqa: DTZ011
+    assert result["movements"][0]["fecha"] == "ayer"
 
 
 @pytest.mark.asyncio
