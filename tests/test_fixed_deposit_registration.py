@@ -11,6 +11,7 @@ from app.services.conversation import ConversationService, PendingMovement
 from app.services.dispatcher import _resume_movement_after_category, process_incoming_message
 from app.services.finance import FinanceService
 from app.services.llm import LLMService
+from app.services.movement_dates import argentina_today
 from app.services.onboarding import OnboardingDecision, OnboardingResult
 from app.services.wallet import WalletService
 
@@ -19,6 +20,15 @@ PLACEMENT = "Listo, ya metí 50 lucas de ese sobrante en un Plazo Fijo, anotáme
 LATER_REINVESTMENT = "Cobré 500 de intereses del plazo fijo que constituí ayer y después reinvertí 50000"
 COMMA_REINVESTMENT = "Cobré 500 de intereses del plazo fijo que constituí ayer, después reinvertí 50000"
 REINVESTMENT_FIRST = "Reinvertí 50000 y cobré 500 de intereses del plazo fijo"
+UNCERTAIN_TEMPORAL_CASES = {
+    "Cobré 500 de intereses del plazo fijo que constituí ayer",
+    "Cobré 500 de intereses del plazo fijo que constituí ayer y después renové mi seguro",
+    "Cobré 500 de intereses del plazo fijo que constituí ayer, después renové mi seguro",
+    "Cobré 500 de intereses del plazo fijo que constituí ayer. Después renové mi seguro",
+    "Cobré 500 de intereses del plazo fijo que constituí ayer. Reinvertí 50000 en mi negocio",
+    "Reinvertí 50000 en mi negocio. Cobré 500 de intereses del plazo fijo que constituí ayer",
+    "Cobré 500 de intereses del plazo fijo que el mes pasado constituí",
+}
 
 
 @pytest.fixture
@@ -246,10 +256,18 @@ async def test_current_earnings_and_costs_with_instrument_names(account, monkeyp
     }
     monkeypatch.setattr(LLMService, "_get_provider", lambda: provider)
     result = await process_incoming_message("stk254-user", text, "stk254-current")
+    if text in UNCERTAIN_TEMPORAL_CASES:
+        assert result.event_key is None and "fecha" in result.reply_text.lower()
+        rows, wallets = snapshot(account)
+        assert rows == 2 and wallets[0].balance == Decimal(95000)
+        result = await process_incoming_message("stk254-user", "hoy", "stk254-date-answer")
     assert result.event_key == "movement.registered"
     rows, wallets = snapshot(account)
     assert rows == 3
     assert wallets[0].balance == (Decimal(95500) if kind == "ingreso" else Decimal(94500))
+    with account[0]() as session:
+        registered = session.query(MovimientoFinanciero).filter_by(whatsapp_message_id="stk254-current").one()
+        assert registered.fecha_movimiento == argentina_today()
 
 
 @pytest.mark.asyncio

@@ -119,7 +119,41 @@ class FinanceService:
                  or movement.fecha_movimiento.isoformat() == expected["date"])
             and ("wallet_id" not in expected
                  or str(getattr(movement, "billetera_id", None)) == str(expected["wallet_id"]))
+            and ("movement_type" not in expected or movement.tipo == expected["movement_type"])
+            and ("category_id" not in expected
+                 or str(movement.categoria_id) == str(expected["category_id"]))
         )
+
+    @classmethod
+    def movement_snapshot(cls, sender_phone: str, movement_id: str, expected: dict | None) -> dict | None:
+        """Capture the owned active item after checking any previous selection."""
+        from uuid import UUID
+
+        try:
+            parsed_id = UUID(str(movement_id))
+        except (TypeError, ValueError):
+            return None
+        session = SessionLocal()
+        try:
+            movement = (
+                session.query(MovimientoFinanciero)
+                .join(Usuario, MovimientoFinanciero.usuario_id == Usuario.id)
+                .filter(Usuario.whatsapp_id == sender_phone)
+                .filter(MovimientoFinanciero.id == parsed_id)
+                .filter(MovimientoFinanciero.anulado_en.is_(None))
+                .first()
+            )
+            if movement is None or not cls._matches_shown(movement, expected):
+                return None
+            return {
+                "amount": str(movement.cantidad), "currency": movement.moneda,
+                "description": movement.descripcion,
+                "date": movement.fecha_movimiento.isoformat(),
+                "wallet_id": str(movement.billetera_id),
+                "category_id": str(movement.categoria_id), "movement_type": movement.tipo,
+            }
+        finally:
+            session.close()
 
     @staticmethod
     def _movement_item(movement: MovimientoFinanciero, category_name: str | None = None) -> MovementItem:

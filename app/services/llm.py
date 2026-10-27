@@ -1,7 +1,6 @@
 import json
 import os
 import re
-from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict
@@ -9,7 +8,6 @@ from typing import Any, Dict
 from app.services.llm_contract import (
     RETRY_FORMAT_INSTRUCTION,
     normalize_llm_response,
-    resolve_relative_date,
 )
 from app.services.financial_education import FinancialEducationService
 from app.services.llm_providers import LLMProvider, create_provider
@@ -243,7 +241,8 @@ class LLMService:
             "category": m.get("category"),
             "description": m.get("description") or m.get("expense"),
             "reply_text": str(m.get("reply_text") or ""),
-            "fecha": resolve_relative_date(m.get("fecha"), date.today()).isoformat(),  # noqa: DTZ011
+            "fecha": m.get("fecha", base.get("fecha")),
+            "fecha_precision": _normalize_date_precision(m.get("fecha_precision", base.get("fecha_precision"))),
         }
 
 
@@ -436,6 +435,12 @@ def _normalize_movements(cls: type, parsed: Dict[str, Any], intent: str) -> list
     return []
 
 
+def _normalize_date_precision(value: Any) -> str | None:
+    if value is None:
+        return None
+    return value if isinstance(value, str) and value in {"dia", "periodo", "ambigua", "ausente"} else "ambigua"
+
+
 def _normalize_message_response(cls: type, parsed: Dict[str, Any]) -> Dict[str, Any]:
     intent = _normalize_intent(parsed)
     return {
@@ -443,6 +448,7 @@ def _normalize_message_response(cls: type, parsed: Dict[str, Any]) -> Dict[str, 
         "reference": parsed.get("reference"),
         "selection": parsed.get("selection"),
         "changes": parsed.get("changes") if isinstance(parsed.get("changes"), dict) else {},
+        "fecha_precision": _normalize_date_precision(parsed.get("fecha_precision")),
         "expense": parsed.get("expense"),
         "amount": cls._normalize_amount(parsed.get("amount")),
         "currency": str(parsed.get("currency", "ARS")).upper() if parsed.get("currency") else "ARS",
