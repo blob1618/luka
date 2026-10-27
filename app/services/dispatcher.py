@@ -3419,8 +3419,13 @@ async def _resolve_pending_selection(
             f"{index}. {item['label']} — ${item['amount']} {item['currency']}"
             for index, item in enumerate(pending.items, 1)
         )
+        prompt = (
+            "Esa opción no es válida. Elegí una de estas opciones:"
+            if pending.entity == "movement" and _is_numeric_selection_reply(text_body)
+            else "¿Cuál querés elegir?"
+        )
         return DispatchResult(
-            f"¿Cuál querés elegir?\n{options}", service_invoked="conversation"
+            f"{prompt}\n{options}", service_invoked="conversation"
         )
     await ConversationService.clear_pending_selection(sender_phone)
     return None
