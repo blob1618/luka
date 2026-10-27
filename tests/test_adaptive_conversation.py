@@ -391,7 +391,10 @@ async def test_invalid_numeric_choice_retains_pending_and_does_not_mutate(
 
     retry = await process_incoming_message(user.whatsapp_id, invalid)
 
-    assert "elegir" in retry.reply_text.lower()
+    assert "opción no es válida" in retry.reply_text.lower()
+    assert "elegí" in retry.reply_text.lower()
+    for index, item in enumerate(pending.items, 1):
+        assert f"{index}. {item['label']} — ${item['amount']} {item['currency']}" in retry.reply_text
     assert state["pending_selection"] is pending
     session.expire_all()
     assert all(row.anulado_en is None for row in session.query(MovimientoFinanciero))
