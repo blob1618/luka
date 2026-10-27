@@ -3307,6 +3307,10 @@ def _is_selection_reply(text_body: str) -> bool:
     )
 
 
+def _is_numeric_selection_reply(text_body: str) -> bool:
+    return re.fullmatch(r"[+-]?[0-9]+(?:[.,][0-9]+)?", text_body.strip()) is not None
+
+
 def _is_explicit_new_request(text_body: str) -> bool:
     return bool(
         re.search(
@@ -3321,10 +3325,12 @@ async def _handle_pending_selection(
     sender_phone: str, text_body: str
 ) -> DispatchResult | None:
     explicit_new_request = _is_explicit_new_request(text_body)
+    numeric_reply = _is_numeric_selection_reply(text_body)
     should_load = (
         _is_selection_reply(text_body)
         or explicit_new_request
         or _extract_month_from_text(text_body) is not None
+        or numeric_reply
     )
     pending = (
         await ConversationService.get_pending_selection(sender_phone)
@@ -3332,6 +3338,8 @@ async def _handle_pending_selection(
         else None
     )
     if pending is None:
+        return None
+    if numeric_reply and pending.entity != "movement":
         return None
     return await _resolve_pending_selection(
         sender_phone, text_body, pending, explicit_new_request
@@ -3386,11 +3394,20 @@ async def _resolve_pending_selection(
     if text_body.strip().lower() in {"cancelar", "cancelalo", "ninguno", "ninguna"}:
         await ConversationService.clear_pending_selection(sender_phone)
         return DispatchResult("Listo, no hice ningún cambio.", service_invoked="conversation")
-    selected = select_items(
-        text_body,
-        pending.items,
-        allow_all=(pending.entity == "movement" and pending.intent == "delete_movement"),
-    )
+    if pending.entity == "movement" and _is_numeric_selection_reply(text_body):
+        digits = text_body.strip().lstrip("0")
+        # Bound the conversion to the candidate count, including very long inputs.
+        if digits.isascii() and digits.isdigit() and len(digits) <= len(str(len(pending.items))):
+            index = int(digits) - 1
+            selected = [pending.items[index]] if 0 <= index < len(pending.items) else []
+        else:
+            selected = []
+    else:
+        selected = select_items(
+            text_body,
+            pending.items,
+            allow_all=(pending.entity == "movement" and pending.intent == "delete_movement"),
+        )
     result = await _apply_pending_selection(sender_phone, pending, selected)
     if result is not None:
         return result
