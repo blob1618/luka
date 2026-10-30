@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 from decimal import Decimal
 import re
+import unicodedata
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from app.services.movement_policy import EconomicEffect
@@ -321,13 +322,29 @@ class StrictInput(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True)
 
 
+# Unambiguous relative days the backend can resolve even if the model mislabels
+# them as literal. The span still has to be quoted from the request.
+_RELATIVE_DAY_SPANS = {
+    'hoy': 0, 'ayer': -1, 'anteayer': -2, 'antier': -2, 'pasado manana': 2,
+}
+
+
+def _fold_span(text: str) -> str:
+    decomposed = unicodedata.normalize('NFKD', text)
+    plain = ''.join(char for char in decomposed if not unicodedata.combining(char))
+    return ' '.join(plain.casefold().split())
+
+
 class DateSpec(StrictInput):
     kind: Literal['absent', 'literal', 'relative_days', 'resolved', 'unresolved'] = Field(
-        description='literal: explicit calendar date quoted verbatim from the request; '
-        'relative_days: relative day expression; resolved: semantic date proposal; '
-        'absent: no date mentioned; unresolved: date needs clarification.')
+        description='literal: only an explicit calendar date quoted verbatim (16/09/2026 or 2026-09-16); '
+        'never use literal for hoy/ayer/anteayer or for amounts. '
+        'relative_days: relative expression with day_offset (ayer=-1, hoy=0, anteayer=-2). '
+        'resolved: semantic date proposal; absent: no date mentioned; '
+        'unresolved: date needs clarification.')
     evidence_span: str | None = Field(default=None, description=
         'Exact verbatim substring copied from the user request, preserving date format. '
+        'For "ayer" use kind relative_days with evidence_span "ayer" and day_offset -1. '
         'For request "el 16/09/2026", use "16/09/2026", never "2026-09-16". '
         'Do not normalize, translate or invent this quote; normalization is done by the backend.')
     day_offset: int | None = Field(default=None, ge=-36500, le=36500)
@@ -363,6 +380,11 @@ class DateSpec(StrictInput):
         if self.kind == 'resolved':
             return date.fromisoformat(self.proposed_iso_day)
         token = self.evidence_span
+        # A model may label an explicit relative day ("hoy", "ayer") as literal;
+        # the quoted span is deterministic, so the backend resolves it instead of failing.
+        relative = _RELATIVE_DAY_SPANS.get(_fold_span(token))
+        if relative is not None:
+            return today + timedelta(days=relative)
         occurrences = [m for m in re.finditer(re.escape(token), original)
                        if (m.start() == 0 or original[m.start()-1] not in '0123456789/-')
                        and (m.end() == len(original) or original[m.end()] not in '0123456789/-')]

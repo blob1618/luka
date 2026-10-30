@@ -201,6 +201,36 @@ estado, rechazo accionable del límite y listado al cancelar sin propuesta) y un
 También se retiraron siete scripts sueltos que la auditoría externa había dejado en la raíz
 del worktree y que rompían el lint.
 
+## Prueba en producción (30/10/2026)
+
+Con el PR #77 mergeado, el bot quedó desplegado y se probó desde WhatsApp real. Dos
+registros fallaron con «La fecha no es válida» aunque el mensaje sí traía fecha
+(«ayer gaste 6000 en uber») o no traía ninguna («gaste 2000 en uber»). El defecto se
+reprodujo con un proveedor real: el modelo envía una expresión relativa como
+`kind=literal` («hoy», «ayer»), y el contrato sólo aceptaba fechas de calendario en ese
+tipo, así que la preparación se rechazaba y el usuario quedaba en un bucle de aclaración.
+
+Correcciones:
+
+- `DateSpec.resolve` resuelve desde el texto citado los días relativos inequívocos
+  («hoy», «ayer», «anteayer», «antier», «pasado mañana») aunque lleguen como `literal`;
+  el span sigue teniendo que estar en el mensaje. Una fecha imposible o un importe citado
+  como fecha se siguen rechazando.
+- La descripción del esquema y el prompt indican `relative_days` con `day_offset` para
+  esos casos y `absent` cuando no hay fecha.
+- La pregunta de aclaración ofrece formatos («hoy», «ayer», «30/10») y el backend registra
+  `kind`, presencia de span y motivo del rechazo, sin guardar el texto del usuario.
+- El log de fallo del proveedor ahora incluye el detalle de la excepción para diagnosticar
+  el `TypeError` visto en producción.
+
+Evidencia: 7 pruebas nuevas (4 relativas parametrizadas, importe/no-date y dos de
+integración); **1329 passed, 6 skipped, 115.47 s**; Ruff y diff-check limpios. Con
+`deepseek-flash` real, «ayer», sin fecha y «hoy» quedan en preview correcto.
+
+Límite: la clave Gemini del `.env` local está revocada (`API_KEY_INVALID`), así que no se
+pudo replicar el proveedor exacto de producción; la tolerancia cubre el caso observado y
+el log de detalle permite confirmar el resto en el próximo intento.
+
 ## Riesgo y alcance de la evidencia
 
 El costo es validación/serialización y contratos/facts explícitos; a cambio las

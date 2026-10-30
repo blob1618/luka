@@ -127,6 +127,22 @@ def test_date_contract_and_money_are_strict():
     assert DateSpec(kind='literal', evidence_span='16/09').resolve('el 16/09', NOW.date()) == date(2026, 9, 16)
 
 
+@pytest.mark.parametrize('token,phrase,offset', [
+    ('hoy', 'Gasté 106 hoy', 0), ('ayer', 'Gasté 106 ayer', -1),
+    ('anteayer', 'Gasté 106 anteayer', -2), ('pasado mañana', 'Gasté 106 pasado mañana', 2),
+])
+def test_relative_day_mislabeled_as_literal_resolves_from_evidence(token, phrase, offset):
+    """Modelos reales etiquetan «ayer»/«hoy» como literal; el span textual lo resuelve."""
+    assert DateSpec(kind='literal', evidence_span=token).resolve(phrase, NOW.date()) == NOW.date() + timedelta(days=offset)
+
+
+def test_amount_or_missing_evidence_is_never_taken_as_a_date():
+    with pytest.raises(ValueError):
+        DateSpec(kind='literal', evidence_span='2000').resolve('Gasté 2000 en uber', NOW.date())
+    with pytest.raises(ValueError):
+        DateSpec(kind='literal', evidence_span='ayer').resolve('Gasté 2000 en uber', NOW.date())
+
+
 def test_complete_aggregates_use_more_than_five_and_isolate(accounts):
     factory, owner, *_ = accounts
     with factory() as db:
