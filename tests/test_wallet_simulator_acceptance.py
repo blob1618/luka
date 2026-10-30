@@ -1,271 +1,84 @@
-"""End-to-end wallet flow through the same adapter used by the Streamlit simulator."""
-
-import uuid
+"""Wallet simulation through real dispatcher, local delivery callbacks and visible history."""
 from datetime import datetime
 from decimal import Decimal
+from uuid import uuid4
 from unittest.mock import AsyncMock
-
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-from app.models.database import (
-    Base,
-    Billetera,
-    Categoria,
-    MovimientoFinanciero,
-    Usuario,
-)
-from app.services.finance import FinanceService
-from app.services.llm import LLMService
+from app.models.database import Usuario,Categoria,Billetera,MovimientoFinanciero,AssistantWriteReceipt
+from app.services import assistant_runtime,assistant_state
+from app.services.conversation import ConversationService
 from app.services.wallet import WalletService
+from app.services.finance import FinanceService
 from testing.services.webhook_mode import WebhookModeService
-
-
-@pytest.fixture()
-def isolated_wallet_db(monkeypatch):
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
-    Base.metadata.create_all(engine)
-
-    for target in (
-        "app.services.dispatcher.SessionLocal",
-        "app.services.finance.SessionLocal",
-        "app.services.wallet.SessionLocal",
-        "app.services.limit.SessionLocal",
-        "app.services.category_creation.SessionLocal",
-        "app.services.budget.SessionLocal",
-        "app.services.onboarding.SessionLocal",
-        "app.services.compensation.SessionLocal",
-        "app.services.conversation_flow.SessionLocal",
-        "app.services.reminder.SessionLocal",
-        "app.services.chart_query.SessionLocal",
-        "app.services.dashboard_link.SessionLocal",
-        "app.scheduler.SessionLocal",
-        "app.models.database.SessionLocal",
-    ):
-        monkeypatch.setattr(target, factory)
-
-    yield factory
-    engine.dispose()
-
-
-def _balances_by_name(user_id):
-    return {
-        balance.name: balance
-        for balance in WalletService.get_balances_own_user(user_id)
-    }
+from tests.test_assistant_pilot import NativeScript,present_all
+from tests.test_assistant_stage4 import initial
 
 
 @pytest.mark.asyncio
-async def test_streamlit_simulator_wallet_flow_keeps_selection_currency_and_annulment_isolated(
-    isolated_wallet_db, monkeypatch, fake_redis, capsys
-):
-    # Ensure WebhookModeService uses the isolated test FakeRedis client
-    if not hasattr(fake_redis, "ttl"):
-        async def _ttl(key: str) -> int:
-            return fake_redis._expirations.get(str(key), 86400)
-
-        fake_redis.ttl = _ttl
-
-    if not hasattr(fake_redis, "aclose"):
-        async def _aclose() -> None:
-            pass
-
-        fake_redis.aclose = _aclose
-
-    monkeypatch.setattr(
-        "testing.services.webhook_mode.redis.from_url",
-        lambda *args, **kwargs: fake_redis,
-    )
-    phone = "5491100000240"
-    user_id = uuid.uuid4()
-    foreign_phone = "5491100000241"
-    foreign_user_id = uuid.uuid4()
-
-    with isolated_wallet_db() as session:
-        user = Usuario(
-            id=user_id,
-            nombre="Usuario STK240",
-            email="stk240@example.test",
-            whatsapp_id=phone,
-        )
-        foreign_user = Usuario(
-            id=foreign_user_id,
-            nombre="Usuario ajeno",
-            email="stk240-foreign@example.test",
-            whatsapp_id=foreign_phone,
-        )
-        session.add_all([user, foreign_user])
-        session.add(Categoria(id=uuid.uuid4(), usuario_id=user_id, nombre="Comida"))
+async def test_streamlit_simulator_wallet_flow_keeps_selection_currency_and_annulment_isolated(isolated_db,monkeypatch,fake_redis,capsys):
+    import importlib
+    for name in ('compensation','chart_query','monthly_balance','conversation_flow'):
+        monkeypatch.setattr(importlib.import_module('app.services.'+name),'SessionLocal',isolated_db)
+    monkeypatch.setattr(ConversationService,'_get_client',AsyncMock(return_value=fake_redis))
+    phone,foreign_phone='5491100000240','5491100000241'
+    owner,other=uuid4(),uuid4()
+    with isolated_db() as session:
+        session.add_all([Usuario(id=owner,nombre='Simulador',email='simulator@example.invalid',whatsapp_id=phone,auth_user_id=uuid4()),Usuario(id=other,nombre='Otro',email='simulator-other@example.invalid',whatsapp_id=foreign_phone,auth_user_id=uuid4()),Categoria(usuario_id=owner,nombre='Comida')])
         session.commit()
-
-    llm_responses = [
-        {"intent": "create_wallet", "wallet_name": "Efectivo", "wallet_currency": "ARS"},
-        {"intent": "create_wallet", "wallet_name": "Mercado Pago", "wallet_currency": "ARS"},
-        {"intent": "create_wallet", "wallet_name": "Dólares", "wallet_currency": "USD"},
-        {
-            "intent": "expense",
-            "movement_type": "egreso",
-            "amount": "5400",
-            "currency": "ARS",
-            "description": "almuerzo",
-            "category": "Comida",
-        },
-        {
-            "intent": "expense",
-            "movement_type": "ingreso",
-            "amount": "375",
-            "currency": "USD",
-            "description": "trabajo freelance",
-            "category": "Comida",
-        },
-        {"intent": "list_wallets"},
-        {"intent": "delete_movement", "reference": "last_registered"},
-        {"intent": "list_wallets"},
-        {"intent": "list_wallets"},
-    ]
-    process_message = AsyncMock(side_effect=llm_responses)
-    monkeypatch.setattr(LLMService, "process_message", process_message)
-
-    simulator = WebhookModeService()
-
-    async def send(text):
-        return await simulator.send_message(
-            text=text,
-            phone=phone,
-            provider="gemini",
-            prompt_path="prompts/core_prompt.md",
-        )
-
-    created_ars = await send("Creá la billetera Efectivo en ARS")
-    created_second_ars = await send("Creá la billetera Mercado Pago en ARS")
-    created_usd = await send("Creá la billetera Dólares en USD")
-    assert "Creé la billetera *Efectivo* en ARS" in created_ars.reply_text
-    assert "Creé la billetera *Mercado Pago* en ARS" in created_second_ars.reply_text
-    assert "Creé la billetera *Dólares* en USD" in created_usd.reply_text
-
-    with isolated_wallet_db() as session:
-        # In SQLite, func.now() has 1-second resolution so sub-second creations share
-        # the same timestamp. Ensure distinct creado_en reflecting actual creation order
-        # for deterministic ordering in list_wallets (order_by creado_en.asc()).
-        wallets = {
-            wallet.nombre: wallet
-            for wallet in session.query(Billetera)
-            .filter(Billetera.usuario_id == user_id)
-            .all()
-        }
-        session.query(Billetera).filter(Billetera.id == wallets["Efectivo"].id).update(
-            {"creado_en": datetime(2026, 10, 12, 10, 0, 0)}
-        )
-        session.query(Billetera).filter(Billetera.id == wallets["Mercado Pago"].id).update(
-            {"creado_en": datetime(2026, 10, 12, 10, 0, 1)}
-        )
+    service=WebhookModeService()
+    async def send_tool(name,args,text='Pedido tipado'):
+        monkeypatch.setattr(assistant_runtime,'create_provider',lambda:NativeScript([args if callable(args) else [(name,args)],present_all]))
+        result=await service.send_message(text,phone,'gemini','prompts/core_prompt.md')
+        assert result.status=='completed' and result.error is None
+        return result
+    async def confirm(preview):
+        option=next(o for o in preview.interactions if o['title']=='Confirmar')
+        result=await service.send_message('',phone,'gemini','prompts/core_prompt.md',option_id=option['id'],reply_type=option['reply_type'],title=option['title'])
+        assert result.status=='completed' and result.error is None
+        return result
+    for name,currency in [('Efectivo','ARS'),('Mercado Pago','ARS'),('Dólares','USD')]:
+        preview=await send_tool('create_wallet',{'name':name,'currency':currency})
+        await confirm(preview)
+    with isolated_db() as session:
+        wallets={w.nombre:w for w in session.query(Billetera).filter_by(usuario_id=owner)}
+        wallets['Efectivo'].creado_en=datetime(2026,10,12,10,0,0)
+        wallets['Mercado Pago'].creado_en=datetime(2026,10,12,10,0,1)
         session.commit()
-        wallet_ids = {name: w.id for name, w in wallets.items()}
-    assert set(wallet_ids) == {"Efectivo", "Mercado Pago", "Dólares"}
-
-    ambiguous = await send("Gasté 5400 en almuerzo")
-    assert "más de una billetera en ARS" in ambiguous.reply_text
-    assert "1. Efectivo" in ambiguous.reply_text
-    assert "2. Mercado Pago" in ambiguous.reply_text
-    assert ambiguous.redis_state is not None
-    assert ambiguous.redis_state.get("step") == "awaiting_wallet_selection"
-    with isolated_wallet_db() as session:
-        assert (
-            session.query(MovimientoFinanciero)
-            .filter(MovimientoFinanciero.usuario_id == user_id)
-            .count()
-            == 0
-        )
-
-    selected = await send("2")
-    assert "Registré tu egreso" in selected.reply_text
-    assert selected.redis_state is not None
-    assert selected.redis_state.get("step") == "none"
-    assert selected.memory is not None
-    with isolated_wallet_db() as session:
-        ars_movement = (
-            session.query(MovimientoFinanciero)
-            .filter(MovimientoFinanciero.usuario_id == user_id)
-            .one()
-        )
-        assert ars_movement.billetera_id == wallet_ids["Mercado Pago"]
-        assert ars_movement.cantidad == Decimal("5400")
-        assert ars_movement.moneda == "ARS"
-
-    usd_registered = await send("Recibí 375 USD por trabajo freelance")
-    assert "Registré tu ingreso" in usd_registered.reply_text
-
-    before_annulment = await send("Mostrame mis billeteras")
-    assert "Tus billeteras:" in before_annulment.reply_text
-    assert "Efectivo:" in before_annulment.reply_text
-    assert "Mercado Pago:" in before_annulment.reply_text
-    assert "Dólares:" in before_annulment.reply_text
-    assert "ARS" in before_annulment.reply_text
-    assert "USD" in before_annulment.reply_text
-    assert "Total" not in before_annulment.reply_text
-    assert "999999" not in before_annulment.reply_text
-    assert "Privada" not in before_annulment.reply_text
-
-    balances_before = _balances_by_name(user_id)
-    assert Decimal(str(balances_before["Efectivo"].balance)) == Decimal("0")
-    assert Decimal(str(balances_before["Mercado Pago"].balance)) == Decimal("-5400")
-    assert Decimal(str(balances_before["Dólares"].balance)) == Decimal("375")
-
-    annulled = await send("Anulá el último movimiento")
-    assert "Eliminé trabajo freelance" in annulled.reply_text
-    with isolated_wallet_db() as session:
-        usd_movement = (
-            session.query(MovimientoFinanciero)
-            .filter(
-                MovimientoFinanciero.usuario_id == user_id,
-                MovimientoFinanciero.moneda == "USD",
-            )
-            .one()
-        )
-        assert usd_movement.anulado_en is not None
-
-    after_annulment = await send("Mostrame mis billeteras")
-    assert "Tus billeteras:" in after_annulment.reply_text
-    assert "Dólares:" in after_annulment.reply_text
-    assert "USD" in after_annulment.reply_text
-    assert "Total" not in after_annulment.reply_text
-
-    balances_after = _balances_by_name(user_id)
-    assert Decimal(str(balances_after["Efectivo"].balance)) == Decimal("0")
-    assert Decimal(str(balances_after["Mercado Pago"].balance)) == Decimal("-5400")
-    assert Decimal(str(balances_after["Dólares"].balance)) == Decimal("0")
-    foreign_wallet = WalletService.create_wallet(
-        user_id=foreign_user_id, name="Privada", currency="ARS"
-    )
-    foreign_movement = FinanceService.register_movement_from_whatsapp_text(
-        sender_phone=foreign_phone,
-        whatsapp_message_id="stk240-foreign-movement",
-        original_text="ingreso privado",
-        llm_result={
-            "movement_type": "ingreso",
-            "amount": "999999",
-            "currency": "ARS",
-            "description": "saldo privado",
-        },
-        wallet_id=foreign_wallet.wallet_id,
-    )
-    assert foreign_movement.status == "registered"
-
-    isolated_reply = await send("Mostrame mis billeteras")
-    assert "Tus billeteras:" in isolated_reply.reply_text
-    assert "Efectivo:" in isolated_reply.reply_text
-    assert "Dólares:" in isolated_reply.reply_text
-    assert "Privada" not in isolated_reply.reply_text
-    assert "999999" not in isolated_reply.reply_text
-    assert process_message.await_count == 9
-
-    captured = capsys.readouterr()
-    assert "[CONVERSATION_FLOW] render fallback" not in captured.out
-    assert "[CONVERSATION_FLOW] render fallback" not in captured.err
+        ids={name:row.id for name,row in wallets.items()}
+    def expense(kwargs):
+        category=next(c['ref'] for c in initial(kwargs)['categories'] if c['name']=='Comida')
+        return [('register_movement',{'economic_effect':'cash_flow','movement_type':'egreso','amount':'5400','currency':'ARS','description':'almuerzo','category_ref':category,'date_spec':{'kind':'absent'}})]
+    ambiguous=await send_tool('register_movement',expense)
+    assert 'Efectivo' in ambiguous.reply_text and 'Mercado Pago' in ambiguous.reply_text
+    with isolated_db() as session:
+        assert session.query(MovimientoFinanciero).count()==0
+    def select(kwargs):
+        context=initial(kwargs)
+        operation=context['operations'][-1]
+        ref=next(x['ref'] for x in context['selection_options'].values() if x['label']=='Mercado Pago')
+        return [('operation_amend',{'ref':operation['ref'],'expected_revision':operation['revision'],'changes':{'wallet_ref':ref}})]
+    selected=await send_tool('operation_amend',select,'Mercado Pago')
+    await confirm(selected)
+    with isolated_db() as session:
+        row=session.query(MovimientoFinanciero).one()
+        assert row.billetera_id==ids['Mercado Pago'] and row.cantidad==5400 and row.moneda=='ARS'
+    usd=await send_tool('register_movement',{'economic_effect':'cash_flow','movement_type':'ingreso','amount':'375','currency':'USD','description':'trabajo freelance','date_spec':{'kind':'absent'}})
+    await confirm(usd)
+    before=await send_tool('wallet_balances',{})
+    assert all(name in before.reply_text for name in ids) and 'Privada' not in before.reply_text
+    balances={b.name:Decimal(str(b.balance)) for b in WalletService.get_balances_own_user(owner)}
+    assert balances=={'Efectivo':Decimal(0),'Mercado Pago':Decimal(-5400),'Dólares':Decimal(375)}
+    def annul(kwargs):
+        ref=next(ref for ref,item in initial(kwargs)['references'].items() if item['kind']=='movement' and item['details']['description']=='trabajo freelance')
+        return [('annul_movements',{'movement_refs':[ref]})]
+    preview=await send_tool('annul_movements',annul)
+    await confirm(preview)
+    balances={b.name:Decimal(str(b.balance)) for b in WalletService.get_balances_own_user(owner)}
+    assert balances=={'Efectivo':Decimal(0),'Mercado Pago':Decimal(-5400),'Dólares':Decimal(0)}
+    foreign=WalletService.create_wallet(other,'Privada','ARS')
+    assert FinanceService.register_movement_with_category(foreign_phone,'foreign-fixture','Ingreso privado','ingreso',Decimal(999999),'ARS','Privado',wallet_id=foreign.wallet_id,economic_effect='cash_flow').status=='registered'
+    last=await send_tool('wallet_balances',{})
+    assert 'Privada' not in last.reply_text and '999999' not in last.reply_text
+    with isolated_db() as session:
+        assert session.query(AssistantWriteReceipt).count()==3
+    assert (await assistant_state.read(owner))['workspace']['active_operation_id'] is None

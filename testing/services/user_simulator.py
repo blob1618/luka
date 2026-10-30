@@ -3,6 +3,8 @@
 import uuid
 
 from app.models.database import (
+    AssistantWriteReceipt,
+    Billetera,
     Categoria,
     MovimientoFinanciero,
     Recordatorio,
@@ -99,7 +101,7 @@ class UserSimulator:
             session.close()
 
     def reset_user_data(self, phone: str) -> None:
-        """Delete all movements, categories, and reminders for a user. User stays."""
+        """Delete movements, receipts, categories, reminders and wallets. User stays."""
         session = self._session_factory()
         try:
             user = session.query(Usuario).filter(
@@ -108,6 +110,9 @@ class UserSimulator:
             if user is None:
                 return
 
+            session.query(AssistantWriteReceipt).filter(
+                AssistantWriteReceipt.owner_id == user.id
+            ).delete()
             session.query(MovimientoFinanciero).filter(
                 MovimientoFinanciero.usuario_id == user.id
             ).delete()
@@ -116,6 +121,9 @@ class UserSimulator:
             ).delete()
             session.query(Categoria).filter(
                 Categoria.usuario_id == user.id
+            ).delete()
+            session.query(Billetera).filter(
+                Billetera.usuario_id == user.id
             ).delete()
             session.commit()
         finally:

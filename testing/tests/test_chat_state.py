@@ -21,7 +21,7 @@ class TestExportAsJson:
                 "role": "assistant",
                 "content": "¡Hola!",
                 "debug": {
-                    "raw_json": {"intent": "greeting"},
+                    "tool_trace": {"intent": "greeting"},
                     "latency_ms": 42.0,
                 },
             },
@@ -31,7 +31,7 @@ class TestExportAsJson:
 
         assert len(parsed) == 2
         assert parsed[0]["role"] == "user"
-        assert parsed[1]["debug"]["raw_json"]["intent"] == "greeting"
+        assert parsed[1]["debug"]["tool_trace"]["intent"] == "greeting"
 
     def test_exports_empty_list(self):
         result = export_as_json([])
@@ -66,7 +66,7 @@ class TestExportAsText:
             {
                 "role": "assistant",
                 "content": "ok",
-                "debug": {"raw_json": {"intent": "greeting"}, "latency_ms": 42.0},
+                "debug": {"tool_trace": {"intent": "greeting"}, "latency_ms": 42.0},
             },
         ]
         result = export_as_text(messages)
@@ -81,7 +81,7 @@ class TestExportAsTextWithDebug:
             {
                 "role": "assistant",
                 "content": "ok",
-                "debug": {"raw_json": {"intent": "greeting"}, "latency_ms": 42.0},
+                "debug": {"tool_trace": {"intent": "greeting"}, "latency_ms": 42.0},
             },
         ]
         result = export_as_text(messages, include_debug=True)
@@ -153,7 +153,7 @@ class TestExportSessionsAsText:
             {
                 "role": "assistant",
                 "content": "ok",
-                "debug": {"raw_json": {"intent": "greeting"}, "latency_ms": 42.0},
+                "debug": {"tool_trace": {"intent": "greeting"}, "latency_ms": 42.0},
             }
         )
 

@@ -43,6 +43,8 @@ def get_available_prompts(testing_dir: str = "testing") -> list[str]:
     repo_prompts_dir = Path(testing_dir).parent / "prompts"
     if repo_prompts_dir.exists():
         for p in sorted(repo_prompts_dir.glob("*.md")):
+            if p.name == "financial_reply_prompt.md":
+                continue
             rel = f"prompts/{p.name}"
             if rel not in prompts:
                 prompts.append(rel)
@@ -203,7 +205,7 @@ def render_sidebar() -> TestingConfig:
                 st.session_state["reset_db_requested"] = True
 
         st.subheader("Debug")
-        config.debug_json = st.checkbox("JSON crudo LLM", value=config.debug_json, key="debug_json")
+        config.debug_json = st.checkbox("Tools y resultados", value=config.debug_json, key="debug_json")
         config.debug_latency = st.checkbox("Latencia", value=config.debug_latency, key="debug_latency")
         config.debug_redis = st.checkbox("Estado Redis", value=config.debug_redis, key="debug_redis")
         config.debug_logs = st.checkbox("Logs dispatcher", value=config.debug_logs, key="debug_logs")

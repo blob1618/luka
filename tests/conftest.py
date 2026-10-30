@@ -144,6 +144,12 @@ class FakeRedis:
         self._expirations[key_str] = int(seconds)
         return True
 
+    async def ttl(self, key: str) -> int:
+        """Report configured TTL; this fake does not simulate elapsed real time."""
+        if str(key) not in self._storage and str(key) not in self._lists:
+            return -2
+        return self._expirations.get(str(key), -1)
+
     @staticmethod
     def _bounds(length: int, start: int, stop: int) -> tuple[int, int]:
         if start < 0:
@@ -234,9 +240,12 @@ def isolated_db(monkeypatch):
     factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
     Base.metadata.create_all(engine)
     for target in (
-        "app.services.dispatcher.SessionLocal",
+        "app.services.assistant_capabilities.movement_effects.SessionLocal",
+        "app.services.onboarding.SessionLocal",
         "app.services.finance.SessionLocal",
         "app.services.wallet.SessionLocal",
+        "app.services.reminder.SessionLocal",
+        "app.services.recurring_expense.SessionLocal",
         "app.services.limit.SessionLocal",
         "app.services.category_creation.SessionLocal",
         "app.services.budget.SessionLocal",

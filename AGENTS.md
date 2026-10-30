@@ -5,7 +5,7 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 ## Arquitectura y stack
 
 - **Framework**: FastAPI (async). Python 3.11.
-- **LLM**: fachada en `app/services/llm.py` -> `app/services/llm_providers/` (implementaciones `gemini` y `mistral`, selección por env `LLM_PROVIDER`, default `gemini`). El prompt de clasificación de producción es `prompts/core_prompt.md`; `prompt.md` es legacy y solo se usa si el anterior falta. La redacción de respuestas financieras usa `prompts/financial_reply_prompt.md`. El contrato de la respuesta normalizada vive en esos prompts, no en código.
+- **LLM**: agente de herramientas nativas en `assistant_runtime.py` y catálogo en `assistant_catalog.py`; providers `gemini`, `mistral` y `deepseek` seleccionados por `LLM_PROVIDER`. El prompt breve es `prompts/core_prompt.md` (`prompt.md` es respaldo del loader). Contratos de argumentos/resultados en módulos de capacidad; redacción financiera protegida en `llm.py` con `prompts/financial_reply_prompt.md`. No hay clasificador de intents ni normalizador alternativo.
 - **Mensajería**: Meta WhatsApp Business API.
 - **Base de datos**: SQLAlchemy (SQLite local, PostgreSQL/Supabase en producción).
 - **Estado de conversación y caché**: Redis (`app/services/conversation.py`).
@@ -21,10 +21,10 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 - `app/services/finance.py`: validación y persistencia de movimientos y categorías.
 - `app/services/onboarding.py`: alta/vinculación de usuarios e invitaciones.
 - `app/services/reminder.py`: recordatorios (CRUD, título único, multi-turno).
-- `app/services/conversation.py`: estado multi-turno en Redis (confirmación de categoría, recordatorio pendiente, rename).
+- `app/services/assistant_state.py`, `assistant_operations.py` y `assistant_context.py`: workspace de operaciones y referencias con dueño, conversación, revisión y expiración. `conversation.py` conserva cliente Redis, historial visible postenvío y navegación del editor.
 - `app/models/database.py`: engine, sesión y todos los modelos SQLAlchemy (un solo archivo).
 - `app/scheduler.py`: jobs en background cada 5 min: recordatorios de pago y recordatorio proactivo diario (a la hora `PROACTIVE_PROMPT_HOUR`, solo dentro de la ventana de 24h, a usuarios con `proactivo_habilitado` que no registraron movimientos hoy; máximo uno por día).
-- `testing/`: entorno de testing aislado. App Streamlit (`testing/streamlit_app.py`) que simula el flujo de WhatsApp de Luka contra el mismo backend, con sidebar de configuración (provider/modelo LLM, simular usuario registrado, phone, nombre), paneles de debug (JSON del LLM, latencia, estado Redis, logs del dispatcher), simulador de usuario y reset de DB. Usa una DB SQLite aislada (`sqlite:///./testing_luka.db`). Solo se levanta con Docker/Podman (`testing/docker-compose.yml` + `testing/Dockerfile`, servicios `streamlit` en `:8501` y `redis` en `:6380`); tiene sus propios tests en `testing/tests/` y sus dependencias en `testing/requirements.txt`. Logos en `testing/public/`.
+- `testing/`: entorno de testing aislado. App Streamlit (`testing/streamlit_app.py`) que usa el mismo dispatcher y wrappers de entrega que el webhook, con IDs únicos y entrega sintética explícita, con sidebar de configuración (provider/modelo LLM, simular usuario registrado, phone, nombre), paneles de debug (tools y resultados, latencia, estado Redis, logs del dispatcher), simulador de usuario y reset de DB. Usa una DB SQLite aislada (`sqlite:///./testing_luka.db`). Solo se levanta con Docker/Podman (`testing/docker-compose.yml` + `testing/Dockerfile`, servicios `streamlit` en `:8501` y `redis` en `:6380`); tiene sus propios tests en `testing/tests/` y sus dependencias en `testing/requirements.txt`. Logos en `testing/public/`.
 
 ## Guías de ingeniería
 
@@ -41,29 +41,30 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 
 ### Invariantes del registro por texto
 
-- Flujo: WhatsApp webhook -> `LLMService` -> `FinanceService` -> `public.movimientos_financieros` -> respuesta.
-- `intent="expense"` se conserva por compatibilidad; `movement_type` define `ingreso`/`egreso`.
-- Confirmar el registro solo tras una persistencia exitosa; nunca confiar en `reply_text` del LLM.
-- Requiere usuario previamente registrado y vinculado por `whatsapp_id`; el registro por texto no crea usuarios.
-- `categoria_id` solo si existe una categoría activa del usuario; si no, queda `null`. No crear categorías automáticamente.
-- No persistir como movimientos los intents `greeting`, `out_of_scope`, `reminder`, `budget_query`, `expense_summary`.
-- No asumir que una migración versionada o el snapshot local prueban el estado aplicado en Supabase; comprobar el historial con `supabase migration list` y verificar los objetos afectados en remoto.
+- Flujo único: webhook → wrapper de idempotencia/entrega → dispatcher → runtime de tools → operación de dominio. Onboarding precede al agente; no hay flags por teléfono ni fallback a clasificación.
+- El backend fija identidad/reloj y calcula datos; el modelo sólo aporta argumentos tipados y referencias opacas. No aceptar UUIDs canónicos ni una herramienta de commit del modelo.
+- Toda mutación requiere propuesta completa entregada y confirmación posterior ligada a operación/revisión/hash. Una lectura suspende el borrador e invalida el sí/botón anterior; retomar vuelve a validar y presentar.
+- `economic_effect` es explícito: `cash_flow` permite ingreso/gasto real; principal, colocación e inversión existente se rechazan. Indeterminación pide aclarar, sin default silencioso ni regex de intención.
+- Usuario vinculado por `whatsapp_id`; registrar no crea usuarios. Categoría activa propia o null; crearla es operación hija confirmada y el padre requiere confirmación separada.
+- Mutación financiera y receipt se guardan atómicamente; lote tiene IDs estables por item. Replay no duplica feedback. Los otros dominios conservan las garantías concretas de sus servicios.
+- El único historial visible se escribe después del envío exitoso. Texto, botones y listas del simulador usan esa misma entrada con entrega sintética identificada.
+- Migraciones/modelos locales no prueban el estado aplicado en producción; verificarlo sólo dentro de una tarea/autorización específica.
 
-### Respuestas financieras en dos llamadas
+### Redacción financiera protegida
 
-- Clasificación y redacción son dos llamadas separadas al proveedor. La primera usa `prompts/core_prompt.md` y produce el JSON de intent; la segunda usa `prompts/financial_reply_prompt.md` y produce solo `{"reply_text": "..."}`.
+- El agente selecciona herramientas nativas con `prompts/core_prompt.md`. Patrimonio/cotizaciones calculan facts de backend y pueden usar `prompts/financial_reply_prompt.md` para su redacción; no se presupone un número fijo de llamadas.
 - `render_financial_reply` recibe `kind` (`net_worth` o `usd_quotes`), una lista de facts `{key, label, value}` y los `quote_types` pedidos.
 - Reglas del prompt (`prompts/financial_reply_prompt.md`): usar cada `key` una sola vez como `{{KEY}}`, no escribir cifras, fechas ni valores literales fuera de los tokens, no inventar datos, no mencionar tipos ausentes de `quote_types`, máximo 12 líneas (se pueden agrupar varios facts en una línea) y sin tablas. Para `net_worth` el prompt pide no mostrar compra, venta, fuente, hora de consulta ni hora de actualización.
 - Validación en runtime (`_violates_financial_reply_contract` en `app/services/llm.py`): cada `{{KEY}}` debe existir en los facts y aparecer una sola vez, cada línea con placeholder debe empezar con `• `, no se aceptan llaves sueltas ni dígitos fuera de los placeholders, y no se aceptan nombres de tipos no pedidos. Para `net_worth` rechaza el texto que mencione `compra`, `venta`, `DolarAPI`, `consultad[oa]s?` o `actualizad[oa]s?`.
 - Si la salida viola el contrato se reintenta una vez; ante cualquier fallo devuelve una lista determinística con los mismos facts. Los valores nunca se toman del texto generado.
-- La redacción no cambia `raw_llm_response`: ese campo conserva el JSON del clasificador. Solo se reemplaza `reply_text`.
+- El runtime presenta facts obligatorios incluso si el modelo no copia sus refs. Debug expone tools/outcomes y métricas, sin depender de un JSON de clasificación.
 
 ## Gotchas específicos
 
-- **Redis es opcional en local pero obligatorio para multi-turno**: `ConversationService` crea su propio cliente (separado del `redis_client` global de `main.py`) y ante fallo logs y devuelve estado vacío (degradación silenciosa). Los flujos multi-turno (confirmación de categoría, creación de recordatorio en pasos, rename por título duplicado) dependen de Redis.
+- **Redis es obligatorio para preparar/confirmar cambios**: el workspace usa claim por dueño y falla sin autorizar escrituras si no hay estado fiable. Lecturas explícitas pueden funcionar sin memoria; historial/navigation tienen su propia degradación. No fingir entrega para habilitar una confirmación.
 - **Scheduler debe correr una sola vez, no por worker**: el `Dockerfile` usa `gunicorn -w 1 -k uvicorn.workers.UvicornWorker` a propósito. No agregar workers extras.
 - **`load_dotenv()` va ANTES de importar submódulos en `main.py`**; mantener ese orden si se tocan imports de `app.`.
-- En `main.py` hay dos ramas de dispatcher (con hint de categoría y el flujo legacy) que pueden superponerse; al tocar el webhook revisar que el `intent` no se procese dos veces.
+- Texto y respuestas interactivas atraviesan wrappers comunes y las dos APIs del dispatcher. El callback acredita la propuesta completa después del envío exitoso; un followup distinto no acredita una propuesta recurrente. No añadir rutas paralelas de comandos al simulador.
 - **Streamlit NO está en el `requirements.txt` raíz**: solo vive en `testing/requirements.txt` (que incluye `-r ../requirements.txt` + streamlit). El entorno de testing se levanta únicamente con Docker/Podman; no correr `streamlit run` local con pip.
 - **Hot reload en testing**: `testing/docker-compose.yml` setea `PYTHONPATH=/app` y `.streamlit/config.toml` de la raíz setea `fileWatcherType="poll"` + `runOnSave=true`; guardar un módulo importado en `app/` o `testing/` rerunea el simulador solo (~1-3 s, sin reiniciar el contenedor, conserva la sesión); el rebuild queda solo para cambios de dependencias o del `testing/Dockerfile`, y `.env` o las opciones `[server]` del config requieren recrear el contenedor. Motivo del poll: inotify no cruza el bind mount Windows→VM.
 - **`testing/streamlit_app.py` hardcodea `DATABASE_URL=sqlite:///./testing_luka.db`** (sobreescribe el `.env`). Es una DB SQLite aislada del entorno productivo (el compose la setea de nuevo en `environment`).

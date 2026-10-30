@@ -14,11 +14,6 @@ from typing import Any
 _GLOSSARY_PATH = (
     Path(__file__).resolve().parent.parent.parent / "prompts" / "financial_glossary.v1.json"
 )
-_CONCEPTUAL_MARKERS = re.compile(
-    r"\b(?:que es|que significa|como funciona|explicame|explica|defini|definicion|"
-    r"diferencia entre|para que sirve|que quiere decir|como se calcula|tasa actual|"
-    r"valor actual|cotizacion actual)\b"
-)
 _CURRENT_INFORMATION_MARKERS = re.compile(
     r"\b(?:tasa|valor|cotizacion|indice|inflacion)\s+(?:actual|de hoy|vigente)\b"
 )
@@ -103,21 +98,6 @@ def load_glossary() -> FinancialGlossary:
 class FinancialEducationService:
     """Resolve conceptual questions without accessing financial persistence services."""
 
-    @staticmethod
-    def is_conceptual_query(text: str) -> bool:
-        normalized = _normalize(text)
-        if not normalized:
-            return False
-
-        if _CONCEPTUAL_MARKERS.search(normalized):
-            return True
-
-        # Search-style queries such as "interés compuesto" are educational,
-        # but commands that merely mention a term (for example, "compensá mi
-        # presupuesto") must continue through the normal intent dispatcher.
-        return normalized == "interes" or any(
-            normalized in entry.aliases for entry in load_glossary().entries
-        )
 
     @staticmethod
     def answer(text: str, *, requested_term: str | None = None) -> FinancialEducationReply:

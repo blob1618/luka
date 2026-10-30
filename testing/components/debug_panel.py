@@ -10,9 +10,12 @@ def format_debug_for_export(debug_data: dict) -> dict:
     Ensures all fields are serializable. Missing fields become None.
     """
     return {
-        "raw_json": debug_data.get("raw_json"),
+        "tool_trace": debug_data.get("tool_trace"),
         "latency_ms": debug_data.get("latency_ms"),
         "service_log": debug_data.get("service_log"),
+        "metrics": debug_data.get("metrics"),
+        "delivery": debug_data.get("delivery"),
+        "message_id": debug_data.get("message_id"),
         "redis_state": debug_data.get("redis_state"),
         "provider": debug_data.get("provider"),
         "prompt_used": debug_data.get("prompt_used"),
@@ -38,9 +41,9 @@ def render_debug(debug_data: dict, flags: dict) -> None:
         return
 
     with st.expander("🔍 Debug", expanded=False):
-        if flags.get("json") and debug_data.get("raw_json") is not None:
-            st.subheader("JSON crudo LLM")
-            st.json(debug_data["raw_json"])
+        if flags.get("json") and debug_data.get("tool_trace") is not None:
+            st.subheader("Tools y resultados")
+            st.json(debug_data["tool_trace"])
 
         if flags.get("latency") and debug_data.get("latency_ms") is not None:
             st.metric("Latencia", f"{debug_data['latency_ms']:.0f}ms")

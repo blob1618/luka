@@ -192,12 +192,27 @@ async def process_inbound_message_once(
             if send_result is False:
                 raise RuntimeError("WhatsApp reply could not be sent")
 
+        # A ready draft only becomes confirmable after its complete primary preview
+        # was sent. Buttons may be a followup; the visible text also accepts 'sí'.
+        delivery = getattr(result, 'assistant_preview_delivery', None)
+        if delivery is not None and send_succeeded:
+            from app.services.assistant_runtime import record_preview_delivered
+            try:
+                await record_preview_delivered(sender_phone, delivery)
+            except Exception as exc:
+                # The preview was visible but remains unconfirmable. Preserve the
+                # visible history and expose this recoverable failure for diagnosis;
+                # the next resume creates a fresh preview/delivery attempt.
+                logger.warning('[ASSISTANT_PREVIEW_DELIVERY_UNRECORDED] message_id=%s error=%s',
+                               whatsapp_message_id, type(exc).__name__)
+                getattr(result, 'debug_info', {})['assistant_preview_delivery_error'] = type(exc).__name__
+
         # Telemetría de propuesta de candidato recurrente enviada en el mensaje principal
         cand_id = getattr(result, "proposal_candidate_id", None)
         delivery_mode = getattr(result, "proposal_delivery_mode", None)
         if cand_id and delivery_mode == "primary" and send_succeeded:
-            from app.services.dispatcher import record_proposal_sent_sync
-            await asyncio.to_thread(record_proposal_sent_sync, cand_id)
+            from app.services.recurring_expense import record_proposal_sent
+            await asyncio.to_thread(record_proposal_sent, cand_id)
 
         # Enviar mensajes follow-up (p.ej. propuesta interactiva cuando la respuesta principal ya era interactiva)
         followup_messages = getattr(result, "followup_messages", None) or []
@@ -211,9 +226,10 @@ async def process_inbound_message_once(
                     followup_sent = await send_message(sender_phone, followup)
                 if followup_sent:
                     sent_followups.append(followup)
-                    if cand_id and delivery_mode == "followup":
-                        from app.services.dispatcher import record_proposal_sent_sync
-                        await asyncio.to_thread(record_proposal_sent_sync, cand_id)
+                    if (cand_id and delivery_mode == "followup"
+                            and followup is getattr(result, 'proposal_followup_message', None)):
+                        from app.services.recurring_expense import record_proposal_sent
+                        await asyncio.to_thread(record_proposal_sent, cand_id)
                 else:
                     logger.warning(
                         "[FOLLOWUP_SEND_FAILED] message_id=%s followup_index=%d",

@@ -7,7 +7,7 @@ from testing.components.debug_panel import format_debug_for_export
 class TestFormatDebugForExport:
     def test_includes_all_fields(self):
         debug_data = {
-            "raw_json": {"intent": "expense", "amount": 5000},
+            "tool_trace": {"intent": "expense", "amount": 5000},
             "latency_ms": 342.5,
             "service_log": "FinanceService.register_movement_with_category",
             "redis_state": {"step": "none"},
@@ -18,7 +18,7 @@ class TestFormatDebugForExport:
         }
         exported = format_debug_for_export(debug_data)
 
-        assert exported["raw_json"]["intent"] == "expense"
+        assert exported["tool_trace"]["intent"] == "expense"
         assert exported["latency_ms"] == 342.5
         assert exported["service_log"] == "FinanceService.register_movement_with_category"
         assert exported["redis_state"]["step"] == "none"
@@ -31,7 +31,7 @@ class TestFormatDebugForExport:
         exported = format_debug_for_export(debug_data)
 
         assert exported["latency_ms"] == 100.0
-        assert exported.get("raw_json") is None
+        assert exported.get("tool_trace") is None
         assert exported.get("redis_state") is None
         assert exported.get("memory") is None
         assert exported.get("memory_ttl_seconds") is None
@@ -42,10 +42,10 @@ class TestFormatDebugForExport:
 
     def test_handles_none_values(self):
         debug_data = {
-            "raw_json": None,
+            "tool_trace": None,
             "latency_ms": 0.0,
             "service_log": None,
             "redis_state": None,
         }
         exported = format_debug_for_export(debug_data)
-        assert exported["raw_json"] is None
+        assert exported["tool_trace"] is None

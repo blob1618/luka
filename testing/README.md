@@ -24,12 +24,12 @@ El entorno vive dentro de `testing/` y se levanta únicamente con Docker o Podma
   - Vincular o desvincular la sesión activa (checkbox "Vinculado"): al vincular se crea el usuario de test en la base y al desvincular se borran sus datos (via `UserSimulator`).
   - Eliminar la sesión activa (solo si hay más de una); no borra el usuario de la base.
 - Modos de debug, activables por checkboxes, visibles en un panel desplegable por mensaje:
-  - JSON crudo de la respuesta del LLM.
+  - Herramientas y resultados tipados del runtime (`tool_trace`), sin JSON de intents.
   - Latencia de procesamiento en milisegundos.
   - Estado de Redis (estado multi-turno de la conversación).
   - Memoria conversacional: últimos turnos guardados en Redis y su TTL.
   - Servicio invocado / logs del dispatcher.
-- Reset de base de datos: borra movimientos, categorías y recordatorios del usuario de la sesión activa (el usuario se conserva).
+- Reset de base de datos: borra movimientos, recibos, categorías, recordatorios y billeteras del usuario de la sesión activa, y purga su workspace e historial de Redis (el usuario se conserva). Así una corrida nueva no arranca con billeteras duplicadas ni con borradores acumulados.
 - Exportar la conversación de la sesión activa como JSON o texto plano, y copiarla al portapapeles con o sin datos de debug. También se pueden exportar todas las sesiones (JSON y texto, más copiar con debug) para comparar el aislamiento de la memoria Redis entre números.
 - Base de datos SQLite aislada en un volumen del entorno (`testing_data`): no toca la base local (`luka.db`) ni Supabase.
 
@@ -127,7 +127,8 @@ Si Redis no responde, el test se saltea con `pytest.skip` en lugar de fallar.
 - Hot reload: el compose monta todo el repositorio en `/app` (bind mount) y setea `PYTHONPATH=/app`; el config de proyecto `.streamlit/config.toml` de la raíz usa `fileWatcherType = "poll"` y `runOnSave = true` (polling porque los eventos inotify no cruzan el bind mount Windows→VM de Podman). Guardar un módulo ya importado bajo `app/` o `testing/` rerunea la app en ejecución en ~1-3 s y reimporta el código nuevo, sin reiniciar ni reconstruir: se conservan la sesión de chat (`st.session_state`), la DB SQLite y Redis. Los archivos nuevos bajo `app/` también disparan (namespace package: se vigila el directorio); en `testing/`, un archivo nuevo entra cuando un módulo existente lo importa. Guardar mientras se procesa un mensaje puede cortar esa respuesta. El rerun necesita una pestaña conectada: si guardás con el navegador cerrado, la próxima sesión puede arrancar con módulos viejos hasta el siguiente guardado. Los prompts (`prompts/*.md`) se releen en cada mensaje, así que no necesitan reload. Reconstruir la imagen solo hace falta si cambian dependencias (`requirements*.txt`) o el `testing/Dockerfile`. El `.streamlit/config.toml` que antes vivía en `testing/.streamlit/` se movió a la raíz del repo porque el CWD del contenedor es `/app` y Streamlit busca `$CWD/.streamlit/config.toml` (la copia vieja nunca se leía). El `COPY . /app/` del Dockerfile queda cubierto por el bind mount en runtime.
 - Configuración e infraestructura: `.env` se carga al iniciar el proceso y el compose lo aplica al crear el contenedor, y Streamlit pide reiniciar para aplicar cambios en `[server]` de `.streamlit/config.toml`; para cualquiera de los dos hay que recrear el contenedor (`down` + `up -d`), no alcanza con guardar. Las opciones de `[theme]` se aplican en sesiones nuevas.
 - Redis: el compose levanta `redis:7-alpine` y lo expone en el host como `localhost:6380` (mapea al puerto interno 6379). El estado multi-turno de la conversación (confirmación de categoría, recordatorios en pasos, etc.) vive ahí y se puede inspeccionar desde el panel de debug.
-- Mismo código de backend: la app importa `app/*` directamente. `WebhookModeService` ejecuta `process_incoming_message` del dispatcher con el teléfono simulado, sin HTTP y sin enviar mensajes a la API de WhatsApp; la confirmación de un registro ocurre recién después de la persistencia en base, igual que en producción.
+- Mismo código de backend: `WebhookModeService` usa las entradas textual/interactiva del dispatcher a través de los wrappers reales de idempotencia, historial y callback de preview. Genera IDs únicos; sólo tras entrega local sintética exitosa acredita la propuesta. No hay HTTP a Meta ni un segundo intérprete de comandos. El resultado identifica esa limitación de transporte.
+- Botones/listas de confirmación y editor pueden accionarse en el chat: vuelven por la entrada interactiva común y conservan binding/revisión. URLs e imágenes conservan sus presentaciones. Una consulta interrumpe sin borrar un borrador y un botón viejo no confirma una revisión nueva.
 - Provider y prompt en caliente: cambiar provider o archivo de prompt en la sidebar resetea el `LLMService` y aplica el nuevo modelo/prompt en el siguiente mensaje.
 - Previsualización de gráficos: cuando el dispatcher devuelve un `WhatsAppImage`, el chat
   muestra el PNG en memoria debajo del mensaje. Es una simulación visual: no carga medios
@@ -136,4 +137,4 @@ Si Redis no responde, el test se saltea con `pytest.skip` en lugar de fallar.
   personal al dashboard), el chat renderiza el botón con `st.link_button` debajo del texto.
   Es una simulación visual: abrir el enlace no consume el token y no se envía nada a Meta. La URL
   sí queda en las exportaciones de chat.
-- El entorno de testing tiene sus propios tests en `testing/tests/`. Están fuera de la suite por defecto (el `pytest.ini` de la raíz solo incluye `tests/`) y se corren dentro del entorno Docker, donde está instalado Streamlit: `python -m pytest -v testing/tests`.
+- Sus tests están en `testing/tests/`. El runner aislado local `.codex/dev.py` incluye `tests` y `testing/tests`; simula la importación de Streamlit cuando no está instalado, sin levantar servidor. Las seis pruebas que requieren Redis real se omiten en ese modo offline. Fuera de ese runner, `pytest.ini` conserva `tests/` como testpath y el entorno Docker permite ejecutar explícitamente `testing/tests`.

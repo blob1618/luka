@@ -8,6 +8,10 @@ from fastapi.testclient import TestClient
 from app.main import _process_inbound_message_background, app
 from app.services.webhook_idempotency import IdempotencyUnavailable, InboundMessageClaim
 
+from tests.test_assistant_stage5 import accounts as _accounts_fixture, ingress as _ingress_fixture
+accounts=_accounts_fixture
+ingress=_ingress_fixture
+
 pytestmark = pytest.mark.unit
 
 client = TestClient(app)
@@ -15,20 +19,6 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def no_pending_conversation_flows(monkeypatch):
-    for method in (
-        "is_awaiting_rename",
-        "is_awaiting_reminder_data",
-        "is_awaiting_limit_year_confirmation",
-        "is_awaiting_limit_category_confirmation",
-        "is_awaiting_limit_data",
-        "is_awaiting_limit_delete_category",
-        "is_awaiting_limit_month_selection",
-        "is_awaiting_compensation_confirmation",
-    ):
-        monkeypatch.setattr(
-            f"app.services.dispatcher.ConversationService.{method}",
-            AsyncMock(return_value=False),
-        )
     claim = InboundMessageClaim("wamid.test", "whatsapp:inbound:test", "token")
     monkeypatch.setattr(
         "app.services.webhook_idempotency.WebhookIdempotencyService.claim",
@@ -563,88 +553,67 @@ class TestProcessInboundMessageBackground:
             assert task not in _pending_typing_tasks
 
     @pytest.mark.asyncio
-    async def test_telemetry_records_all_pipeline_phases_end_to_end(self, caplog, monkeypatch):
-        import asyncio
-        caplog.set_level(logging.INFO, logger="luka.metrics")
-        msg = make_text_message(body="Gaste 5000 en supermercado", msg_id="wamid.full.pipeline")
+    async def test_telemetry_records_all_pipeline_phases_end_to_end(self, caplog, monkeypatch, accounts, ingress):
+            from tests.test_assistant_pilot import NativeScript,PHONE
+            from app.services import assistant_runtime
+            monkeypatch.setattr(assistant_runtime,'create_provider',lambda:NativeScript([[('conversation_reply',{'kind':'greeting'})]]))
+            import asyncio
+            caplog.set_level(logging.INFO, logger="luka.metrics")
+            msg = make_text_message(body="Gaste 5000 en supermercado", msg_id="wamid.full.pipeline")
+            msg["from"] = PHONE
 
-        # Mock Redis client
-        fake_redis = AsyncMock()
-        fake_redis.set = AsyncMock(return_value=True)
-        fake_redis.eval = AsyncMock(return_value=1)
-        fake_redis.lrange = AsyncMock(return_value=[])
-        fake_redis.rpush = AsyncMock(return_value=1)
-        fake_redis.ltrim = AsyncMock(return_value=True)
-        fake_redis.expire = AsyncMock(return_value=True)
+            # Mock Redis client
+            fake_redis = AsyncMock()
+            fake_redis.set = AsyncMock(return_value=True)
+            fake_redis.eval = AsyncMock(return_value=1)
+            fake_redis.lrange = AsyncMock(return_value=[])
+            fake_redis.rpush = AsyncMock(return_value=1)
+            fake_redis.ltrim = AsyncMock(return_value=True)
+            fake_redis.expire = AsyncMock(return_value=True)
 
-        from app.services.onboarding import OnboardingDecision, OnboardingResult
-        from app.services.finance import MovementRegistrationResult
+            from app.services.onboarding import OnboardingDecision, OnboardingResult
 
-        monkeypatch.setattr(
-            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-            Mock(return_value=OnboardingResult(OnboardingDecision.KNOWN_USER)),
-        )
-        monkeypatch.setattr(
-            "app.services.dispatcher._update_ultimo_mensaje",
-            Mock(),
-        )
-        monkeypatch.setattr(
-            "app.services.dispatcher.LLMService.process_message",
-            AsyncMock(return_value={
-                "intent": "expense",
-                "movement_type": "egreso",
-                "amount": 5000,
-                "currency": "ARS",
-                "description": "supermercado",
-                "category": "Comida",
-                "reply_text": "Registrado!",
-            }),
-        )
-        monkeypatch.setattr(
-            "app.services.dispatcher.FinanceService.register_movement_with_category",
-            Mock(return_value=MovementRegistrationResult(
-                status="registered",
-                message="Registrado",
-                movement_id="mov-123",
-            )),
-        )
+            monkeypatch.setattr(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                Mock(return_value=OnboardingResult(OnboardingDecision.KNOWN_USER)),
+            )
 
-        with (
-            patch("app.api.whatsapp.send_whatsapp_reaction") as mock_react,
-            patch(
-                "app.main.send_whatsapp_typing_indicator",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
-            patch("app.main.send_whatsapp_message", new_callable=AsyncMock, return_value=True) as mock_send,
-        ):
-            await _process_inbound_message_background(msg, fake_redis)
-            await asyncio.sleep(0)
+            with (
+                patch("app.api.whatsapp.send_whatsapp_reaction") as mock_react,
+                patch(
+                    "app.main.send_whatsapp_typing_indicator",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ),
+                patch("app.main.send_whatsapp_message", new_callable=AsyncMock, return_value=True) as mock_send,
+            ):
+                await _process_inbound_message_background(msg, fake_redis)
+                await asyncio.sleep(0)
 
-        mock_react.assert_not_called()
-        mock_send.assert_awaited_once()
+            mock_react.assert_not_called()
+            mock_send.assert_awaited_once()
 
-        # Verify all phases were recorded
-        metrics_records = [r for r in caplog.records if r.name == "luka.metrics"]
-        assert len(metrics_records) == 1
-        record = metrics_records[0].message
-        assert "[METRICS]" in record
-        assert "message_id=wamid.full.pipeline" in record
-        assert "status=completed" in record
-        assert "total_ms=" in record
-        assert "typing_ms=" in record
-        assert "reaction_ms=" not in record
-        assert "redis_ms=" in record
-        assert "llm_ms=" in record
-        assert "db_ms=" in record
-        assert "reply_ms=" in record
+            # Verify all phases were recorded
+            metrics_records = [r for r in caplog.records if r.name == "luka.metrics"]
+            assert len(metrics_records) == 1
+            record = metrics_records[0].message
+            assert "[METRICS]" in record
+            assert "message_id=wamid.full.pipeline" in record
+            assert "status=completed" in record
+            assert "total_ms=" in record
+            assert "typing_ms=" in record
+            assert "reaction_ms=" not in record
+            assert "redis_ms=" in record
+            assert "llm_ms=" in record
+            assert "db_ms=" in record
+            assert "reply_ms=" in record
 
-        # Verify privacy: no sensitive data in luka.metrics
-        assert "5491112345678" not in record
-        assert "Gaste 5000" not in record
-        assert "5000" not in record or "total_ms=" in record  # 5000 as amount shouldn't be there
-        assert "supermercado" not in record
-        assert "token" not in record
+            # Verify privacy: no sensitive data in luka.metrics
+            assert "5491112345678" not in record
+            assert "Gaste 5000" not in record
+            assert "5000" not in record or "total_ms=" in record  # 5000 as amount shouldn't be there
+            assert "supermercado" not in record
+            assert "token" not in record
 
     @pytest.mark.asyncio
     async def test_regression_conversation_service_redis_duration_incorporated(self, monkeypatch):
@@ -667,8 +636,8 @@ class TestProcessInboundMessageBackground:
 
         start_message_telemetry("wamid.regression.conv")
         # Execute conversation service operation
-        state = await ConversationService.get_state("5491112345678")
-        assert state.step == "none"
+        state = await ConversationService.get_pending_conversation_flow("5491112345678")
+        assert state is None
 
         metrics = finish_message_telemetry(status="completed")
         assert metrics is not None

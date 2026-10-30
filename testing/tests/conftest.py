@@ -2,7 +2,6 @@
 
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -12,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 # Aislar el engine de app.models.database antes de importarlo: sin esto apunta
 # al luka.db local y un ensure_testing_schema sin mockear podría recrearlo.
-os.environ["DATABASE_URL"] = f"sqlite:///{tempfile.mkdtemp()}/testing_conftest.db"
+os.environ["DATABASE_URL"] = "sqlite://"
 
 # Ensure project root is in path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -44,6 +43,9 @@ def in_memory_db(monkeypatch):
     monkeypatch.setattr(onboarding_module, "SessionLocal", testing_session)
     monkeypatch.setattr(database_module, "SessionLocal", testing_session)
     monkeypatch.setattr(reminder_module, "SessionLocal", testing_session)
+    import importlib
+    for name in ('wallet','limit','budget','category_creation','compensation','chart_query','monthly_balance','recurring_expense','conversation_flow','assistant_capabilities.movement_effects'):
+        monkeypatch.setattr(importlib.import_module('app.services.'+name),'SessionLocal',testing_session)
 
     session = testing_session()
     try:

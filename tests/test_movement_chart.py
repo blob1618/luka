@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 import app.services.chart_query as finance_module
 from app.models.database import Base, Categoria, MovimientoFinanciero, Usuario
-from app.services.dispatcher import _current_month_period
+from app.services.assistant_contracts import MonthSelector
 from app.services.finance import (
     CategoryMovementTotal,
 )
@@ -88,11 +88,11 @@ def _movement(
 
 
 def test_current_month_period_uses_calendar_boundaries():
-    assert _current_month_period(date(2026, 2, 12)) == (
+    assert (MonthSelector(month='2026-02').period().start, MonthSelector(month='2026-02').period().end) == (
         date(2026, 2, 1),
         date(2026, 2, 28),
     )
-    assert _current_month_period(date(2026, 12, 31)) == (
+    assert (MonthSelector(month='2026-12').period().start, MonthSelector(month='2026-12').period().end) == (
         date(2026, 12, 1),
         date(2026, 12, 31),
     )

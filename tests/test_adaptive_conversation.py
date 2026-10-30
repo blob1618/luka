@@ -1,779 +1,104 @@
-"""Real persistence through the conversational correction and selection paths."""
-
-import uuid
-import calendar
+"""Explicit tool scenarios preserve financial effects after the global cut."""
 from datetime import date
-from decimal import Decimal
-from unittest.mock import AsyncMock
-
+import json
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-import app.services.budget as budget_module
-import app.services.dispatcher as dispatcher_module
-import app.services.finance as finance_module
-import app.services.limit as limit_module
-import app.models.database as database_module
-from app.models.database import Base, Billetera, Categoria, LimiteCategoria, MovimientoFinanciero, Usuario
-from app.services.dispatcher import _limit_month_label, process_incoming_message
-from app.services.onboarding import OnboardingDecision, OnboardingResult
-
-
-@pytest.fixture()
-def conversation_db(monkeypatch):
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
-    Base.metadata.create_all(engine)
-    for module in (finance_module, budget_module, limit_module, dispatcher_module):
-        monkeypatch.setattr(module, "SessionLocal", factory)
-    monkeypatch.setattr(database_module, "SessionLocal", factory)
-    monkeypatch.setattr(
-        dispatcher_module.OnboardingService, "prepare_whatsapp_message",
-        lambda phone: OnboardingResult(OnboardingDecision.KNOWN_USER),
-    )
-    monkeypatch.setattr(dispatcher_module, "_update_ultimo_mensaje", lambda phone: None)
-    monkeypatch.setattr(dispatcher_module.ConversationFlowRuntime, "abandon", AsyncMock())
-    monkeypatch.setattr(dispatcher_module.ConversationFlowRuntime, "render_event", AsyncMock(return_value=None))
-
-    state = {"recent": None, "last_movement": None, "last_limit": None,
-             "pending_delete": None, "pending_selection": None}
-
-    def getter(name):
-        async def get(phone):
-            return state[name]
-        return get
-
-    def setter(name):
-        async def set_value(phone, value):
-            state[name] = value
-        return set_value
-
-    def clearer(name):
-        async def clear(phone):
-            state[name] = None
-        return clear
-
-    service = dispatcher_module.ConversationService
-    for method in (
-        "is_awaiting_rename", "is_awaiting_reminder_data",
-        "is_awaiting_limit_year_confirmation", "is_awaiting_limit_category_confirmation",
-        "is_awaiting_limit_data", "is_awaiting_limit_delete_category",
-        "is_awaiting_category_confirmation", "is_awaiting_compensation_confirmation",
-    ):
-        monkeypatch.setattr(service, method, AsyncMock(return_value=False))
-    monkeypatch.setattr(service, "is_awaiting_limit_month_selection", AsyncMock(side_effect=lambda phone: state["pending_delete"] is not None))
-    for method, name in (
-        ("get_recent_items", "recent"), ("get_last_movement", "last_movement"),
-        ("get_last_limit", "last_limit"), ("get_pending_limit_delete", "pending_delete"),
-        ("get_pending_selection", "pending_selection"),
-    ):
-        monkeypatch.setattr(service, method, AsyncMock(side_effect=getter(name)))
-    for method, name in (
-        ("set_recent_items", "recent"), ("set_last_movement", "last_movement"),
-        ("set_last_limit", "last_limit"), ("set_pending_limit_delete", "pending_delete"),
-        ("set_pending_selection", "pending_selection"),
-    ):
-        monkeypatch.setattr(service, method, AsyncMock(side_effect=setter(name)))
-    monkeypatch.setattr(service, "clear_state", AsyncMock(side_effect=clearer("pending_delete")))
-    monkeypatch.setattr(service, "clear_last_movement", AsyncMock(side_effect=clearer("last_movement")))
-    monkeypatch.setattr(service, "clear_last_limit", AsyncMock(side_effect=clearer("last_limit")))
-    monkeypatch.setattr(service, "clear_pending_selection", AsyncMock(side_effect=clearer("pending_selection")))
-
-    session = factory()
-    user = Usuario(nombre="Usuario", email=f"{uuid.uuid4()}@example.com", whatsapp_id="5491111111111")
-    session.add(user)
-    session.commit()
-    session.add(Billetera(usuario_id=user.id, nombre="Efectivo", moneda="ARS"))
-    session.commit()
-    try:
-        yield session, user, state
-    finally:
-        session.close()
-        Base.metadata.drop_all(engine)
-        engine.dispose()
-
-
-def category(session, user, name):
-    row = Categoria(usuario_id=user.id, nombre=name, es_default=False, esta_eliminado=False)
-    session.add(row)
-    session.commit()
-    return row
-
-
-def period(offset: int = 0):
-    """(month, year) relative to the current month, so these tests don't rot."""
-    today = date.today()
-    index = today.year * 12 + today.month - 1 + offset
-    return index % 12 + 1, index // 12
-
-
-def limit(session, user, cat, offset, amount):
-    month, year = period(offset)
-    row = LimiteCategoria(
-        usuario_id=user.id, categoria_id=cat.id, cantidad_max=Decimal(amount),
-        inicio_periodo=date(year, month, 1),
-        fin_periodo=date(year, month, calendar.monthrange(year, month)[1]),
-        moneda="ARS",
-    )
-    session.add(row)
-    session.commit()
-    return row
+from app.models.database import AssistantWriteReceipt, LimiteCategoria, MovimientoFinanciero, Usuario
+from app.services import assistant_state
+from app.services.finance import FinanceService
+from tests import test_assistant_stage5 as scenarios
+from tests.test_assistant_stage5 import register_now,visible_ref
+from tests.test_assistant_stage4 import initial
+accounts=scenarios.accounts
+ingress=scenarios.ingress
 
 
 @pytest.mark.asyncio
-async def test_wrong_llm_new_expense_is_routed_to_correction_then_annulment(conversation_db, monkeypatch):
-    session, user, _ = conversation_db
-    category(session, user, "Comida")
-    responses = iter([
-        {"intent": "expense", "movement_type": "egreso", "amount": 10000,
-         "currency": "ARS", "description": "pizza", "category": "Comida"},
-        {"intent": "expense", "movement_type": "egreso", "amount": 13000,
-         "currency": "ARS", "description": "supermercado", "category": "Comida"},
-        {"intent": "out_of_scope", "reply_text": "No puedo borrar movimientos."},
-    ])
-    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", AsyncMock(side_effect=lambda *args, **kwargs: next(responses)))
-    phone = user.whatsapp_id
+async def test_amount_correction_recomputes_budget_without_duplicate_expense(ingress,accounts):
+    with accounts[0]() as session:
+        session.add(LimiteCategoria(usuario_id=accounts[1],categoria_id=accounts[4],cantidad_max=1100,moneda='ARS',inicio_periodo=date(2026,10,1),fin_periodo=date(2026,10,31)))
+        session.commit()
+        before=session.query(MovimientoFinanciero).count()
+    await ingress.tool('find_movements',{'selector':{'kind':'all'},'description':'gasto 7','sort_by':'date_desc'})
+    preview=await ingress.send('Corregir importe',steps=[lambda kw:[('update_movement',{'movement_ref':visible_ref(kw,'movement'),'changes':{'amount':'500'}})]])
+    await ingress.confirm(preview)
+    status=await ingress.tool('query_budget',{'currency':'ARS'})
+    assert '1.221' in status.reply_text and '121' in status.reply_text
+    with accounts[0]() as session:
+        assert session.query(MovimientoFinanciero).count()==before
+        assert session.query(MovimientoFinanciero).filter_by(usuario_id=accounts[1],descripcion='gasto 7').one().cantidad==500
 
-    first = await process_incoming_message(phone, "Compré pizza por 10000", "wamid.pizza")
-    corrected = await process_incoming_message(phone, "Era por 13000 en realidad", "wamid.correct")
+
+@pytest.mark.asyncio
+async def test_multi_movement_message_retains_distinct_ids_for_ordinal_correction(ingress,accounts):
+    preview=await ingress.send('Dos registros',message_id='adaptive-batch',steps=[[('register_movement_batch',{'items':[register_now(description='primero',amount='100'),register_now(description='segundo',amount='200')]})]])
+    await ingress.confirm(preview)
+    with accounts[0]() as session:
+        rows=session.query(MovimientoFinanciero).filter(MovimientoFinanciero.whatsapp_message_id.like('adaptive-batch:batch:%')).all()
+        ids={r.descripcion:r.id for r in rows}
+        assert len(set(ids.values()))==2
+    def edit(kwargs):
+        ref=next(ref for ref,item in initial(kwargs)['references'].items() if item['kind']=='movement' and item['details']['description']=='primero')
+        return [('update_movement',{'movement_ref':ref,'changes':{'amount':'125'}})]
+    preview=await ingress.send('Cambiá sólo el primero a125',steps=[edit])
+    await ingress.confirm(preview)
+    with accounts[0]() as session:
+        assert session.get(MovimientoFinanciero,ids['primero']).cantidad==125
+        assert session.get(MovimientoFinanciero,ids['segundo']).cantidad==200
+        assert session.query(AssistantWriteReceipt).count()==2
+
+
+@pytest.mark.asyncio
+async def test_numeric_movement_choice_applies_only_to_shown_item(ingress,accounts):
+    def options(kwargs):
+        data=json.loads(next(m.content for m in kwargs['messages'] if m.role=='tool'))['data']
+        return [('ask_clarification',{'reason_code':'ambiguous_reference','target_field':'movement','candidate_refs':[x['movement_ref'] for x in data['items']]})]
+    await ingress.send('Elegí un gasto',steps=[[('find_movements',{'selector':{'kind':'all'},'sort_by':'date_desc','limit':2})],options])
+    state=await assistant_state.read(accounts[1])
+    selected=state['selection_options']['2']['ref']
+    identifier=state['references'][selected]['payload']['id']
+    preview=await ingress.send('2',steps=[lambda kw:[('annul_movements',{'movement_refs':[initial(kw)['selected_ref']]})]])
+    await ingress.confirm(preview)
+    with accounts[0]() as session:
+        removed=session.query(MovimientoFinanciero).filter(MovimientoFinanciero.anulado_en.is_not(None)).all()
+        assert len(removed)==1 and str(removed[0].id)==identifier
+        assert session.query(MovimientoFinanciero).filter_by(usuario_id=accounts[2]).one().anulado_en is None
+
+
+@pytest.fixture
+def mutation_db(isolated_db):
+    with isolated_db() as session:
+        user=Usuario(nombre='Batch owner',email='batch-owner@example.invalid',whatsapp_id='batch-owner')
+        session.add(user)
+        session.commit()
+        yield session,user
+
+
+def shown(item):
+    return {'id':str(item.id),'amount':str(item.cantidad),'currency':item.moneda,'description':item.descripcion,'date':str(item.fecha_movimiento)}
+
+
+def test_batch_delete_rejects_stale_snapshot_without_partial_change(mutation_db):
+    session,user=mutation_db
+    for description in ('tv','ventilador'):
+        session.add(MovimientoFinanciero(usuario_id=user.id,tipo='egreso',cantidad=1000,moneda='ARS',descripcion=description,fecha_movimiento=date(2026,9,17)))
+    session.commit()
+    selected=[shown(item) for item in FinanceService.find_movement_candidates(user.whatsapp_id)]
+    session.query(MovimientoFinanciero).filter_by(descripcion='tv').one().cantidad=2000
+    session.commit()
+    assert FinanceService.annul_movements(user.whatsapp_id,selected).status=='stale_context'
     session.expire_all()
-    rows = session.query(MovimientoFinanciero).all()
-    assert "Registré" in first.reply_text
-    assert "Corregí pizza" in corrected.reply_text
-    assert corrected.event_key == "movement.updated"
-    assert len(rows) == 1
-    assert rows[0].cantidad == 13000
-    assert rows[0].descripcion == "pizza"
-
-    removed = await process_incoming_message(phone, "Fue un error, borrá ese movimiento", "wamid.delete")
-    assert "Eliminé pizza" in removed.reply_text
-    assert removed.event_key == "movement.annulled"
-    assert finance_module.FinanceService.query_movements(user.id).movements == []
+    assert session.query(MovimientoFinanciero).filter(MovimientoFinanciero.anulado_en.is_not(None)).count()==0
 
 
-@pytest.mark.asyncio
-async def test_amount_correction_recomputes_budget_without_duplicate_expense(conversation_db, monkeypatch):
-    session, user, _ = conversation_db
-    food = category(session, user, "Comida")
-    limit(session, user, food, 0, "40000")
-    responses = iter([
-        {"intent": "expense", "movement_type": "egreso", "amount": 40000,
-         "currency": "ARS", "description": "almacén", "category": "Comida"},
-        {"intent": "expense", "movement_type": "egreso", "amount": 10000,
-         "currency": "ARS", "description": "pizza", "category": "Comida"},
-        {"intent": "expense", "movement_type": "egreso", "amount": 13000,
-         "currency": "ARS", "description": "supermercado", "category": "Comida"},
-    ])
-    monkeypatch.setattr(
-        dispatcher_module.LLMService, "process_message",
-        AsyncMock(side_effect=lambda *args, **kwargs: next(responses)),
-    )
-    phone = user.whatsapp_id
-    await process_incoming_message(phone, "Compré en almacén por 40000", "wamid.almacen")
-    await process_incoming_message(phone, "Compré pizza por 10000", "wamid.pizza")
-    corrected = await process_incoming_message(phone, "Era por 13000 en realidad", "wamid.fix")
-    assert "53.000,00" in corrected.reply_text
-    assert "63.000,00" not in corrected.reply_text
-    assert session.query(MovimientoFinanciero).count() == 2
-
-
-@pytest.mark.asyncio
-async def test_category_correction_uses_existing_category_only(conversation_db, monkeypatch):
-    session, user, _ = conversation_db
-    food = category(session, user, "Comida")
-    transport = category(session, user, "Transporte")
-    responses = iter([
-        {"intent": "expense", "movement_type": "egreso", "amount": 5000,
-         "currency": "ARS", "description": "uber", "category": "Comida"},
-        {"intent": "update_movement", "reference": "last_registered",
-         "changes": {"category": "Transporte"}},
-        {"intent": "update_movement", "reference": "last_registered",
-         "changes": {"category": "Inventada"}},
-    ])
-    monkeypatch.setattr(
-        dispatcher_module.LLMService, "process_message",
-        AsyncMock(side_effect=lambda *args, **kwargs: next(responses)),
-    )
-    phone = user.whatsapp_id
-    await process_incoming_message(phone, "Pagué uber 5000", "wamid.uber")
-    session.expire_all()
-    assert session.query(MovimientoFinanciero).one().categoria_id == transport.id
-    changed = await process_incoming_message(phone, "Cambiá la categoría a transporte")
-    refused = await process_incoming_message(phone, "Mejor categoría inventada")
-    assert "Transporte" in changed.reply_text
-    assert "Creá la categoría Inventada" in refused.reply_text
-    assert "sigue con su categoría anterior" in refused.reply_text
-    session.expire_all()
-    movement = session.query(MovimientoFinanciero).one()
-    assert movement.categoria_id == transport.id and movement.categoria_id != food.id
-    assert session.query(Categoria).count() == 2
-
-
-@pytest.mark.asyncio
-async def test_edit_listed_limit_without_recent_creation(conversation_db, monkeypatch):
-    session, user, _ = conversation_db
-    cat = category(session, user, "Transporte")
-    original = limit(session, user, cat, 0, "20000")
-    target = _limit_month_label(*period(1))
-    responses = iter([
-        {"intent": "list_limits"},
-        {"intent": "change_limit", "limit_category": "Transporte",
-         "limit_month": period(1)[0],
-         "changes": {"target_month": period(1)[0]}},
-    ])
-    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", AsyncMock(side_effect=lambda *args, **kwargs: next(responses)))
-    phone = user.whatsapp_id
-    listed = await process_incoming_message(phone, "Límites")
-    changed = await process_incoming_message(phone, f"Cambiá el límite de transporte para {target}")
-    session.expire_all()
-    assert "Transporte" in listed.reply_text
-    assert target in changed.reply_text
-    assert session.query(LimiteCategoria).one().id == original.id
-    assert session.query(LimiteCategoria).one().inicio_periodo.month == period(1)[0]
-
-
-@pytest.mark.asyncio
-async def test_limit_edit_asks_source_month_when_category_has_multiple(conversation_db, monkeypatch):
-    session, user, state = conversation_db
-    transport = category(session, user, "Transporte")
-    current = limit(session, user, transport, 0, "20000")
-    later = limit(session, user, transport, 2, "30000")
-    target = _limit_month_label(*period(1))
-    monkeypatch.setattr(
-        dispatcher_module.LLMService, "process_message",
-        AsyncMock(return_value={
-            "intent": "change_limit", "reference": {"category": "Transporte"},
-            "changes": {"target_month": period(1)[0]},
-        }),
-    )
-    question = await process_incoming_message(
-        user.whatsapp_id, f"Cambiá el límite de transporte para {target}"
-    )
-    assert _limit_month_label(*period(0)) in question.reply_text
-    assert _limit_month_label(*period(2)) in question.reply_text
-    assert state["pending_selection"] is not None
-    reply = await process_incoming_message(
-        user.whatsapp_id, _limit_month_label(*period(0))
-    )
-    assert target in reply.reply_text
-    session.expire_all()
-    assert session.get(LimiteCategoria, current.id).inicio_periodo.month == period(1)[0]
-    assert session.get(LimiteCategoria, later.id).inicio_periodo.month == period(2)[0]
-
-
-@pytest.mark.asyncio
-async def test_both_deletes_only_the_shown_food_limits(conversation_db, monkeypatch):
-    session, user, _ = conversation_db
-    food = category(session, user, "Comida")
-    transport = category(session, user, "Transporte")
-    limit(session, user, food, 0, "40000")
-    limit(session, user, food, 1, "40000")
-    keep = limit(session, user, transport, 0, "20000")
-    monkeypatch.setattr(
-        dispatcher_module.LLMService, "process_message",
-        AsyncMock(return_value={"intent": "delete_limit", "limit_category": "Comida"}),
-    )
-    asked = await process_incoming_message(user.whatsapp_id, "Borrá el límite de comida")
-    removed = await process_incoming_message(user.whatsapp_id, "Ambos")
-    assert _limit_month_label(*period(0)) in asked.reply_text
-    assert _limit_month_label(*period(1)) in asked.reply_text
-    assert "2 límites" in removed.reply_text
-    assert removed.event_key == "limit.bulk_deleted"
-    assert session.query(LimiteCategoria).one().id == keep.id
-
-
-@pytest.mark.asyncio
-async def test_two_named_months_delete_only_pending_limits(conversation_db, monkeypatch):
-    session, user, _ = conversation_db
-    food = category(session, user, "Comida")
-    transport = category(session, user, "Transporte")
-    limit(session, user, food, 0, "40000")
-    limit(session, user, food, 1, "40000")
-    keep = limit(session, user, transport, 0, "20000")
-    monkeypatch.setattr(
-        dispatcher_module.LLMService, "process_message",
-        AsyncMock(return_value={"intent": "delete_limit", "limit_category": "Comida"}),
-    )
-    await process_incoming_message(user.whatsapp_id, "Borrá el límite de comida")
-    months = f"{_limit_month_label(*period(0))} y {_limit_month_label(*period(1))}"
-    result = await process_incoming_message(user.whatsapp_id, months)
-    assert "2 límites" in result.reply_text
-    assert session.query(LimiteCategoria).one().id == keep.id
-
-
-@pytest.mark.asyncio
-async def test_ambiguous_vegetables_requires_selection_before_annulment(conversation_db, monkeypatch):
-    session, user, _ = conversation_db
-    food = category(session, user, "Comida")
-    for amount in (5000, 7000):
-        session.add(MovimientoFinanciero(
-            usuario_id=user.id, categoria_id=food.id, tipo="egreso",
-            cantidad=Decimal(amount), moneda="ARS", descripcion="verduras",
-            origen="whatsapp_text",
-        ))
-    session.commit()
-    monkeypatch.setattr(
-        dispatcher_module.LLMService, "process_message",
-        AsyncMock(return_value={"intent": "delete_movement", "reference": {"description": "verduras"}}),
-    )
-    asked = await process_incoming_message(user.whatsapp_id, "Borrá el movimiento de verduras")
-    assert "Encontré varios" in asked.reply_text
-    assert session.query(MovimientoFinanciero).filter(MovimientoFinanciero.anulado_en.isnot(None)).count() == 0
-    removed = await process_incoming_message(user.whatsapp_id, "El segundo")
-    assert "Eliminé verduras" in removed.reply_text
-    assert session.query(MovimientoFinanciero).filter(MovimientoFinanciero.anulado_en.isnot(None)).count() == 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("choice", [1, 3])
-@pytest.mark.parametrize("intent", ["delete_movement", "update_movement"])
-async def test_numeric_movement_choice_applies_only_to_shown_item(
-    conversation_db, monkeypatch, choice, intent
-):
-    session, user, state = conversation_db
-    for amount in (1000, 2000, 3000):
-        session.add(MovimientoFinanciero(
-            usuario_id=user.id, tipo="egreso", cantidad=Decimal(amount), moneda="ARS",
-            descripcion="verduras", origen="whatsapp_text",
-        ))
-    session.commit()
-    extracted = {"intent": intent, "reference": {"description": "verduras"}}
-    if intent == "update_movement":
-        extracted["changes"] = {"amount": 9999}
-    llm = AsyncMock(return_value=extracted)
-    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", llm)
-
-    question = await process_incoming_message(user.whatsapp_id, "Corregí el movimiento de verduras")
-    pending = state["pending_selection"]
-    assert pending is not None
-    shown_ids = [str(item["id"]) for item in pending.items]
-    assert len(shown_ids) == 3
-    for index, item in enumerate(pending.items, 1):
-        assert f"{index}. {item['label']} — ${item['amount']} {item['currency']}" in question.reply_text
-    original_amounts = {str(row.id): row.cantidad for row in session.query(MovimientoFinanciero)}
-
-    await process_incoming_message(user.whatsapp_id, str(choice))
-
-    session.expire_all()
-    rows = {str(row.id): row for row in session.query(MovimientoFinanciero)}
-    chosen_id = shown_ids[choice - 1]
-    assert state["pending_selection"] is None
-    assert llm.await_count == 1
-    for movement_id, row in rows.items():
-        if intent == "delete_movement":
-            assert (row.anulado_en is not None) == (movement_id == chosen_id)
-            assert row.cantidad == original_amounts[movement_id]
-        else:
-            assert row.anulado_en is None
-            assert row.cantidad == (Decimal(9999) if movement_id == chosen_id else original_amounts[movement_id])
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("invalid", ["0", "4", "-1", "+1", "1.5", "1,5", "9" * 5000])
-async def test_invalid_numeric_choice_retains_pending_and_does_not_mutate(
-    conversation_db, monkeypatch, invalid
-):
-    session, user, state = conversation_db
-    for amount in (1000, 2000, 3000):
-        session.add(MovimientoFinanciero(
-            usuario_id=user.id, tipo="egreso", cantidad=Decimal(amount), moneda="ARS",
-            descripcion="4", origen="whatsapp_text",
-        ))
-    session.commit()
-    llm = AsyncMock(return_value={"intent": "delete_movement", "reference": {"description": "4"}})
-    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", llm)
-    await process_incoming_message(user.whatsapp_id, "Borrá el movimiento de 4")
-    pending = state["pending_selection"]
-    assert pending is not None
-    chosen_id = str(pending.items[1]["id"])
-
-    retry = await process_incoming_message(user.whatsapp_id, invalid)
-
-    assert "opción no es válida" in retry.reply_text.lower()
-    assert "elegí" in retry.reply_text.lower()
-    for index, item in enumerate(pending.items, 1):
-        assert f"{index}. {item['label']} — ${item['amount']} {item['currency']}" in retry.reply_text
-    assert state["pending_selection"] is pending
-    session.expire_all()
-    assert all(row.anulado_en is None for row in session.query(MovimientoFinanciero))
-    assert llm.await_count == 1
-
-    await process_incoming_message(user.whatsapp_id, "2")
-    session.expire_all()
-    annulled = {str(row.id) for row in session.query(MovimientoFinanciero) if row.anulado_en is not None}
-    assert annulled == {chosen_id}
-
-
-@pytest.mark.asyncio
-async def test_numeric_choice_rejects_a_movement_changed_since_listing(conversation_db, monkeypatch):
-    session, user, state = conversation_db
-    for amount in (1000, 2000):
-        session.add(MovimientoFinanciero(
-            usuario_id=user.id, tipo="egreso", cantidad=Decimal(amount), moneda="ARS",
-            descripcion="verduras", origen="whatsapp_text",
-        ))
-    session.commit()
-    monkeypatch.setattr(
-        dispatcher_module.LLMService, "process_message",
-        AsyncMock(return_value={"intent": "delete_movement", "reference": {"description": "verduras"}}),
-    )
-    await process_incoming_message(user.whatsapp_id, "Borrá el movimiento de verduras")
-    chosen_id = uuid.UUID(str(state["pending_selection"].items[0]["id"]))
-    session.get(MovimientoFinanciero, chosen_id).cantidad = Decimal(8000)
-    session.commit()
-
-    reply = await process_incoming_message(user.whatsapp_id, "1")
-
-    assert "cambió" in reply.reply_text
-    assert state["pending_selection"] is None
-    session.expire_all()
-    assert all(row.anulado_en is None for row in session.query(MovimientoFinanciero))
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("pending_limit", [False, True])
-async def test_numeric_reply_without_movement_selection_keeps_existing_routing(
-    conversation_db, monkeypatch, pending_limit
-):
-    session, user, state = conversation_db
-    if pending_limit:
-        state["pending_selection"] = dispatcher_module.PendingSelection(
-            "change_limit", "limit", [{"label": "1", "amount": "1000", "currency": "ARS"}], {}
-        )
-    pending = state["pending_selection"]
-    llm = AsyncMock(return_value={"intent": "out_of_scope", "reply_text": "sin selección de movimientos"})
-    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", llm)
-
-    await process_incoming_message(user.whatsapp_id, "1")
-
-    assert state["pending_selection"] is pending
-    assert llm.await_count == 1
-    assert session.query(MovimientoFinanciero).count() == 0
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("handler", ["_handle_pending_wallet_selection", "_handle_pending_movement_category_change"])
-async def test_prior_pending_flow_takes_precedence_over_numeric_movement_choice(
-    conversation_db, monkeypatch, handler
-):
-    session, user, state = conversation_db
-    for amount in (1000, 2000):
-        session.add(MovimientoFinanciero(
-            usuario_id=user.id, tipo="egreso", cantidad=Decimal(amount), moneda="ARS",
-            descripcion="verduras", origen="whatsapp_text",
-        ))
-    session.commit()
-    llm = AsyncMock(return_value={"intent": "delete_movement", "reference": {"description": "verduras"}})
-    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", llm)
-    await process_incoming_message(user.whatsapp_id, "Borrá el movimiento de verduras")
-    pending = state["pending_selection"]
-    assert pending is not None
-    earlier = AsyncMock(return_value=dispatcher_module.DispatchResult("flujo previo"))
-    monkeypatch.setattr(dispatcher_module, handler, earlier)
-
-    reply = await process_incoming_message(user.whatsapp_id, "1")
-
-    assert reply.reply_text == "flujo previo"
-    earlier.assert_awaited_once()
-    assert state["pending_selection"] is pending
-    assert llm.await_count == 1
-    session.expire_all()
-    assert all(row.anulado_en is None for row in session.query(MovimientoFinanciero))
-
-
-@pytest.mark.asyncio
-async def test_cancel_pending_movement_selection_does_not_mutate(conversation_db, monkeypatch):
-    session, user, state = conversation_db
-    for amount in (1000, 2000):
-        session.add(MovimientoFinanciero(
-            usuario_id=user.id, tipo="egreso", cantidad=Decimal(amount), moneda="ARS",
-            descripcion="verduras", origen="whatsapp_text",
-        ))
-    session.commit()
-    monkeypatch.setattr(
-        dispatcher_module.LLMService, "process_message",
-        AsyncMock(return_value={"intent": "delete_movement", "reference": {"description": "verduras"}}),
-    )
-    await process_incoming_message(user.whatsapp_id, "Borrá el movimiento de verduras")
-    assert state["pending_selection"] is not None
-    reply = await process_incoming_message(user.whatsapp_id, "cancelar")
-    assert "no hice ningún cambio" in reply.reply_text
-    assert state["pending_selection"] is None
-    session.expire_all()
-    assert all(row.anulado_en is None for row in session.query(MovimientoFinanciero))
-
-
-@pytest.mark.asyncio
-async def test_delete_named_movement_after_listing(conversation_db, monkeypatch):
-    session, user, _ = conversation_db
-    food = category(session, user, "Comida")
-    for description in ("verduras", "pizza"):
-        session.add(MovimientoFinanciero(
-            usuario_id=user.id, categoria_id=food.id, tipo="egreso",
-            cantidad=Decimal(5000), moneda="ARS", descripcion=description,
-            origen="whatsapp_text",
-        ))
-    session.commit()
-    monkeypatch.setattr(
-        dispatcher_module.LLMService, "process_message",
-        AsyncMock(side_effect=[
-            {"intent": "query_movements"},
-            {"intent": "delete_movement", "reference": {"description": "verduras"}},
-        ]),
-    )
-    listed = await process_incoming_message(
-        user.whatsapp_id, "mostrame mis movimientos"
-    )
-    removed = await process_incoming_message(user.whatsapp_id, "Borrá el movimiento de verduras")
-    assert "verduras" in listed.reply_text
-    assert "Eliminé verduras" in removed.reply_text
-    visible = finance_module.FinanceService.query_movements(user.id).movements
-    assert [item.descripcion for item in visible] == ["pizza"]
-
-
-@pytest.mark.asyncio
-async def test_natural_movement_queries_list_all_and_only_expenses(conversation_db, monkeypatch):
-    session, user, _ = conversation_db
-    for kind, description in (("egreso", "ventilador"), ("ingreso", "sueldo")):
-        session.add(MovimientoFinanciero(
-            usuario_id=user.id, tipo=kind, cantidad=Decimal(1000), moneda="ARS",
-            descripcion=description, fecha_movimiento=date(2026, 9, 17), origen="whatsapp_text",
-        ))
-    session.commit()
-    llm = AsyncMock(
-        side_effect=[
-            {"intent": "query_movements", "movement_type": None},
-            {"intent": "query_movements", "movement_type": "egreso"},
-        ]
-    )
-    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", llm)
-    all_reply = await process_incoming_message(
-        user.whatsapp_id, "mostrame mis movimientos"
-    )
-    expense_reply = await process_incoming_message(
-        user.whatsapp_id, "mostrame solo mis egresos"
-    )
-    assert "ventilador" in all_reply.reply_text and "sueldo" in all_reply.reply_text
-    assert "ventilador" in expense_reply.reply_text and "sueldo" not in expense_reply.reply_text
-    assert llm.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_delete_last_two_shown_movements_atomically(conversation_db, monkeypatch):
-    session, user, state = conversation_db
-    for index, description in enumerate(("tv", "ventilador", "camisa")):
-        session.add(MovimientoFinanciero(
-            usuario_id=user.id, tipo="egreso", cantidad=Decimal(1000 + index),
-            moneda="ARS", descripcion=description,
-            fecha_movimiento=date(2026, 9, 17 - index), origen="whatsapp_text",
-        ))
-    session.commit()
-    monkeypatch.setattr(
-        dispatcher_module.LLMService,
-        "process_message",
-        AsyncMock(
-            side_effect=[
-                {"intent": "query_movements", "movement_type": None},
-                {"intent": "out_of_scope"},
-            ]
-        ),
-    )
-    await process_incoming_message(user.whatsapp_id, "mostrame mis movimientos")
-    shown_ids = [item["id"] for item in state["recent"].items]
-    reply = await process_incoming_message(user.whatsapp_id, "Borrá los últimos dos")
-    assert "Eliminé 2 movimientos" in reply.reply_text
-    session.expire_all()
-    annulled = {str(item.id) for item in session.query(MovimientoFinanciero)
-               if item.anulado_en is not None}
-    assert annulled == set(shown_ids[:2])
-
-
-@pytest.mark.asyncio
-async def test_delete_two_named_movements_even_if_llm_references_one(conversation_db, monkeypatch):
-    session, user, _ = conversation_db
-    for description in ("tv", "ventilador", "camisa"):
-        session.add(MovimientoFinanciero(
-            usuario_id=user.id, tipo="egreso", cantidad=Decimal(1000),
-            moneda="ARS", descripcion=description,
-            fecha_movimiento=date(2026, 9, 17), origen="whatsapp_text",
-        ))
-    session.commit()
-    monkeypatch.setattr(
-        dispatcher_module.LLMService,
-        "process_message",
-        AsyncMock(
-            side_effect=[
-                {"intent": "query_movements", "movement_type": None},
-                {"intent": "out_of_scope"},
-            ]
-        ),
-    )
-    await process_incoming_message(user.whatsapp_id, "mostrame mis movimientos")
-    reply = await process_incoming_message(user.whatsapp_id, "Borrá ventilador y tv")
-    assert "Eliminé 2 movimientos" in reply.reply_text
-    session.expire_all()
-    annulled = {item.descripcion for item in session.query(MovimientoFinanciero)
-               if item.anulado_en is not None}
-    assert annulled == {"ventilador", "tv"}
-
-
-@pytest.mark.asyncio
-async def test_batch_delete_rejects_stale_snapshot_without_partial_change(conversation_db):
-    session, user, _ = conversation_db
-    for description in ("tv", "ventilador"):
-        session.add(MovimientoFinanciero(
-            usuario_id=user.id, tipo="egreso", cantidad=Decimal(1000),
-            moneda="ARS", descripcion=description,
-            fecha_movimiento=date(2026, 9, 17), origen="whatsapp_text",
-        ))
-    session.commit()
-    selected = dispatcher_module._movement_context_items(
-        finance_module.FinanceService.find_movement_candidates(user.whatsapp_id)
-    )
-    row = session.query(MovimientoFinanciero).filter_by(descripcion="tv").one()
-    row.cantidad = Decimal(2000)
-    session.commit()
-    result = finance_module.FinanceService.annul_movements(user.whatsapp_id, selected)
-    assert result.status == "stale_context"
-    session.expire_all()
-    assert session.query(MovimientoFinanciero).filter(MovimientoFinanciero.anulado_en.isnot(None)).count() == 0
-
-
-@pytest.mark.asyncio
-async def test_pending_movement_selection_accepts_ambos(conversation_db, monkeypatch):
-    session, user, _ = conversation_db
-    for amount in (5000, 7000):
-        session.add(MovimientoFinanciero(
-            usuario_id=user.id, tipo="egreso", cantidad=Decimal(amount),
-            moneda="ARS", descripcion="verduras",
-            fecha_movimiento=date(2026, 9, 17), origen="whatsapp_text",
-        ))
-    session.commit()
-    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", AsyncMock(
-        return_value={"intent": "delete_movement", "reference": {"description": "verduras"}}
-    ))
-    asked = await process_incoming_message(user.whatsapp_id, "Borrá el movimiento de verduras")
-    assert "Encontré varios" in asked.reply_text
-    reply = await process_incoming_message(user.whatsapp_id, "Ambos")
-    assert "Eliminé 2 movimientos" in reply.reply_text
-    session.expire_all()
-    assert session.query(MovimientoFinanciero).filter(MovimientoFinanciero.anulado_en.isnot(None)).count() == 2
-
-
-@pytest.mark.asyncio
-async def test_multi_name_delete_never_removes_only_one_match(conversation_db, monkeypatch):
-    session, user, _ = conversation_db
-    session.add(MovimientoFinanciero(
-        usuario_id=user.id, tipo="egreso", cantidad=Decimal(1000),
-        moneda="ARS", descripcion="ventilador",
-        fecha_movimiento=date(2026, 9, 17), origen="whatsapp_text",
-    ))
-    session.commit()
-    monkeypatch.setattr(dispatcher_module.LLMService, "process_message", AsyncMock(
-        return_value={"intent": "delete_movement", "reference": {"description": "ventilador"}}
-    ))
-    reply = await process_incoming_message(user.whatsapp_id, "Borrá ventilador y tv")
-    assert "No pude identificar" in reply.reply_text
-    session.expire_all()
-    assert session.query(MovimientoFinanciero).filter(MovimientoFinanciero.anulado_en.isnot(None)).count() == 0
-
-
-def test_batch_delete_rejects_other_users_movement_atomically(conversation_db):
-    session, user, _ = conversation_db
-    other = Usuario(nombre="Otro", email=f"{uuid.uuid4()}@example.com", whatsapp_id="5491222222222")
+def test_batch_delete_rejects_other_users_movement_atomically(mutation_db):
+    session,user=mutation_db
+    other=Usuario(nombre='Other',email='batch-other@example.invalid',whatsapp_id='batch-other')
     session.add(other)
     session.flush()
-    for owner, description in ((user, "tv"), (other, "ventilador")):
-        session.add(MovimientoFinanciero(
-            usuario_id=owner.id, tipo="egreso", cantidad=Decimal(1000),
-            moneda="ARS", descripcion=description,
-            fecha_movimiento=date(2026, 9, 17), origen="whatsapp_text",
-        ))
+    for owner,description in [(user,'tv'),(other,'ventilador')]:
+        session.add(MovimientoFinanciero(usuario_id=owner.id,tipo='egreso',cantidad=1000,moneda='ARS',descripcion=description,fecha_movimiento=date(2026,9,17)))
     session.commit()
-    selected = dispatcher_module._movement_context_items([
-        finance_module.FinanceService.find_movement_candidates(owner.whatsapp_id)[0]
-        for owner in (user, other)
-    ])
-    result = finance_module.FinanceService.annul_movements(user.whatsapp_id, selected)
-    assert result.status == "not_found"
+    selected=[shown(FinanceService.find_movement_candidates(owner.whatsapp_id)[0]) for owner in (user,other)]
+    assert FinanceService.annul_movements(user.whatsapp_id,selected).status=='not_found'
     session.expire_all()
-    assert session.query(MovimientoFinanciero).filter(MovimientoFinanciero.anulado_en.isnot(None)).count() == 0
-
-
-@pytest.mark.asyncio
-async def test_multi_movement_message_retains_distinct_ids_for_ordinal_correction(conversation_db, monkeypatch):
-    session, user, state = conversation_db
-    monkeypatch.setattr(
-        dispatcher_module.LLMService, "process_message",
-        AsyncMock(side_effect=[
-            {"intent": "expense", "movement_type": "egreso", "movements": [
-                {"movement_type": "egreso", "amount": 1000, "currency": "ARS",
-                 "description": "pan", "category": None},
-                {"movement_type": "egreso", "amount": 2000, "currency": "ARS",
-                 "description": "leche", "category": None},
-            ]},
-            {"intent": "update_movement", "changes": {"amount": 2500}},
-        ]),
-    )
-    first = await process_incoming_message(user.whatsapp_id, "Compré pan 1000 y leche 2000", "wamid.multi")
-    assert "2 movimientos" in first.reply_text
-    assert len(state["recent"].items) == 2
-    assert state["last_movement"] is None
-    edited = await process_incoming_message(user.whatsapp_id, "El segundo era por 2500")
-    assert "Corregí leche" in edited.reply_text
-    session.expire_all()
-    rows = {row.descripcion: row for row in session.query(MovimientoFinanciero).all()}
-    assert len(rows) == 2
-    assert rows["pan"].cantidad == 1000 and rows["leche"].cantidad == 2500
-    assert rows["pan"].whatsapp_message_id != rows["leche"].whatsapp_message_id
-
-
-@pytest.mark.asyncio
-async def test_new_explicit_request_interrupts_ambiguous_selection(conversation_db, monkeypatch):
-    session, user, state = conversation_db
-    food = category(session, user, "Comida")
-    for amount in (5000, 7000):
-        session.add(MovimientoFinanciero(
-            usuario_id=user.id, categoria_id=food.id, tipo="egreso",
-            cantidad=Decimal(amount), moneda="ARS", descripcion="verduras",
-            origen="whatsapp_text",
-        ))
-    session.commit()
-    monkeypatch.setattr(
-        dispatcher_module.LLMService, "process_message",
-        AsyncMock(side_effect=[
-            {"intent": "delete_movement", "reference": {"description": "verduras"}},
-            {"intent": "expense", "movement_type": "egreso", "amount": 1000,
-             "currency": "ARS", "description": "pan", "category": "Comida"},
-        ]),
-    )
-    await process_incoming_message(user.whatsapp_id, "Borrá el movimiento de verduras")
-    assert state["pending_selection"] is not None
-    reply = await process_incoming_message(user.whatsapp_id, "Compré pan por 1000")
-    assert "Registré" in reply.reply_text
-    assert state["pending_selection"] is None
-    assert session.query(MovimientoFinanciero).count() == 3
-
-
-@pytest.mark.asyncio
-async def test_new_purchase_interrupts_pending_limit_deletion(conversation_db, monkeypatch):
-    session, user, state = conversation_db
-    food = category(session, user, "Comida")
-    limit(session, user, food, 0, "40000")
-    limit(session, user, food, 1, "40000")
-    monkeypatch.setattr(
-        dispatcher_module.LLMService, "process_message",
-        AsyncMock(side_effect=[
-            {"intent": "delete_limit", "limit_category": "Comida"},
-            {"intent": "expense", "movement_type": "egreso", "amount": 1000,
-             "currency": "ARS", "description": "pan", "category": "Comida"},
-        ]),
-    )
-    await process_incoming_message(user.whatsapp_id, "Borrá el límite de comida")
-    assert state["pending_delete"] is not None
-    reply = await process_incoming_message(user.whatsapp_id, "Compré pan por 1000")
-    assert "Registré" in reply.reply_text
-    assert state["pending_delete"] is None
-    assert session.query(LimiteCategoria).count() == 2
+    assert session.query(MovimientoFinanciero).filter(MovimientoFinanciero.anulado_en.is_not(None)).count()==0

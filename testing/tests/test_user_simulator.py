@@ -3,7 +3,7 @@
 import pytest
 
 from testing.services.user_simulator import UserSimulator, sync_test_user
-from app.models.database import Categoria, Usuario
+from app.models.database import Billetera, Categoria, Usuario
 
 
 class TestTestUserFixture:
@@ -125,20 +125,25 @@ class TestDeleteUser:
 
 
 class TestResetUserData:
-    def test_clears_movements_and_categories(self, in_memory_db):
+    def test_clears_movements_categories_and_wallets(self, in_memory_db):
         sim = UserSimulator(in_memory_db["SessionLocal"])
         user = sim.create_test_user("5491100001111", "María")
         sim.seed_categories("5491100001111", ["comida", "transporte"])
+        session = in_memory_db["SessionLocal"]()
+        session.add(Billetera(usuario_id=user.id, nombre="Efectivo", moneda="ARS"))
+        session.commit()
+        session.close()
 
         sim.reset_user_data("5491100001111")
 
         # User still exists
         assert sim.get_user("5491100001111") is not None
-        # But categories are gone
+        # But categories and wallets are gone, so a new run starts without duplicates
         session = in_memory_db["SessionLocal"]()
         cats = session.query(Categoria).filter(Categoria.usuario_id == user.id).all()
+        wallets = session.query(Billetera).filter(Billetera.usuario_id == user.id).all()
         session.close()
-        assert len(cats) == 0
+        assert len(cats) == 0 and len(wallets) == 0
 
     def test_reset_nonexistent_user_no_error(self, in_memory_db):
         sim = UserSimulator(in_memory_db["SessionLocal"])

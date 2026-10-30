@@ -167,6 +167,7 @@ async def _process_message(
     text: str,
     config: TestingConfig,
     phone: str,
+    *, interaction: dict | None = None,
 ) -> tuple[str, dict, list[bytes], list[tuple[str, str]]]:
     """
     Procesa el mensaje a través del flujo completo del dispatcher (webhook).
@@ -180,9 +181,15 @@ async def _process_message(
         provider=config.provider,
         prompt_path=_get_prompt_path(config),
         model=config.model,
+        **({"option_id": interaction["id"], "title": interaction["title"], "reply_type": interaction["reply_type"]} if interaction else {}),
     )
     debug_data = {
-        "raw_json": result.raw_llm_response,
+        "tool_trace": result.tool_trace,
+        "interactions": result.interactions,
+        "error": result.error,
+        "delivery": result.delivery,
+        "message_id": result.message_id,
+        "metrics": result.metrics,
         "latency_ms": result.latency_ms,
         "service_log": result.service_invoked or "unknown",
         "redis_state": result.redis_state,
@@ -210,7 +217,8 @@ def render_chat(config: TestingConfig) -> None:
         return
 
     # Display existing messages
-    for msg in session.messages:
+    selected_interaction = None
+    for message_index, msg in enumerate(session.messages):
         if msg["role"] == "assistant":
             with st.chat_message("assistant", avatar=bot_avatar()):
                 render_assistant_text(msg["content"])
@@ -220,6 +228,9 @@ def render_chat(config: TestingConfig) -> None:
                 image_pngs = msg.get("image_pngs")
                 if image_pngs:
                     render_chart_preview(image_pngs)
+                for option_index, option in enumerate(msg.get("debug", {}).get("interactions", [])):
+                    if st.button(option["title"], key=f"interaction-{session.id}-{message_index}-{option_index}"):
+                        selected_interaction = option
                 if msg.get("debug"):
                     flags = {
                         "json": config.debug_json,
@@ -233,7 +244,10 @@ def render_chat(config: TestingConfig) -> None:
                 st.write(msg["content"])
 
     # Chat input
-    if prompt := st.chat_input("Escribí un mensaje..."):
+    prompt = st.chat_input("Escribí un mensaje...")
+    if selected_interaction:
+        prompt = selected_interaction["title"]
+    if prompt:
         # Add user message
         session.messages.append({
             "role": "user",
@@ -247,11 +261,10 @@ def render_chat(config: TestingConfig) -> None:
         with st.chat_message("assistant", avatar=bot_avatar()):
             with st.spinner("Procesando..."):
                 reply_text, debug_data, image_pngs, cta_urls = asyncio.run(
-                    _process_message(prompt, config, session.phone)
+                    _process_message(prompt, config, session.phone, interaction=selected_interaction)
                 )
 
-            raw = debug_data.get("raw_json") or {}
-            if raw.get("error"):
+            if debug_data.get("error"):
                 st.error(reply_text or "Error del LLM")
             else:
                 render_assistant_text(reply_text or "Sin respuesta")
@@ -278,6 +291,7 @@ def render_chat(config: TestingConfig) -> None:
         if cta_urls:
             assistant_message["cta_urls"] = cta_urls
         session.messages.append(assistant_message)
+        st.rerun()
 
     # Export buttons in sidebar
     with st.sidebar:

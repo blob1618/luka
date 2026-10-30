@@ -20,7 +20,7 @@ from app.services.categories_taxonomy import (
     suggest_user_category,
 )
 from app.services.wallet import WalletService
-from app.services.movement_policy import fixed_deposit_registration_reply
+from app.services.movement_policy import EconomicEffect, registration_policy_reply
 
 
 @dataclass
@@ -119,6 +119,8 @@ class FinanceService:
                  or movement.fecha_movimiento.isoformat() == expected["date"])
             and ("wallet_id" not in expected
                  or str(getattr(movement, "billetera_id", None)) == str(expected["wallet_id"]))
+            and ("movement_type" not in expected or movement.tipo == expected["movement_type"])
+            and ("category_id" not in expected or str(movement.categoria_id) == str(expected["category_id"]))
         )
 
     @staticmethod
@@ -167,7 +169,7 @@ class FinanceService:
     @classmethod
     def update_movement(
         cls, sender_phone: str, movement_id: str, changes: dict[str, Any],
-        expected: dict | None = None,
+        expected: dict | None = None, *, session=None,
     ) -> MovementMutationResult:
         """Apply only explicitly supplied fields to an owned, active movement."""
         from uuid import UUID
@@ -182,7 +184,8 @@ class FinanceService:
             parsed_id = UUID(str(movement_id))
         except (ValueError, TypeError):
             return MovementMutationResult("invalid_data")
-        session = SessionLocal()
+        owns_session = session is None
+        session = session or SessionLocal()
         try:
             user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
             if user is None:
@@ -255,7 +258,10 @@ class FinanceService:
                     if category is None:
                         return MovementMutationResult("category_not_found")
                     movement.categoria_id = category.id
-            session.commit()
+            if owns_session:
+                session.commit()
+            else:
+                session.flush()
             return MovementMutationResult(
                 "updated", str(movement.id), before,
                 cls._movement_item(movement, category.nombre if category else None),
@@ -265,11 +271,13 @@ class FinanceService:
             print(f"[FINANCE] update_movement error: {type(exc).__name__}: {exc}")
             return MovementMutationResult("persistence_error")
         finally:
-            session.close()
+            if owns_session:
+                session.close()
 
     @classmethod
     def annul_movement(
         cls, sender_phone: str, movement_id: str, expected: dict | None = None,
+        *, session=None,
     ) -> MovementMutationResult:
         """Hide a mistaken movement while retaining its original message ID for deduplication."""
         from uuid import UUID
@@ -278,7 +286,8 @@ class FinanceService:
             parsed_id = UUID(str(movement_id))
         except (ValueError, TypeError):
             return MovementMutationResult("invalid_data")
-        session = SessionLocal()
+        owns_session = session is None
+        session = session or SessionLocal()
         try:
             user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
             if user is None:
@@ -299,18 +308,20 @@ class FinanceService:
             category = session.get(Categoria, movement.categoria_id) if movement.categoria_id else None
             before = cls._movement_item(movement, category.nombre if category else None)
             movement.anulado_en = datetime.now(timezone.utc)
-            session.commit()
+            session.commit() if owns_session else session.flush()
             return MovementMutationResult("annulled", str(movement.id), before)
         except Exception as exc:
             session.rollback()
             print(f"[FINANCE] annul_movement error: {type(exc).__name__}: {exc}")
             return MovementMutationResult("persistence_error")
         finally:
-            session.close()
+            if owns_session:
+                session.close()
 
     @classmethod
     def annul_movements(
         cls, sender_phone: str, selected: list[dict[str, Any]],
+        *, session=None,
     ) -> MovementBatchMutationResult:
         """Annul a shown set atomically after checking ownership and snapshots."""
         if not 2 <= len(selected) <= 5:
@@ -321,7 +332,8 @@ class FinanceService:
             return MovementBatchMutationResult("invalid_data")
         if len(set(ids)) != len(ids):
             return MovementBatchMutationResult("invalid_data")
-        session = SessionLocal()
+        owns_session = session is None
+        session = session or SessionLocal()
         try:
             user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
             if user is None:
@@ -354,14 +366,15 @@ class FinanceService:
             now = datetime.now(timezone.utc)
             for identifier in ids:
                 by_id[identifier].anulado_en = now
-            session.commit()
+            session.commit() if owns_session else session.flush()
             return MovementBatchMutationResult("annulled", before)
         except Exception as exc:
             session.rollback()
             print(f"[FINANCE] annul_movements error: {type(exc).__name__}: {exc}")
             return MovementBatchMutationResult("persistence_error")
         finally:
-            session.close()
+            if owns_session:
+                session.close()
 
     @staticmethod
     def _result(
@@ -450,18 +463,6 @@ class FinanceService:
             return None
         return amount
 
-    @classmethod
-    def _resolve_description(cls, llm_result: dict[str, Any], original_text: str) -> str | None:
-        for field_name in ("description", "expense"):
-            text = cls._normalize_optional_text(llm_result.get(field_name))
-            if text:
-                return text[:500]
-
-        text = cls._normalize_optional_text(original_text)
-        if text:
-            return text[:500]
-
-        return None
 
     @classmethod
     def _find_duplicate(
@@ -492,184 +493,6 @@ class FinanceService:
             .first()
         )
 
-    @classmethod
-    def register_movement_from_whatsapp_text(
-        cls,
-        sender_phone: str,
-        whatsapp_message_id: str | None,
-        original_text: str,
-        llm_result: dict,
-        fecha_movimiento: date | None = None,
-        wallet_id: UUID | str | None = None,
-    ) -> MovementRegistrationResult:
-        sender_phone = cls._normalize_optional_text(sender_phone)
-        if not sender_phone:
-            return cls._result("invalid_data", "sender_phone is required")
-
-        if not isinstance(llm_result, dict):
-            return cls._result("invalid_data", "llm_result must be a dict")
-
-        policy_reply = fixed_deposit_registration_reply(original_text)
-        if policy_reply:
-            return cls._result("unsupported_operation", policy_reply)
-
-        intent = cls._normalize_optional_text(llm_result.get("intent"))
-        intent = intent.lower() if intent else None
-        raw_movement_type = cls._normalize_optional_text(llm_result.get("movement_type"))
-        if raw_movement_type is None:
-            if intent == "expense":
-                return cls._result("invalid_data", "movement_type is required")
-            return cls._result("not_a_movement", "message is not a financial movement")
-
-        movement_type = raw_movement_type.lower()
-        if movement_type not in cls.VALID_MOVEMENT_TYPES:
-            if intent == "expense":
-                return cls._result("invalid_data", "movement_type must be ingreso or egreso")
-            return cls._result("not_a_movement", "message is not a financial movement")
-
-        amount = cls._normalize_amount(llm_result.get("amount"))
-        if amount is None:
-            return cls._result("invalid_data", "amount must be a positive number")
-
-        raw_currency = llm_result.get("currency")
-        if raw_currency is not None and not str(raw_currency).strip():
-            return cls._result("invalid_data", "currency cannot be empty")
-        currency = str(raw_currency).strip().upper() if raw_currency is not None else None
-        if wallet_id is not None and not str(wallet_id).strip():
-            return cls._result("invalid_selection", "wallet id cannot be empty")
-
-        description = cls._resolve_description(llm_result, original_text)
-        if not description:
-            return cls._result("invalid_data", "description is required")
-
-        whatsapp_message_id = cls._normalize_optional_text(whatsapp_message_id)
-        category_name = cls._normalize_optional_text(llm_result.get("category"))
-
-        session = SessionLocal()
-        try:
-            user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
-            if user is None:
-                return cls._result("user_not_found", "user not found")
-
-            user_id = str(user.id)
-
-            duplicate = cls._find_duplicate(session, whatsapp_message_id)
-            if duplicate is not None:
-                return cls._duplicate_result(session, duplicate, user)
-
-            wallet_selection = WalletService.resolve_selection(
-                session,
-                user.id,
-                currency=currency,
-                wallet_id=wallet_id,
-            )
-            if wallet_selection.status != "selected":
-                return cls._result(
-                    wallet_selection.status,
-                    wallet_selection.message,
-                    user_id=user_id,
-                    currency=wallet_selection.currency,
-                    amount=amount,
-                )
-
-            if category_name:
-                resolved = resolve_category_for_user(
-                    category_name, cls._active_user_category_names(session, user.id)
-                )
-                if resolved is None:
-                    return cls._result(
-                        "needs_category_confirmation",
-                        "La categoría no coincide con tu taxonomía ni tus categorías.",
-                        user_id=user_id,
-                        category_name=category_name,
-                    )
-                category_name = resolved
-
-            category = cls._find_category(session, user.id, category_name)
-            movement = MovimientoFinanciero(
-                usuario_id=user.id,
-                billetera_id=UUID(wallet_selection.wallet_id),
-                categoria_id=category.id if category else None,
-                tipo=movement_type,
-                cantidad=amount,
-                moneda=wallet_selection.currency,
-                descripcion=description,
-                origen="whatsapp_text",
-                whatsapp_message_id=whatsapp_message_id,
-            )
-            if fecha_movimiento is not None:
-                movement.fecha_movimiento = fecha_movimiento
-
-            session.add(movement)
-            session.commit()
-            session.refresh(movement)
-            persisted_wallet = (
-                session.query(Billetera)
-                .filter(
-                    Billetera.id == movement.billetera_id,
-                    Billetera.usuario_id == user.id,
-                    Billetera.moneda == movement.moneda,
-                )
-                .first()
-            )
-            if persisted_wallet is None:
-                raise RuntimeError("persisted movement wallet could not be reloaded")
-
-            patron_hash = None
-            if movement_type == "egreso":
-                from app.services.recurring_expense import (
-                    calculate_pattern_hash,
-                    normalize_description,
-                )
-                norm_desc = normalize_description(description)
-                if norm_desc:
-                    patron_hash = calculate_pattern_hash(
-                        norm_desc,
-                        movement.categoria_id,
-                        movement.moneda,
-                    )
-
-            return cls._result(
-                "registered",
-                "movement registered",
-                movement_id=str(movement.id),
-                user_id=user_id,
-                duplicate=False,
-                category_name=category.nombre if category else None,
-                patron_hash=patron_hash,
-                wallet_id=str(movement.billetera_id),
-                wallet_name=persisted_wallet.nombre,
-                currency=movement.moneda,
-                amount=movement.cantidad,
-            )
-
-        except IntegrityError as exc:
-            session.rollback()
-            print(
-                "[MOVEMENT_REGISTRATION] Persistence integrity error: "
-                f"{type(exc.orig).__name__}: {exc.orig}"
-            )
-            if whatsapp_message_id:
-                try:
-                    duplicate = cls._find_duplicate(session, whatsapp_message_id)
-                except Exception:
-                    duplicate = None
-                if duplicate is not None:
-                    user = session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).first()
-                    if user is not None:
-                        return cls._duplicate_result(session, duplicate, user)
-            return cls._result("persistence_error", "could not persist movement")
-
-        except Exception as exc:
-            session.rollback()
-            print(
-                "[MOVEMENT_REGISTRATION] Persistence error: "
-                f"{type(exc).__name__}: {exc}"
-            )
-            return cls._result("persistence_error", "could not persist movement")
-
-        finally:
-            session.close()
 
     # ------------------------------------------------------------------
     # Gestión de categorías
@@ -951,11 +774,12 @@ class FinanceService:
         category_creation_confirmed: bool = False,
         fecha_movimiento: date | None = None,
         wallet_id: UUID | str | None = None,
+        session=None,
+        economic_effect: EconomicEffect | None = None,
     ) -> MovementRegistrationResult:
         """
         Registra un movimiento financiero con una categoría específica.
-        A diferencia de register_movement_from_whatsapp_text, esta función:
-        - Recibe los datos ya parseados (no un llm_result)
+        Recibe datos tipados por la capacidad y efecto económico explícito.
         - Si create_category_if_missing=True y la categoría no existe, la crea automáticamente
           después de que category_creation_confirmed=True indique que el usuario la aprobó
         """
@@ -963,7 +787,7 @@ class FinanceService:
         if not sender_phone:
             return cls._result("invalid_data", "sender_phone is required")
 
-        policy_reply = fixed_deposit_registration_reply(original_text)
+        policy_reply = registration_policy_reply(economic_effect)
         if policy_reply:
             return cls._result("unsupported_operation", policy_reply)
 
@@ -985,7 +809,8 @@ class FinanceService:
 
         whatsapp_message_id = cls._normalize_optional_text(whatsapp_message_id)
 
-        session = SessionLocal()
+        owns_session = session is None
+        session = session or SessionLocal()
         try:
             user = cls._get_user_by_phone(session, sender_phone)
             if user is None:
@@ -1037,7 +862,7 @@ class FinanceService:
                 category = cls._find_category(session, user.id, category_name)
                 if category is not None:
                     categoria_id = category.id
-                elif create_category_if_missing:
+                elif create_category_if_missing and owns_session:
                     cat_result = cls.create_category(user.id, category_name)
                     if cat_result.status in {"created", "already_exists"}:
                         # Reabrir sesión (create_category cierra su propia sesión)
@@ -1077,7 +902,10 @@ class FinanceService:
                 movement.fecha_movimiento = fecha_movimiento
 
             session.add(movement)
-            session.commit()
+            if owns_session:
+                session.commit()
+            else:
+                session.flush()
             session.refresh(movement)
             persisted_wallet = (
                 session.query(Billetera)
@@ -1139,7 +967,8 @@ class FinanceService:
             return cls._result("persistence_error", "could not persist movement")
 
         finally:
-            session.close()
+            if owns_session:
+                session.close()
 
     @classmethod
     def query_movements(

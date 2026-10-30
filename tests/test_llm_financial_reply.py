@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.services.currency import QuoteType, UsdQuote
-from app.services.dispatcher import _net_worth_facts, _usd_quote_facts
+from app.services.assistant_capabilities.financial_reads import net_worth_facts, usd_quote_facts
 from app.services.llm import LLMService, _violates_financial_reply_contract
 from app.services.net_worth import NetWorthResult, NetWorthStatus
 
@@ -278,7 +278,7 @@ async def test_net_worth_facts_match_renderer_contract():
         missing=(),
         stale=(QuoteType.BLUE,),
     )
-    facts, quote_types = _net_worth_facts(result, ALL_TYPES)
+    facts, quote_types = net_worth_facts(result, ALL_TYPES)
 
     assert [fact["key"] for fact in facts] == [
         "ARS_TOTAL",
@@ -304,7 +304,7 @@ async def test_usd_quote_facts_match_renderer_contract_with_stale_and_missing():
         QuoteType.OFICIAL: _quote(QuoteType.OFICIAL, stale=True),
         QuoteType.MEP: _quote(QuoteType.MEP, compra=None),
     }
-    facts, quote_types = _usd_quote_facts(quotes, ALL_TYPES)
+    facts, quote_types = usd_quote_facts(quotes, ALL_TYPES)
 
     assert [fact["key"] for fact in facts] == [
         "OFICIAL_COMPRA",
