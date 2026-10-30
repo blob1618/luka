@@ -99,6 +99,18 @@ Aislamiento:
 - Los tests no requieren Redis, Supabase, Meta ni LLM reales; los providers se reemplazan con los fakes de `tests/provider_fakes.py`.
 - Las migraciones se validan en CI con `supabase db reset` y `supabase db lint --level warning`.
 
+### Pruebas E2E del borde HTTP
+
+`tests/e2e/` ejercita la app FastAPI completa por `POST /webhook`: firma HMAC, parseo del
+payload de Meta, idempotencia por `wamid`, ejecución de `BackgroundTasks` y el payload exacto
+que se enviaría a Graph. El proveedor LLM se guiona y el cliente de WhatsApp se reemplaza por
+un `httpx.MockTransport`, así que no hay red, Meta, Redis ni WhatsApp reales.
+
+Los casos cubren registro con preview, confirmación por botón con movimiento y recibo,
+duplicado del mismo `wamid`, error 500 de Graph y el enlace único de dashboard. Se ejecutan
+con la suite normal (`python -I .codex/dev.py test`) y son la capa que reemplaza la
+automatización de WhatsApp Web para regresión.
+
 ## Base de datos local
 
 Para una SQLite local descartable, se pueden crear las tablas desde los modelos:
