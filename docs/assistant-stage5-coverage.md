@@ -231,6 +231,23 @@ Límite: la clave Gemini del `.env` local está revocada (`API_KEY_INVALID`), as
 pudo replicar el proveedor exacto de producción; la tolerancia cubre el caso observado y
 el log de detalle permite confirmar el resto en el próximo intento.
 
+### Duplicación del enlace de dashboard (30/10/2026)
+
+La prueba de producto detectó que pedir el dashboard devolvía el acceso más de una vez. El
+tool agregaba el enlace a `outbound` y además emitía `dashboard.link.sent`; el transporte
+volvía a renderizar ese evento como otro mensaje con el mismo enlace, y el texto de la
+respuesta repetía el cuerpo del botón. Tres mensajes para un solo pedido.
+
+Corrección en `assistant_transport.assemble_reply`: para `dashboard.link.sent` y
+`movements.query_result` se elige un único enlace —el del flujo configurado si existe, el
+del backend si no—, se deduplican por URL los mensajes salientes y, en el dashboard, el
+botón pasa a ser el mensaje principal en lugar de sumarse al texto. La consulta de
+movimientos conserva su listado y envía un solo enlace.
+
+Evidencia: 4 pruebas nuevas en `tests/test_assistant_transport.py` (flujo configurado, sin
+flujo, consulta de movimientos y evento no relacionado); **1333 passed, 6 skipped,
+100.46 s**; Ruff y diff-check limpios.
+
 ## Riesgo y alcance de la evidencia
 
 El costo es validación/serialización y contratos/facts explícitos; a cambio las

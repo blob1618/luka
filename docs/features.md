@@ -215,7 +215,8 @@ procesa en silencio para no repetir una confirmación ya enviada.
   «mostrame solo mis egresos». Si el pedido es ambiguo, Luka pide aclaración.
 - Los pedidos en lenguaje natural para abrir, ver o recibir acceso al dashboard generan
   (o reutilizan) un enlace mágico para usuarios vinculados, con vencimiento corto y un
-  solo uso.
+  solo uso. El enlace se envía una sola vez por pedido: si el flujo configurado ya lo
+  presenta, el mensaje del backend no se duplica.
 
 ## Gráficos de movimientos en WhatsApp
 
