@@ -150,6 +150,15 @@ Para verificar un despliegue: `GET /version` devuelve el commit y la cantidad de
 
 Al arrancar, la app prueba Redis con un timeout de 3 segundos. Si falla, la API sigue disponible y el error queda en los logs; validar la conectividad con `GET /redis-test`. `main` es la rama de despliegue: Render la despliega automáticamente y las pruebas reales de WhatsApp dependen del número de Meta, la URL del webhook y la base compartida. Si el health check responde pero WhatsApp falla, revisar primero los logs de Render.
 
+### Smoke post-deploy
+
+El workflow `.github/workflows/deploy-smoke.yml` corre cuando termina CI sobre `main` y
+verifica el despliegue de Render sin tocar WhatsApp: espera hasta 10 minutos a que `/version`
+devuelva el commit mergeado, exige `/ready` en 200 y comprueba que un `POST /webhook` sin
+firma responda 403. Si el deploy quedó en un commit anterior, la base no está lista o la
+firma dejó de exigirse, el job falla. No usa secretos y puede ejecutarse a mano con
+`workflow_dispatch`.
+
 ## Flujo de trabajo del equipo
 
 La rama compartida y de despliegue es `main`. El flujo de ramas, PRs y verificación de tareas está en [../CONTRIBUTING.md](../CONTRIBUTING.md). GitHub Actions corre en pushes y en PRs a `main`; Render despliega `main` automáticamente.
