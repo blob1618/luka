@@ -66,3 +66,26 @@ def test_invalid_json_is_rejected(monkeypatch):
     monkeypatch.delenv('WHATSAPP_APP_SECRET', raising=False)
     response = client.post('/webhook', content=b'not-json', headers={'content-type': 'application/json'})
     assert response.status_code == 400
+
+
+def test_rejection_logs_diagnostics_without_payload(monkeypatch, caplog):
+    import logging
+    monkeypatch.setenv('WHATSAPP_APP_SECRET', SECRET)
+    body = raw_body()
+    with caplog.at_level(logging.WARNING, logger='app.main'):
+        post(body)
+    message = next(record.getMessage() for record in caplog.records
+                   if 'webhook_signature_invalid' in record.getMessage())
+    assert 'has_header=False' in message
+    assert f'content_length={len(body)}' in message
+    assert body.decode() not in message
+
+
+def test_rejection_with_header_reports_header_present(monkeypatch, caplog):
+    import logging
+    monkeypatch.setenv('WHATSAPP_APP_SECRET', SECRET)
+    with caplog.at_level(logging.WARNING, logger='app.main'):
+        post(raw_body(), 'sha256=' + '0' * 64)
+    message = next(record.getMessage() for record in caplog.records
+                   if 'webhook_signature_invalid' in record.getMessage())
+    assert 'has_header=True' in message
