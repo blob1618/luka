@@ -570,8 +570,11 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
     ticket futuro.
     """
     raw_body = await request.body()
-    if not _signature_valid(raw_body, request.headers.get(WEBHOOK_SIGNATURE_HEADER)):
-        logger.warning("webhook_signature_invalid")
+    signature_header = request.headers.get(WEBHOOK_SIGNATURE_HEADER)
+    if not _signature_valid(raw_body, signature_header):
+        # Diagnóstico sin secretos: distingue "no vino header" de "firma no coincide".
+        logger.warning("webhook_signature_invalid has_header=%s content_length=%d",
+                       bool(signature_header), len(raw_body))
         raise HTTPException(status_code=403, detail="Invalid signature")
     try:
         data = json.loads(raw_body)
