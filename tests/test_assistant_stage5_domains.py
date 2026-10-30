@@ -520,3 +520,24 @@ async def test_cancel_without_active_operation_lists_open_drafts(ingress, accoun
     await ingress.send('saldos', steps=[[('wallet_balances', {})]])
     response = await ingress.send('cancelá', steps=[])
     assert 'Borradores abiertos' in response.reply_text and 'luz' in response.reply_text
+
+
+@pytest.mark.asyncio
+async def test_relative_day_labeled_as_literal_still_prepares(ingress, accounts):
+    """Producción: el modelo manda «ayer» como literal y el registro no puede bloquearse."""
+    preview = await ingress.tool('register_movement',
+        register_now(date_spec={'kind': 'literal', 'evidence_span': 'ayer'}), 'Gasté 106 ayer')
+    assert preview.assistant_preview_delivery
+    state = await assistant_state.read(accounts[1])
+    reference = date.fromisoformat(next(iter(state['workspace']['operations'].values()))['reference_day'])
+    assert (reference - timedelta(days=1)).strftime('%d/%m/%Y') in preview.reply_text
+
+
+@pytest.mark.asyncio
+async def test_non_date_literal_still_asks_with_a_usable_question(ingress, accounts):
+    response = await ingress.tool('register_movement',
+        register_now(date_spec={'kind': 'literal', 'evidence_span': '2000'}), 'Gasté 2000 en uber')
+    assert not response.assistant_preview_delivery
+    assert 'hoy' in response.reply_text and 'ayer' in response.reply_text
+    with accounts[0]() as session:
+        assert session.query(MovimientoFinanciero).filter_by(descripcion='taxi').count() == 0

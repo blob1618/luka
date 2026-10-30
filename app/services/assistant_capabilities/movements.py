@@ -1,5 +1,6 @@
 """Movement reads and confirmed operations, backed by existing domain services."""
 import asyncio
+import logging
 from uuid import UUID
 
 from pydantic import Field
@@ -16,6 +17,8 @@ from app.services.assistant_capabilities.common import request_field
 from app.services.movement_commands import commit_command, digest, snapshot, validate_dependencies
 from app.services.movement_policy import registration_policy_reply
 from app.services.wallet import WalletService
+
+logger = logging.getLogger(__name__)
 
 
 def visible_movement(row):
@@ -143,8 +146,11 @@ class MovementOperation:
         try:
             target = args.date_spec.resolve(evidence.source_text if evidence else operation.original_text,
                 evidence.reference_day if evidence else operation.reference_day)
-        except ValueError:
-            return IncompleteOperation(missing_fields=(FieldRequest(field='date_spec', reason='invalid', question='La fecha no es válida. Indicá un día concreto para este movimiento.'),))
+        except ValueError as exc:
+            logger.warning('date_spec_invalid kind=%s has_span=%s detail=%s',
+                           args.date_spec.kind, bool(args.date_spec.evidence_span), str(exc)[:120])
+            return IncompleteOperation(missing_fields=(FieldRequest(field='date_spec', reason='invalid',
+                question='La fecha no es válida. Decime el día: «hoy», «ayer» o «30/10».'),))
         if self.command_kind == 'register':
             wallet_id = (await context.references.resolve(context.turn, args.wallet_ref, kind='wallet', payload_model=EntityReference)).id if args.wallet_ref else None
             category_id = (await context.references.resolve(context.turn, args.category_ref, kind='category', payload_model=EntityReference)).id if args.category_ref else None

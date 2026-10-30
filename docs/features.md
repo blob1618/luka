@@ -21,7 +21,10 @@ financiero: `ingreso` o `egreso`. El backend confirma únicamente después de pe
   moneda se selecciona automáticamente; varias requieren selección explícita y ninguna
   produce `needs_wallet_creation`. El writer no crea billeteras ni elige entre varias.
 - La fecha del movimiento se resuelve contra la fecha actual cuando el mensaje usa
-  expresiones relativas («ayer», «el martes») y por defecto es hoy.
+  expresiones relativas («ayer», «el martes») y por defecto es hoy. «Hoy», «ayer»,
+  «anteayer» y «pasado mañana» se resuelven desde el texto citado aunque el modelo los
+  etiquete como fecha literal; una fecha imposible o un importe citado como fecha se
+  rechazan con una pregunta que ofrece formatos («hoy», «ayer», «30/10»).
 - La categoría es opcional. Se resuelve contra la taxonomía base y las categorías
   activas del usuario; sin coincidencia, el movimiento se guarda con `categoria_id`
   nulo y la respuesta lo indica. Nunca se crea una categoría sin confirmación explícita

@@ -143,7 +143,7 @@ async def prepare_update(context, operation):
         except (ValueError, AttributeError):
             from app.services.assistant_contracts import FieldRequest, IncompleteOperation
             return IncompleteOperation(missing_fields=(FieldRequest(field='changes.date_spec', reason='invalid',
-                question='La fecha no es válida. Indicá un día concreto para este movimiento.'),))
+                question='La fecha no es válida. Decime el día: «hoy», «ayer» o «30/10».'),))
     if not patch:
         raise ValueError('Indicá al menos un campo a modificar')
     parts = []

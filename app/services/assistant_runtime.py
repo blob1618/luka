@@ -154,7 +154,8 @@ async def _run(context, registry, action, provider, history):
                         tuple(x.strip() for x in os.getenv('LUKA_TOOLS_MODELS', '').split(',') if x.strip()) or
                         ((provider._get_model(),) if hasattr(provider, '_get_model') else ()))), remaining)
         except Exception as exc:
-            logger.warning('assistant_provider_failed error=%s', type(exc).__name__)
+            logger.warning('assistant_provider_failed error=%s detail=%s',
+                           type(exc).__name__, str(exc)[:200])
             context.presenter.add(['No pude completar la selección de herramientas; no confirmé ninguna escritura.'])
             break
         if not turn.calls:
