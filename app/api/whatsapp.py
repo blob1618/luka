@@ -10,6 +10,17 @@ import httpx
 
 
 DEFAULT_WHATSAPP_GRAPH_API_VERSION = "v26.0"
+DEFAULT_WHATSAPP_GRAPH_BASE_URL = "https://graph.facebook.com"
+
+
+def whatsapp_graph_base_url() -> str:
+    """Graph base URL. Tests and staging point it at a local mock instead of Meta."""
+    base = os.getenv("WHATSAPP_GRAPH_BASE_URL", "").strip() or DEFAULT_WHATSAPP_GRAPH_BASE_URL
+    return base.rstrip("/")
+
+
+def graph_api_url(path: str) -> str:
+    return f"{whatsapp_graph_base_url()}/{path.lstrip('/')}"
 
 
 class WhatsAppDeliveryStatus(str, Enum):
@@ -450,7 +461,7 @@ async def send_whatsapp_message_detailed(
             )
         return invalid_result
 
-    url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
+    url = graph_api_url(f"{api_version}/{phone_id}/messages")
     headers = {
         "Authorization": f"Bearer {api_token}",
         "Content-Type": "application/json",
@@ -578,7 +589,7 @@ async def _upload_whatsapp_image(
     phone_id: str,
     api_version: str,
 ) -> tuple[WhatsAppSendResult, str | None]:
-    url = f"https://graph.facebook.com/{api_version}/{phone_id}/media"
+    url = graph_api_url(f"{api_version}/{phone_id}/media")
     client = get_whatsapp_client()
     try:
         response = await client.post(
@@ -691,7 +702,7 @@ async def send_whatsapp_reaction(
         },
     }
 
-    url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
+    url = graph_api_url(f"{api_version}/{phone_id}/messages")
     headers = {
         "Authorization": f"Bearer {api_token}",
         "Content-Type": "application/json",
@@ -734,7 +745,7 @@ async def send_whatsapp_typing_indicator(message_id: str) -> bool:
         "typing_indicator": {"type": "text"},
     }
 
-    url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
+    url = graph_api_url(f"{api_version}/{phone_id}/messages")
     headers = {
         "Authorization": f"Bearer {api_token}",
         "Content-Type": "application/json",

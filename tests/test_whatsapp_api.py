@@ -15,7 +15,9 @@ from app.api.whatsapp import (
     build_whatsapp_payload,
     close_whatsapp_client,
     get_whatsapp_client,
+    graph_api_url,
     parse_interactive_reply,
+    whatsapp_graph_base_url,
     WhatsAppDeliveryStatus,
     send_whatsapp_message,
     send_whatsapp_message_detailed,
@@ -765,3 +767,15 @@ async def test_ambiguous_image_timeout_is_not_retried_and_sends_text_fallback(mo
     ]
     assert len(image_posts) == 1
     assert client.post.await_args_list[-1].kwargs["json"]["type"] == "text"
+
+
+def test_graph_base_url_defaults_to_meta(monkeypatch):
+    monkeypatch.delenv("WHATSAPP_GRAPH_BASE_URL", raising=False)
+    assert whatsapp_graph_base_url() == "https://graph.facebook.com"
+    assert graph_api_url("v26.0/123/messages") == "https://graph.facebook.com/v26.0/123/messages"
+
+
+def test_graph_base_url_can_point_to_a_staging_mock(monkeypatch):
+    monkeypatch.setenv("WHATSAPP_GRAPH_BASE_URL", "http://mock-graph:8080/")
+    assert whatsapp_graph_base_url() == "http://mock-graph:8080"
+    assert graph_api_url("v26.0/123/media") == "http://mock-graph:8080/v26.0/123/media"
