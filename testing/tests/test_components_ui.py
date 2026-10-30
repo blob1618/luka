@@ -4,7 +4,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
-from testing.config.settings import TestingConfig, new_session
+from testing.config.settings import TestingConfig as Config, new_session
 
 
 def make_session(
@@ -21,7 +21,7 @@ def make_session(
 
 
 def make_config(*sessions, active_index=0, **kwargs):
-    config = TestingConfig(**kwargs)
+    config = Config(**kwargs)
     config.sessions.extend(sessions)
     if sessions:
         config.active_session_id = sessions[active_index].id
@@ -350,9 +350,9 @@ class TestSidebarSessions:
 
 class TestSinModoDirecto:
     def test_config_no_tiene_campo_modo(self):
-        from testing.config.settings import TestingConfig
+        from testing.config.settings import TestingConfig as Config
 
-        assert not hasattr(TestingConfig(), "mode")
+        assert not hasattr(Config(), "mode")
 
     def test_sidebar_no_renderiza_radio_de_modo(self, mock_st):
         from testing.components.sidebar import render_sidebar
@@ -401,7 +401,7 @@ class TestRenderDebug:
         st.expander.return_value.__exit__ = MagicMock(return_value=False)
 
         render_debug(
-            {"raw_json": {"intent": "expense"}, "latency_ms": 42.5, "service_log": "x", "redis_state": {"step": "none"}},
+            {"tool_trace": {"intent": "expense"}, "latency_ms": 42.5, "service_log": "x", "redis_state": {"step": "none"}},
             {"json": True, "latency": True, "redis": True, "logs": True},
         )
 
@@ -459,26 +459,26 @@ class TestChatLogic:
     def test_get_prompt_path_default(self):
         from testing.components.chat import _get_prompt_path
 
-        config = TestingConfig(prompt_path="prompt.md")
+        config = Config(prompt_path="prompt.md")
         assert _get_prompt_path(config) == "prompt.md"
 
     def test_get_prompt_path_custom(self):
         from testing.components.chat import _get_prompt_path
 
-        config = TestingConfig(prompt_path="prompt_v2.md")
+        config = Config(prompt_path="prompt_v2.md")
         assert _get_prompt_path(config) == "testing/prompts/prompt_v2.md"
 
     def test_get_prompt_path_repo_relative(self):
         from testing.components.chat import _get_prompt_path
 
-        config = TestingConfig(prompt_path="prompts/core_prompt.md")
+        config = Config(prompt_path="prompts/core_prompt.md")
         assert _get_prompt_path(config) == "prompts/core_prompt.md"
 
     @pytest.mark.asyncio
     async def test_process_message_webhook_mode(self, mock_st):
         from testing.components.chat import _process_message
 
-        config = TestingConfig()
+        config = Config()
 
         with (
             patch(
@@ -488,7 +488,8 @@ class TestChatLogic:
         ):
             mock_send.return_value = MagicMock(
                 reply_text="✅ registrado",
-                raw_llm_response={"intent": "expense"},
+                tool_trace=[{"tool":"register_movement"}],
+                interactions=[], error=None, delivery="synthetic", message_id="test", metrics={},
                 service_invoked="finance",
                 intent="expense",
                 latency_ms=5.0,
@@ -511,7 +512,7 @@ class TestChatLogic:
     async def test_process_message_webhook_unknown_service(self, mock_st):
         from testing.components.chat import _process_message
 
-        config = TestingConfig()
+        config = Config()
 
         with (
             patch(
@@ -521,7 +522,8 @@ class TestChatLogic:
         ):
             mock_send.return_value = MagicMock(
                 reply_text="ok",
-                raw_llm_response=None,
+                tool_trace=[],
+                interactions=[], error=None, delivery="synthetic", message_id="test", metrics={},
                 service_invoked=None,
                 intent=None,
                 latency_ms=1.0,
@@ -565,7 +567,7 @@ class TestChatLogic:
                     {
                         "role": "assistant",
                         "content": "respuesta",
-                        "debug": {"raw_json": {"intent": "greeting"}, "latency_ms": 5.0},
+                        "debug": {"tool_trace": {"intent": "greeting"}, "latency_ms": 5.0},
                     },
                 ]
             ),
@@ -665,7 +667,7 @@ class TestRenderChat:
 
         chat_st = mock_st["chat"]
 
-        render_chat(TestingConfig())
+        render_chat(Config())
 
         chat_st.info.assert_called_once()
         chat_st.chat_message.assert_not_called()
@@ -795,7 +797,7 @@ class TestRenderChat:
                 new_callable=AsyncMock,
                 return_value=(
                     "No he podido analizar tu mensaje en este momento.",
-                    {"raw_json": {"intent": "out_of_scope", "error": "RuntimeError: API timeout"}},
+                    {"error": "RuntimeError: API timeout"},
                     None,
                     None,
                 ),
@@ -878,7 +880,7 @@ class TestRenderChatCopyButtons:
                     {
                         "role": "assistant",
                         "content": "ok",
-                        "debug": {"latency_ms": 42.0, "raw_json": {"intent": "greeting"}},
+                        "debug": {"latency_ms": 42.0, "tool_trace": {"intent": "greeting"}},
                     },
                 ]
             )

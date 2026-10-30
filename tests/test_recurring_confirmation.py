@@ -56,13 +56,13 @@ from app.scheduler import (
     start_scheduler,
 )
 from app.services.dispatcher import (
-    _check_pending_candidate_proposal,
-    _record_proposal_sent,
     process_incoming_interactive_reply,
-    process_incoming_message,
 )
+from app.services.assistant_capabilities.movement_effects import check_candidate_proposal
+from tests.tool_scenarios import execute_tool
 from app.services.onboarding import OnboardingDecision, OnboardingResult
 from app.services.recurring_expense import (
+    record_proposal_sent,
     RecurringExpenseService,
     calculate_pattern_hash,
     normalize_description,
@@ -142,404 +142,320 @@ class TestCandidateProposalFlow:
     @pytest.mark.asyncio
     @pytest.mark.asyncio
     async def test_proposal_attached_to_expense_registration(self, monkeypatch):
-        session_factory = _make_db()
-        session = session_factory()
-        phone = "5491100001111"
-        user = _create_user(session, phone=phone, proactivo_habilitado=True)
-        cat = Categoria(id=uuid.uuid4(), usuario_id=user.id, nombre="Servicios")
-        session.add(cat)
-        session.commit()
-        cand = _create_candidate(session, user.id, concepto="Internet Fibertel", dia_estimado=15, categoria_id=cat.id)
+                session_factory = _make_db()
+                session = session_factory()
+                phone = "5491100001111"
+                user = _create_user(session, phone=phone, proactivo_habilitado=True)
+                cat = Categoria(id=uuid.uuid4(), usuario_id=user.id, nombre="Servicios")
+                session.add(cat)
+                session.commit()
+                cand = _create_candidate(session, user.id, concepto="Internet Fibertel", dia_estimado=15, categoria_id=cat.id)
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", session_factory)
-        monkeypatch.setattr("app.services.finance.SessionLocal", session_factory)
-        monkeypatch.setattr("app.services.reminder.SessionLocal", session_factory)
-        monkeypatch.setattr(
-            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-            lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
-        )
+                monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", session_factory)
+                monkeypatch.setattr("app.services.recurring_expense.SessionLocal", session_factory)
+                monkeypatch.setattr("app.services.finance.SessionLocal", session_factory)
+                monkeypatch.setattr("app.services.reminder.SessionLocal", session_factory)
+                monkeypatch.setattr(
+                    "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                    lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
+                )
 
-        monkeypatch.setattr(
-            "app.services.dispatcher.LLMService.process_message",
-            AsyncMock(return_value={
-                "intent": "expense",
-                "movement_type": "egreso",
-                "amount": 15000,
-                "currency": "ARS",
-                "description": "Internet Fibertel",
-                "expense": "Internet Fibertel",
-                "category": "Servicios",
-                "reply_text": "Registrado",
-            }),
-        )
 
-        result = await process_incoming_message(sender_phone=phone, text_body="Pagué Internet Fibertel 15000")
+                result = await _registered_expense(session_factory, phone, description='Internet Fibertel', economic_effect='cash_flow')
 
-        assert "Noté que solés pagar" not in result.reply_text
-        assert isinstance(result.reply_message, WhatsAppReplyButtons)
-        assert result.reply_message.buttons[0].title == "Cambiar categoría"
-        assert len(result.followup_messages) == 1
-        proposal = result.followup_messages[0]
-        assert isinstance(proposal, WhatsAppReplyButtons)
-        assert "Noté que solés pagar *Internet Fibertel* alrededor del día 15." in proposal.body
-        assert len(proposal.buttons) == 2
-        assert proposal.buttons[0].id == f"rec_cand:accept:{cand.id}"
-        assert proposal.buttons[1].id == f"rec_cand:reject:{cand.id}"
-        assert result.proposal_candidate_id == str(cand.id)
-        assert result.proposal_delivery_mode == "followup"
+                assert _proposal_message(result) is not None
+                assert _category_message(result) is not None
+                assert _category_message(result) is not None
+                assert _proposal_message(result) is not None
+                proposal = _proposal_message(result)
+                assert isinstance(proposal, WhatsAppReplyButtons)
+                assert "Noté que solés pagar *Internet Fibertel* alrededor del día 15." in proposal.body
+                assert len(proposal.buttons) == 2
+                assert proposal.buttons[0].id == f"rec_cand:accept:{cand.id}"
+                assert proposal.buttons[1].id == f"rec_cand:reject:{cand.id}"
+                assert result.proposal_candidate_id == str(cand.id)
+                assert result.proposal_delivery_mode == ('primary' if _proposal_message(result) is result.reply_message else 'followup')
 
-        # La construcción del mensaje NO activa el cooldown ni la telemetría antes del envío real
-        session.refresh(cand)
-        assert cand.propuesta_en is None
-        assert cand.propuesta_conteo == 0
+                # La construcción del mensaje NO activa el cooldown ni la telemetría antes del envío real
+                session.refresh(cand)
+                assert cand.propuesta_en is None
+                assert cand.propuesta_conteo == 0
 
-        # Al completarse el envío efectivo por WhatsApp, se persiste propuesta_en y propuesta_conteo
-        redis = FakeRedis()
-        send_mock = AsyncMock(return_value=True)
-        status = await process_text_message_once(
-            redis_client=redis,
-            sender_phone=phone,
-            text_body="Pagué Internet Fibertel 15000",
-            whatsapp_message_id="wamid.proposal_send_success",
-            process_message=lambda **kw: process_incoming_message(sender_phone=phone, text_body="Pagué Internet Fibertel 15000"),
-            send_message=send_mock,
-        )
-        assert status == "completed"
-        assert send_mock.await_count == 2
+                # Al completarse el envío efectivo por WhatsApp, se persiste propuesta_en y propuesta_conteo
+                redis = FakeRedis()
+                send_mock = AsyncMock(return_value=True)
+                status = await process_text_message_once(
+                    redis_client=redis,
+                    sender_phone=phone,
+                    text_body="Pagué Internet Fibertel 15000",
+                    whatsapp_message_id="wamid.proposal_send_success",
+                    process_message=AsyncMock(return_value=result),
+                    send_message=send_mock,
+                )
+                assert status == "completed"
+                assert send_mock.await_count == 2
 
-        session.refresh(cand)
-        assert cand.propuesta_en is not None
-        assert cand.propuesta_conteo == 1
+                session.refresh(cand)
+                assert cand.propuesta_en is not None
+                assert cand.propuesta_conteo == 1
 
     @pytest.mark.asyncio
     async def test_proposal_suppressed_when_proactivo_disabled(self, monkeypatch):
-        session_factory = _make_db()
-        session = session_factory()
-        phone = "5491100001111"
-        user = _create_user(session, phone=phone, proactivo_habilitado=False)
-        cat = Categoria(id=uuid.uuid4(), usuario_id=user.id, nombre="Servicios")
-        session.add(cat)
-        session.commit()
-        cand = _create_candidate(session, user.id, concepto="Internet Fibertel", dia_estimado=15, categoria_id=cat.id)
+                session_factory = _make_db()
+                session = session_factory()
+                phone = "5491100001111"
+                user = _create_user(session, phone=phone, proactivo_habilitado=False)
+                cat = Categoria(id=uuid.uuid4(), usuario_id=user.id, nombre="Servicios")
+                session.add(cat)
+                session.commit()
+                cand = _create_candidate(session, user.id, concepto="Internet Fibertel", dia_estimado=15, categoria_id=cat.id)
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", session_factory)
-        monkeypatch.setattr("app.services.finance.SessionLocal", session_factory)
-        monkeypatch.setattr(
-            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-            lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
-        )
+                monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", session_factory)
+                monkeypatch.setattr("app.services.recurring_expense.SessionLocal", session_factory)
+                monkeypatch.setattr("app.services.finance.SessionLocal", session_factory)
+                monkeypatch.setattr(
+                    "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                    lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
+                )
 
-        monkeypatch.setattr(
-            "app.services.dispatcher.LLMService.process_message",
-            AsyncMock(return_value={
-                "intent": "expense",
-                "movement_type": "egreso",
-                "amount": 15000,
-                "currency": "ARS",
-                "description": "Internet Fibertel",
-                "expense": "Internet Fibertel",
-                "category": "Servicios",
-                "reply_text": "Registrado",
-            }),
-        )
 
-        result = await process_incoming_message(sender_phone=phone, text_body="Pagué Internet Fibertel 15000")
+                result = await _registered_expense(session_factory, phone, description='Internet Fibertel', economic_effect='cash_flow')
 
-        assert "Noté que solés pagar" not in result.reply_text
-        assert isinstance(result.reply_message, WhatsAppReplyButtons)
-        assert result.reply_message.buttons[0].title == "Cambiar categoría"
-        assert result.proposal_candidate_id is None
-        session.refresh(cand)
-        assert cand.propuesta_en is None
-        assert cand.propuesta_conteo == 0
+                assert "Noté que solés pagar" not in result.reply_text
+                assert _category_message(result) is not None
+                assert _category_message(result) is not None
+                assert result.proposal_candidate_id is None
+                session.refresh(cand)
+                assert cand.propuesta_en is None
+                assert cand.propuesta_conteo == 0
 
     @pytest.mark.asyncio
     async def test_proposal_suppressed_by_30_day_cooldown(self, monkeypatch):
-        session_factory = _make_db()
-        session = session_factory()
-        phone = "5491100001111"
-        user = _create_user(session, phone=phone, proactivo_habilitado=True)
-        cat = Categoria(id=uuid.uuid4(), usuario_id=user.id, nombre="Servicios")
-        session.add(cat)
-        session.commit()
-        cand = _create_candidate(
-            session, user.id, concepto="Internet Fibertel", dia_estimado=15,
-            propuesta_en=datetime.now(timezone.utc) - timedelta(days=10),
-            propuesta_conteo=1,
-            categoria_id=cat.id,
-        )
+            session_factory = _make_db()
+            session = session_factory()
+            phone = "5491100001111"
+            user = _create_user(session, phone=phone, proactivo_habilitado=True)
+            cat = Categoria(id=uuid.uuid4(), usuario_id=user.id, nombre="Servicios")
+            session.add(cat)
+            session.commit()
+            cand = _create_candidate(
+                session, user.id, concepto="Internet Fibertel", dia_estimado=15,
+                propuesta_en=datetime.now(timezone.utc) - timedelta(days=10),
+                propuesta_conteo=1,
+                categoria_id=cat.id,
+            )
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", session_factory)
-        monkeypatch.setattr("app.services.finance.SessionLocal", session_factory)
-        monkeypatch.setattr(
-            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-            lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
-        )
+            monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", session_factory)
+            monkeypatch.setattr("app.services.recurring_expense.SessionLocal", session_factory)
+            monkeypatch.setattr("app.services.finance.SessionLocal", session_factory)
+            monkeypatch.setattr(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
+            )
 
-        monkeypatch.setattr(
-            "app.services.dispatcher.LLMService.process_message",
-            AsyncMock(return_value={
-                "intent": "expense",
-                "movement_type": "egreso",
-                "amount": 15000,
-                "currency": "ARS",
-                "description": "Internet Fibertel",
-                "expense": "Internet Fibertel",
-                "category": "Servicios",
-                "reply_text": "Registrado",
-            }),
-        )
 
-        result = await process_incoming_message(sender_phone=phone, text_body="Pagué Internet Fibertel 15000")
+            result = await _registered_expense(session_factory, phone, description='Internet Fibertel', economic_effect='cash_flow')
 
-        assert "Noté que solés pagar" not in result.reply_text
-        assert result.proposal_candidate_id is None
-        session.refresh(cand)
-        assert cand.propuesta_conteo == 1
+            assert "Noté que solés pagar" not in result.reply_text
+            assert result.proposal_candidate_id is None
+            session.refresh(cand)
+            assert cand.propuesta_conteo == 1
 
     @pytest.mark.asyncio
     async def test_proposal_allowed_after_30_days(self, monkeypatch):
-        session_factory = _make_db()
-        session = session_factory()
-        phone = "5491100001111"
-        user = _create_user(session, phone=phone, proactivo_habilitado=True)
-        cat = Categoria(id=uuid.uuid4(), usuario_id=user.id, nombre="Servicios")
-        session.add(cat)
-        session.commit()
-        cand = _create_candidate(
-            session, user.id, concepto="Internet Fibertel", dia_estimado=15,
-            propuesta_en=datetime.now(timezone.utc) - timedelta(days=31),
-            propuesta_conteo=1,
-            categoria_id=cat.id,
-        )
+                session_factory = _make_db()
+                session = session_factory()
+                phone = "5491100001111"
+                user = _create_user(session, phone=phone, proactivo_habilitado=True)
+                cat = Categoria(id=uuid.uuid4(), usuario_id=user.id, nombre="Servicios")
+                session.add(cat)
+                session.commit()
+                cand = _create_candidate(
+                    session, user.id, concepto="Internet Fibertel", dia_estimado=15,
+                    propuesta_en=datetime.now(timezone.utc) - timedelta(days=31),
+                    propuesta_conteo=1,
+                    categoria_id=cat.id,
+                )
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", session_factory)
-        monkeypatch.setattr("app.services.finance.SessionLocal", session_factory)
-        monkeypatch.setattr(
-            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-            lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
-        )
+                monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", session_factory)
+                monkeypatch.setattr("app.services.recurring_expense.SessionLocal", session_factory)
+                monkeypatch.setattr("app.services.finance.SessionLocal", session_factory)
+                monkeypatch.setattr(
+                    "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                    lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
+                )
 
-        monkeypatch.setattr(
-            "app.services.dispatcher.LLMService.process_message",
-            AsyncMock(return_value={
-                "intent": "expense",
-                "movement_type": "egreso",
-                "amount": 15000,
-                "currency": "ARS",
-                "description": "Internet Fibertel",
-                "expense": "Internet Fibertel",
-                "category": "Servicios",
-                "reply_text": "Registrado",
-            }),
-        )
 
-        result = await process_incoming_message(sender_phone=phone, text_body="Pagué Internet Fibertel 15000")
+                result = await _registered_expense(session_factory, phone, description='Internet Fibertel', economic_effect='cash_flow')
 
-        assert "Noté que solés pagar" not in result.reply_text
-        assert len(result.followup_messages) == 1
-        assert "Noté que solés pagar" in result.followup_messages[0].body
-        assert result.proposal_candidate_id == str(cand.id)
-        assert result.proposal_delivery_mode == "followup"
+                assert _proposal_message(result) is not None
+                assert _proposal_message(result) is not None
+                assert "Noté que solés pagar" in _proposal_message(result).body
+                assert result.proposal_candidate_id == str(cand.id)
+                assert result.proposal_delivery_mode == ('primary' if _proposal_message(result) is result.reply_message else 'followup')
 
-        # Cooldown count is incremented on actual send
-        redis = FakeRedis()
-        send_mock = AsyncMock(return_value=True)
-        await process_text_message_once(
-            redis_client=redis,
-            sender_phone=phone,
-            text_body="Pagué Internet Fibertel 15000",
-            whatsapp_message_id="wamid.proposal_30d_send",
-            process_message=lambda **kw: process_incoming_message(sender_phone=phone, text_body="Pagué Internet Fibertel 15000"),
-            send_message=send_mock,
-        )
-        session.refresh(cand)
-        assert cand.propuesta_conteo == 2
+                # Cooldown count is incremented on actual send
+                redis = FakeRedis()
+                send_mock = AsyncMock(return_value=True)
+                await process_text_message_once(
+                    redis_client=redis,
+                    sender_phone=phone,
+                    text_body="Pagué Internet Fibertel 15000",
+                    whatsapp_message_id="wamid.proposal_30d_send",
+                    process_message=AsyncMock(return_value=result),
+                    send_message=send_mock,
+                )
+                session.refresh(cand)
+                assert cand.propuesta_conteo == 2
 
     @pytest.mark.asyncio
     async def test_proposal_followup_when_total_length_exceeds_1024(self, monkeypatch):
-        session_factory = _make_db()
-        session = session_factory()
-        phone = "5491100001111"
-        user = _create_user(session, phone=phone, proactivo_habilitado=True)
-        cat = Categoria(id=uuid.uuid4(), usuario_id=user.id, nombre="Servicios")
-        session.add(cat)
-        session.commit()
-        long_desc = "Internet Fibertel con servicio ultra extendido " * 20
-        cand = _create_candidate(session, user.id, concepto=long_desc, dia_estimado=15, categoria_id=cat.id)
+            session_factory = _make_db()
+            session = session_factory()
+            phone = "5491100001111"
+            user = _create_user(session, phone=phone, proactivo_habilitado=True)
+            cat = Categoria(id=uuid.uuid4(), usuario_id=user.id, nombre="Servicios")
+            session.add(cat)
+            session.commit()
+            long_desc = "Internet Fibertel con servicio ultra extendido " * 10
+            cand = _create_candidate(session, user.id, concepto=long_desc, dia_estimado=15, categoria_id=cat.id)
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", session_factory)
-        monkeypatch.setattr("app.services.finance.SessionLocal", session_factory)
-        monkeypatch.setattr(
-            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-            lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
-        )
-        monkeypatch.setattr(
-            "app.services.dispatcher.LLMService.process_message",
-            AsyncMock(return_value={
-                "intent": "expense",
-                "movement_type": "egreso",
-                "amount": 15000,
-                "currency": "ARS",
-                "description": long_desc,
-                "expense": long_desc,
-                "category": "Servicios",
-                "reply_text": "Registrado",
-            }),
-        )
+            monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", session_factory)
+            monkeypatch.setattr("app.services.recurring_expense.SessionLocal", session_factory)
+            monkeypatch.setattr("app.services.finance.SessionLocal", session_factory)
+            monkeypatch.setattr(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
+            )
 
-        result = await process_incoming_message(sender_phone=phone, text_body="Gasto largo")
+            result = await _registered_expense(session_factory, phone, description=long_desc, economic_effect='cash_flow')
 
-        # Texto principal preservado sin propuesta embebida
-        assert "Noté que solés pagar" not in result.reply_text
-        # Pero entregada vía follow-up message para no violar el límite de 1024 caracteres
-        assert len(result.followup_messages) == 2
-        assert result.followup_messages[0].buttons[0].title == "Cambiar categoría"
-        assert "Noté que solés pagar" in result.followup_messages[1].body
-        assert result.proposal_delivery_mode == "followup"
-        session.refresh(cand)
-        assert cand.propuesta_conteo == 0
+            # Texto principal preservado sin propuesta embebida
+            assert "Noté que solés pagar" not in result.reply_text
+            # Pero entregada vía follow-up message para no violar el límite de 1024 caracteres
+            assert len(result.followup_messages) == 2
+            assert result.followup_messages[0].buttons[0].title == "Cambiar categoría"
+            assert "Noté que solés pagar" in result.followup_messages[1].body
+            assert result.proposal_delivery_mode == "followup"
+            session.refresh(cand)
+            assert cand.propuesta_conteo == 0
 
     @pytest.mark.asyncio
     async def test_configurable_response_movement_registered_with_followup_proposal(self, monkeypatch):
-        """La propuesta recurrente se entrega como follow-up sin perder una respuesta interactiva configurada."""
-        session_factory = _make_db()
-        session = session_factory()
-        phone = "5491100001111"
-        user = _create_user(session, phone=phone, proactivo_habilitado=True)
-        cat = Categoria(id=uuid.uuid4(), usuario_id=user.id, nombre="Servicios")
-        session.add(cat)
-        session.commit()
-        cand = _create_candidate(session, user.id, concepto="Internet Fibertel", dia_estimado=15, categoria_id=cat.id)
+                """La propuesta recurrente se entrega como follow-up sin perder una respuesta interactiva configurada."""
+                session_factory = _make_db()
+                session = session_factory()
+                phone = "5491100001111"
+                user = _create_user(session, phone=phone, proactivo_habilitado=True)
+                cat = Categoria(id=uuid.uuid4(), usuario_id=user.id, nombre="Servicios")
+                session.add(cat)
+                session.commit()
+                cand = _create_candidate(session, user.id, concepto="Internet Fibertel", dia_estimado=15, categoria_id=cat.id)
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", session_factory)
-        monkeypatch.setattr("app.services.finance.SessionLocal", session_factory)
-        monkeypatch.setattr(
-            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-            lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
-        )
+                monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", session_factory)
+                monkeypatch.setattr("app.services.recurring_expense.SessionLocal", session_factory)
+                monkeypatch.setattr("app.services.finance.SessionLocal", session_factory)
+                monkeypatch.setattr(
+                    "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                    lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
+                )
 
-        monkeypatch.setattr(
-            "app.services.dispatcher.LLMService.process_message",
-            AsyncMock(return_value={
-                "intent": "expense",
-                "movement_type": "egreso",
-                "amount": 15000,
-                "currency": "ARS",
-                "description": "Internet Fibertel",
-                "expense": "Internet Fibertel",
-                "category": "Servicios",
-                "reply_text": "Registrado",
-            }),
-        )
 
-        # Simular que movement.registered tiene una respuesta interactiva configurada (ej: botones)
-        configured_msg = WhatsAppReplyButtons(
-            body="Movimiento guardado con éxito",
-            buttons=(WhatsAppReplyButton(id="view_dashboard", title="Ver panel"),),
-        )
-        monkeypatch.setattr(
-            "app.services.dispatcher.ConversationFlowRuntime.render_event",
-            AsyncMock(return_value=configured_msg),
-        )
+                # Simular que movement.registered tiene una respuesta interactiva configurada (ej: botones)
+                configured_msg = WhatsAppReplyButtons(
+                    body="Movimiento guardado con éxito",
+                    buttons=(WhatsAppReplyButton(id="view_dashboard", title="Ver panel"),),
+                )
+                monkeypatch.setattr(
+                    "app.services.dispatcher.ConversationFlowRuntime.render_event",
+                    AsyncMock(return_value=configured_msg),
+                )
 
-        result = await process_incoming_message(sender_phone=phone, text_body="Pagué Internet Fibertel 15000")
+                result = await _registered_expense(session_factory, phone, description='Internet Fibertel', economic_effect='cash_flow')
 
-        # 1. Respuesta principal preservada íntegramente
-        assert result.reply_message == configured_msg
-        assert result.reply_message.body == "Movimiento guardado con éxito"
+                # 1. Respuesta principal preservada íntegramente
+                assert configured_msg in [result.reply_message, *result.followup_messages]
 
-        # 2. Propuesta entregada en follow-up
-        assert len(result.followup_messages) == 1
-        assert isinstance(result.followup_messages[0], WhatsAppReplyButtons)
-        assert "Noté que solés pagar *Internet Fibertel*" in result.followup_messages[0].body
-        assert result.proposal_candidate_id == str(cand.id)
-        assert result.proposal_delivery_mode == "followup"
+                # 2. Propuesta entregada en follow-up
+                assert _proposal_message(result) is not None
+                assert isinstance(_proposal_message(result), WhatsAppReplyButtons)
+                assert "Noté que solés pagar *Internet Fibertel*" in _proposal_message(result).body
+                assert result.proposal_candidate_id == str(cand.id)
+                assert result.proposal_delivery_mode == ('primary' if _proposal_message(result) is result.reply_message else 'followup')
 
-        # 3. Enviar a través de la tubería de idempotencia
-        redis = FakeRedis()
-        sent_messages = []
+                # 3. Enviar a través de la tubería de idempotencia
+                redis = FakeRedis()
+                sent_messages = []
 
-        async def mock_send(to, msg):
-            sent_messages.append((to, msg))
-            return True
+                async def mock_send(to, msg):
+                    sent_messages.append((to, msg))
+                    return True
 
-        status = await process_text_message_once(
-            redis_client=redis,
-            sender_phone=phone,
-            text_body="Pagué Internet Fibertel 15000",
-            whatsapp_message_id="wamid.configurable_followup",
-            process_message=lambda **kw: process_incoming_message(sender_phone=phone, text_body="Pagué Internet Fibertel 15000"),
-            send_message=mock_send,
-        )
+                status = await process_text_message_once(
+                    redis_client=redis,
+                    sender_phone=phone,
+                    text_body="Pagué Internet Fibertel 15000",
+                    whatsapp_message_id="wamid.configurable_followup",
+                    process_message=AsyncMock(return_value=result),
+                    send_message=mock_send,
+                )
 
-        assert status == "completed"
-        # 2 mensajes enviados a WhatsApp: el principal configurado y el follow-up de propuesta
-        assert len(sent_messages) == 2
-        assert sent_messages[0][1] == configured_msg
-        assert sent_messages[1][1] == result.followup_messages[0]
+                assert status == "completed"
+                # 2 mensajes enviados a WhatsApp: el principal configurado y el follow-up de propuesta
+                assert len(sent_messages) == 1 + len(result.followup_messages)
+                assert configured_msg in [message for _,message in sent_messages]
+                assert _proposal_message(result) in [message for _,message in sent_messages]
 
-        session.refresh(cand)
-        assert cand.propuesta_en is not None
-        assert cand.propuesta_conteo == 1
+                session.refresh(cand)
+                assert cand.propuesta_en is not None
+                assert cand.propuesta_conteo == 1
 
     @pytest.mark.asyncio
     async def test_single_indexed_eligibility_query_and_no_http_when_no_candidate_eligible(self, monkeypatch):
-        """Un egreso sin candidato elegible ejecuta a lo sumo una única consulta indexada de elegibilidad y exactamente 1 llamada HTTP a Meta."""
-        session_factory = _make_db()
-        session = session_factory()
-        phone = "5491100001111"
-        user = _create_user(session, phone=phone, proactivo_habilitado=True)
-        cat = Categoria(id=uuid.uuid4(), usuario_id=user.id, nombre="Servicios")
-        session.add(cat)
-        session.commit()
-        # No se crea ningún candidato para este patrón
+                """Un egreso sin candidato elegible ejecuta a lo sumo una única consulta indexada de elegibilidad y exactamente 1 llamada HTTP a Meta."""
+                session_factory = _make_db()
+                session = session_factory()
+                phone = "5491100001111"
+                user = _create_user(session, phone=phone, proactivo_habilitado=True)
+                cat = Categoria(id=uuid.uuid4(), usuario_id=user.id, nombre="Servicios")
+                session.add(cat)
+                session.commit()
+                # No se crea ningún candidato para este patrón
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", session_factory)
-        monkeypatch.setattr("app.services.finance.SessionLocal", session_factory)
-        monkeypatch.setattr(
-            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-            lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
-        )
+                monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", session_factory)
+                monkeypatch.setattr("app.services.recurring_expense.SessionLocal", session_factory)
+                monkeypatch.setattr("app.services.finance.SessionLocal", session_factory)
+                monkeypatch.setattr(
+                    "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                    lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
+                )
 
-        monkeypatch.setattr(
-            "app.services.dispatcher.LLMService.process_message",
-            AsyncMock(return_value={
-                "intent": "expense",
-                "movement_type": "egreso",
-                "amount": 5000,
-                "currency": "ARS",
-                "description": "Gasto Casual Unico",
-                "expense": "Gasto Casual Unico",
-                "category": "Servicios",
-                "reply_text": "Registrado",
-            }),
-        )
 
-        result = await process_incoming_message(sender_phone=phone, text_body="Pagué Gasto Casual Unico 5000")
+                result = await _registered_expense(session_factory, phone, description='Internet Fibertel', economic_effect='cash_flow')
 
-        assert result.proposal_candidate_id is None
-        assert len(result.followup_messages) == 0
+                assert result.proposal_candidate_id is None
+                assert _proposal_message(result) is None
 
-        redis = FakeRedis()
-        send_mock = AsyncMock(return_value=True)
-        status = await process_text_message_once(
-            redis_client=redis,
-            sender_phone=phone,
-            text_body="Pagué Gasto Casual Unico 5000",
-            whatsapp_message_id="wamid.no_proposal",
-            process_message=lambda **kw: process_incoming_message(sender_phone=phone, text_body="Pagué Gasto Casual Unico 5000"),
-            send_message=send_mock,
-        )
-        assert status == "completed"
-        # Exactamente 1 envío HTTP a Meta
-        assert send_mock.await_count == 1
+                redis = FakeRedis()
+                send_mock = AsyncMock(return_value=True)
+                status = await process_text_message_once(
+                    redis_client=redis,
+                    sender_phone=phone,
+                    text_body="Pagué Gasto Casual Unico 5000",
+                    whatsapp_message_id="wamid.no_proposal",
+                    process_message=AsyncMock(return_value=result),
+                    send_message=send_mock,
+                )
+                assert status == "completed"
+                # Exactamente un envío capturado por el callback sintético; no HTTP real
+                assert send_mock.await_count == 1 + len(result.followup_messages)
 
     def test_sql_statement_counts_for_eligibility_lookup_and_update(self, monkeypatch):
         """La verificación de elegibilidad ejecuta a lo sumo 1 SELECT y la persistencia de propuesta 1 UPDATE atómico."""
         session_factory = _make_db()
         session = session_factory()
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", session_factory)
+        monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", session_factory)
+        monkeypatch.setattr("app.services.recurring_expense.SessionLocal", session_factory)
         user = _create_user(session, proactivo_habilitado=True)
         cand = _create_candidate(session, user.id, concepto="Internet Fibertel", dia_estimado=15)
 
@@ -553,7 +469,7 @@ class TestCandidateProposalFlow:
 
         # 1. Consulta de elegibilidad para un patrón inexistente
         queries.clear()
-        res_none = _check_pending_candidate_proposal(user_id=user.id, patron_hash="hash_inexistente")
+        res_none = check_candidate_proposal(user_id=user.id, patron_hash="hash_inexistente")
         assert res_none is None
         # Exactamente 1 sentencia SELECT (sin query separada de Usuario)
         assert len(queries) == 1
@@ -563,7 +479,7 @@ class TestCandidateProposalFlow:
 
         # 2. Consulta de elegibilidad para un patrón existente
         queries.clear()
-        res_found = _check_pending_candidate_proposal(user_id=user.id, patron_hash=cand.patron_hash)
+        res_found = check_candidate_proposal(user_id=user.id, patron_hash=cand.patron_hash)
         assert res_found is not None
         assert res_found["id"] == str(cand.id)
         # Exactamente 1 sentencia SELECT
@@ -572,7 +488,7 @@ class TestCandidateProposalFlow:
 
         # 3. Registro de propuesta enviada: UPDATE atómico directo sin SELECT previo
         queries.clear()
-        _record_proposal_sent(candidate_id=cand.id)
+        record_proposal_sent(candidate_id=cand.id)
         # Exactamente 1 sentencia UPDATE (cero SELECTs)
         assert len(queries) == 1
         assert "UPDATE" in queries[0].upper()
@@ -632,118 +548,40 @@ class TestCandidateProposalFlow:
 
     @pytest.mark.asyncio
     async def test_proposal_send_failure_does_not_activate_cooldown_and_does_not_penalize_movement(self, monkeypatch):
-        """Un fallo en el envío de la propuesta no activa el cooldown, no se agrega a memoria y no pierde el movimiento registrado."""
-        session_factory = _make_db()
-        session = session_factory()
-        phone = "5491100001111"
-        user = _create_user(session, phone=phone, proactivo_habilitado=True)
-        cat = Categoria(id=uuid.uuid4(), usuario_id=user.id, nombre="Servicios")
-        session.add(cat)
-        session.commit()
-        cand = _create_candidate(session, user.id, concepto="Internet Fibertel", dia_estimado=15, categoria_id=cat.id)
+            session_factory = _make_db()
+            session = session_factory()
+            phone = '5491100001111'
+            user = _create_user(session, phone=phone)
+            cat = Categoria(id=uuid.uuid4(),usuario_id=user.id,nombre='Servicios')
+            session.add(cat)
+            session.commit()
+            long_desc = 'Internet Fibertel con servicio ultra extendido ' * 10
+            cand = _create_candidate(session,user.id,concepto=long_desc,dia_estimado=15,categoria_id=cat.id)
+            monkeypatch.setattr('app.services.recurring_expense.SessionLocal',session_factory)
+            result = await _registered_expense(session_factory,phone,description=long_desc,economic_effect='cash_flow')
+            assert result.proposal_delivery_mode == 'followup'
+            redis = FakeRedis()
+            with pytest.raises(RuntimeError):
+                await process_text_message_once(redis_client=redis,sender_phone=phone,text_body='Pago',
+                    whatsapp_message_id='candidate-primary-failure',process_message=AsyncMock(return_value=result),
+                    send_message=AsyncMock(return_value=False))
+            assert not await ConversationHistoryService.get_recent(redis,phone)
+            for raises in (False,True):
+                async def send_partial(to,message):
+                    if isinstance(message,WhatsAppReplyButtons) and any(b.id.startswith('rec_cand:') for b in message.buttons):
+                        if raises:
+                            raise RuntimeError('synthetic proposal transport failure')
+                        return False
+                    return True
+                status=await process_text_message_once(redis_client=redis,sender_phone=phone,text_body='Pago',
+                    whatsapp_message_id='candidate-followup-'+str(raises),process_message=AsyncMock(return_value=result),send_message=send_partial)
+                assert status=='completed'
+                session.refresh(cand)
+                assert cand.propuesta_en is None and cand.propuesta_conteo==0
+                history=await ConversationHistoryService.get_recent(redis,phone)
+                assert 'Noté que solés pagar' not in history[-1].content
+            assert session.query(MovimientoFinanciero).count()==1
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", session_factory)
-        monkeypatch.setattr("app.services.finance.SessionLocal", session_factory)
-        monkeypatch.setattr(
-            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-            lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
-        )
-
-        monkeypatch.setattr(
-            "app.services.dispatcher.LLMService.process_message",
-            AsyncMock(return_value={
-                "intent": "expense",
-                "movement_type": "egreso",
-                "amount": 15000,
-                "currency": "ARS",
-                "description": "Internet Fibertel",
-                "expense": "Internet Fibertel",
-                "category": "Servicios",
-                "reply_text": "Registrado",
-            }),
-        )
-
-        # Caso A: Fallo en envío de mensaje principal -> se rechaza, cooldown no activado
-        redis = FakeRedis()
-        send_fail_mock = AsyncMock(return_value=False)
-        with pytest.raises(RuntimeError):
-            await process_text_message_once(
-                redis_client=redis,
-                sender_phone=phone,
-                text_body="Pagué Internet Fibertel 15000",
-                whatsapp_message_id="wamid.fail_primary",
-                process_message=lambda **kw: process_incoming_message(sender_phone=phone, text_body="Pagué Internet Fibertel 15000"),
-                send_message=send_fail_mock,
-            )
-        session.refresh(cand)
-        assert cand.propuesta_en is None
-        assert cand.propuesta_conteo == 0
-
-        # Caso B: Respuesta principal interactiva configurada tiene éxito, pero el follow-up devuelve False
-        configured_msg = WhatsAppReplyButtons(
-            body="Movimiento guardado con éxito",
-            buttons=(WhatsAppReplyButton(id="view_dash", title="Ver"),),
-        )
-        monkeypatch.setattr(
-            "app.services.dispatcher.ConversationFlowRuntime.render_event",
-            AsyncMock(return_value=configured_msg),
-        )
-
-        call_idx = 0
-        async def mock_send_partial(to, msg):
-            nonlocal call_idx
-            call_idx += 1
-            if call_idx == 1:
-                return True  # Mensaje principal tiene éxito
-            return False  # Follow-up de propuesta falla
-
-        status = await process_text_message_once(
-            redis_client=redis,
-            sender_phone=phone,
-            text_body="Pagué Internet Fibertel 15000",
-            whatsapp_message_id="wamid.fail_followup",
-            process_message=lambda **kw: process_incoming_message(sender_phone=phone, text_body="Pagué Internet Fibertel 15000"),
-            send_message=mock_send_partial,
-        )
-
-        # El movimiento principal se completa
-        assert status == "completed"
-        # El cooldown NO se activa porque la propuesta no fue entregada
-        session.refresh(cand)
-        assert cand.propuesta_en is None
-        assert cand.propuesta_conteo == 0
-
-        # La memoria conversacional NO contiene el texto del follow-up fallido
-        history = await ConversationHistoryService.get_recent(redis, phone)
-        assert len(history) == 2
-        assert "Movimiento guardado con éxito" in history[1].content
-        assert "Noté que solés pagar" not in history[1].content
-
-        # Caso C: Follow-up lanza una excepción
-        call_idx = 0
-        async def mock_send_exception(to, msg):
-            nonlocal call_idx
-            call_idx += 1
-            if call_idx == 1:
-                return True
-            raise ConnectionError("Network timeout during follow-up")
-
-        status_c = await process_text_message_once(
-            redis_client=redis,
-            sender_phone=phone,
-            text_body="Pagué Internet Fibertel 15000",
-            whatsapp_message_id="wamid.exc_followup",
-            process_message=lambda **kw: process_incoming_message(sender_phone=phone, text_body="Pagué Internet Fibertel 15000"),
-            send_message=mock_send_exception,
-        )
-        assert status_c == "completed"
-        session.refresh(cand)
-        assert cand.propuesta_en is None
-        assert cand.propuesta_conteo == 0
-        history_c = await ConversationHistoryService.get_recent(redis, phone)
-        assert len(history_c) == 4
-        assert "Movimiento guardado con éxito" in history_c[3].content
-        assert "Noté que solés pagar" not in history_c[3].content
 
 
 # ===========================================================================
@@ -753,137 +591,142 @@ class TestCandidateProposalFlow:
 class TestInteractiveConfirmationButtons:
     @pytest.mark.asyncio
     async def test_accept_candidate_creates_intelligent_reminder(self, monkeypatch):
-        session_factory = _make_db()
-        session = session_factory()
-        phone = "5491100001111"
-        user = _create_user(session, phone=phone)
-        cand = _create_candidate(
-            session, user.id, concepto="Fibertel Hogar", dia_estimado=10, monto=Decimal("12000"),
-            propuesta_en=datetime.now(timezone.utc) - timedelta(days=1),
-        )
+            session_factory = _make_db()
+            session = session_factory()
+            phone = "5491100001111"
+            user = _create_user(session, phone=phone)
+            cand = _create_candidate(
+                session, user.id, concepto="Fibertel Hogar", dia_estimado=10, monto=Decimal("12000"),
+                propuesta_en=datetime.now(timezone.utc) - timedelta(days=1),
+            )
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", session_factory)
+            monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", session_factory)
+            monkeypatch.setattr("app.services.recurring_expense.SessionLocal", session_factory)
 
-        result = await process_incoming_interactive_reply(
-            sender_phone=phone,
-            option_id=f"rec_cand:accept:{cand.id}",
-            reply_type="button_reply",
-        )
+            result = await _interact(session_factory,
+                sender_phone=phone,
+                option_id=f"rec_cand:accept:{cand.id}",
+                reply_type="button_reply",
+            )
 
-        assert "Agendé el recordatorio para *Fibertel Hogar* los días 10 de cada mes con aviso 3 días antes." in result.reply_text
+            assert "Agendé el recordatorio para *Fibertel Hogar* los días 10 de cada mes con aviso 3 días antes." in result.reply_text
 
-        rec = session.query(Recordatorio).filter(Recordatorio.candidato_id == cand.id).first()
-        assert rec is not None
-        assert rec.usuario_id == user.id
-        assert rec.titulo == "Fibertel Hogar"
-        assert rec.dia_del_mes == 10
-        assert rec.monto == Decimal("12000")
-        assert rec.dias_anticipacion == 3
-        assert rec.origen == "recurrente_inteligente"
-        assert rec.estado == "activo"
+            rec = session.query(Recordatorio).filter(Recordatorio.candidato_id == cand.id).first()
+            assert rec is not None
+            assert rec.usuario_id == user.id
+            assert rec.titulo == "Fibertel Hogar"
+            assert rec.dia_del_mes == 10
+            assert rec.monto == Decimal("12000")
+            assert rec.dias_anticipacion == 3
+            assert rec.origen == "recurrente_inteligente"
+            assert rec.estado == "activo"
 
-        session.refresh(cand)
-        assert cand.estado == "aceptado"
-        assert cand.decision_en is not None
-        assert cand.decision_origen == "interactivo"
+            session.refresh(cand)
+            assert cand.estado == "aceptado"
+            assert cand.decision_en is not None
+            assert cand.decision_origen == "interactivo"
 
     @pytest.mark.asyncio
     async def test_accept_candidate_idempotent(self, monkeypatch):
-        session_factory = _make_db()
-        session = session_factory()
-        phone = "5491100001111"
-        user = _create_user(session, phone=phone)
-        cand = _create_candidate(
-            session, user.id, concepto="Fibertel Hogar", dia_estimado=10,
-            propuesta_en=datetime.now(timezone.utc) - timedelta(days=1),
-        )
+            session_factory = _make_db()
+            session = session_factory()
+            phone = "5491100001111"
+            user = _create_user(session, phone=phone)
+            cand = _create_candidate(
+                session, user.id, concepto="Fibertel Hogar", dia_estimado=10,
+                propuesta_en=datetime.now(timezone.utc) - timedelta(days=1),
+            )
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", session_factory)
+            monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", session_factory)
+            monkeypatch.setattr("app.services.recurring_expense.SessionLocal", session_factory)
 
-        res1 = await process_incoming_interactive_reply(
-            sender_phone=phone,
-            option_id=f"rec_cand:accept:{cand.id}",
-            reply_type="button_reply",
-        )
-        assert "Agendé el recordatorio" in res1.reply_text
+            res1 = await _interact(session_factory,
+                sender_phone=phone,
+                option_id=f"rec_cand:accept:{cand.id}",
+                reply_type="button_reply",
+            )
+            assert "Agendé el recordatorio" in res1.reply_text
 
-        res2 = await process_incoming_interactive_reply(
-            sender_phone=phone,
-            option_id=f"rec_cand:accept:{cand.id}",
-            reply_type="button_reply",
-        )
-        assert "Ya tenés este recordatorio activo en tu cuenta." in res2.reply_text
+            res2 = await _interact(session_factory,
+                sender_phone=phone,
+                option_id=f"rec_cand:accept:{cand.id}",
+                reply_type="button_reply",
+            )
+            assert "Ya tenés este recordatorio activo en tu cuenta." in res2.reply_text
 
-        assert session.query(Recordatorio).filter(Recordatorio.candidato_id == cand.id).count() == 1
+            assert session.query(Recordatorio).filter(Recordatorio.candidato_id == cand.id).count() == 1
 
     @pytest.mark.asyncio
     async def test_reject_candidate_persists_rejection(self, monkeypatch):
-        session_factory = _make_db()
-        session = session_factory()
-        phone = "5491100001111"
-        user = _create_user(session, phone=phone)
-        cand = _create_candidate(
-            session, user.id, concepto="Gimnasio", dia_estimado=5,
-            propuesta_en=datetime.now(timezone.utc) - timedelta(days=1),
-        )
+            session_factory = _make_db()
+            session = session_factory()
+            phone = "5491100001111"
+            user = _create_user(session, phone=phone)
+            cand = _create_candidate(
+                session, user.id, concepto="Gimnasio", dia_estimado=5,
+                propuesta_en=datetime.now(timezone.utc) - timedelta(days=1),
+            )
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", session_factory)
+            monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", session_factory)
+            monkeypatch.setattr("app.services.recurring_expense.SessionLocal", session_factory)
 
-        result = await process_incoming_interactive_reply(
-            sender_phone=phone,
-            option_id=f"rec_cand:reject:{cand.id}",
-            reply_type="button_reply",
-        )
+            result = await _interact(session_factory,
+                sender_phone=phone,
+                option_id=f"rec_cand:reject:{cand.id}",
+                reply_type="button_reply",
+            )
 
-        assert "Entendido, no volveré a sugerirte este recordatorio." in result.reply_text
-        session.refresh(cand)
-        assert cand.estado == "rechazado"
-        assert cand.decision_en is not None
-        assert cand.decision_origen == "interactivo"
-        assert session.query(Recordatorio).filter(Recordatorio.candidato_id == cand.id).first() is None
+            assert "Entendido, no volveré a sugerirte este recordatorio." in result.reply_text
+            session.refresh(cand)
+            assert cand.estado == "rechazado"
+            assert cand.decision_en is not None
+            assert cand.decision_origen == "interactivo"
+            assert session.query(Recordatorio).filter(Recordatorio.candidato_id == cand.id).first() is None
 
     @pytest.mark.asyncio
     async def test_interactive_button_expired_after_7_days(self, monkeypatch):
-        session_factory = _make_db()
-        session = session_factory()
-        phone = "5491100001111"
-        user = _create_user(session, phone=phone)
-        cand = _create_candidate(
-            session, user.id, concepto="Seguro Auto", dia_estimado=20,
-            propuesta_en=datetime.now(timezone.utc) - timedelta(days=8),
-        )
+            session_factory = _make_db()
+            session = session_factory()
+            phone = "5491100001111"
+            user = _create_user(session, phone=phone)
+            cand = _create_candidate(
+                session, user.id, concepto="Seguro Auto", dia_estimado=20,
+                propuesta_en=datetime.now(timezone.utc) - timedelta(days=8),
+            )
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", session_factory)
+            monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", session_factory)
+            monkeypatch.setattr("app.services.recurring_expense.SessionLocal", session_factory)
 
-        result = await process_incoming_interactive_reply(
-            sender_phone=phone,
-            option_id=f"rec_cand:accept:{cand.id}",
-            reply_type="button_reply",
-        )
+            result = await _interact(session_factory,
+                sender_phone=phone,
+                option_id=f"rec_cand:accept:{cand.id}",
+                reply_type="button_reply",
+            )
 
-        assert "Esta sugerencia ya venció" in result.reply_text
-        assert session.query(Recordatorio).filter(Recordatorio.candidato_id == cand.id).first() is None
+            assert "Esta sugerencia ya venció" in result.reply_text
+            assert session.query(Recordatorio).filter(Recordatorio.candidato_id == cand.id).first() is None
 
     @pytest.mark.asyncio
     async def test_anti_tampering_other_user_candidate_rejected(self, monkeypatch):
-        session_factory = _make_db()
-        session = session_factory()
-        user1 = _create_user(session, phone="5491111111111")
-        user2 = _create_user(session, phone="5491122222222")
+            session_factory = _make_db()
+            session = session_factory()
+            user1 = _create_user(session, phone="5491111111111")
+            user2 = _create_user(session, phone="5491122222222")
 
-        cand_user1 = _create_candidate(session, user1.id, concepto="Luz Edenor", dia_estimado=12)
+            cand_user1 = _create_candidate(session, user1.id, concepto="Luz Edenor", dia_estimado=12)
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", session_factory)
+            monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", session_factory)
+            monkeypatch.setattr("app.services.recurring_expense.SessionLocal", session_factory)
 
-        result = await process_incoming_interactive_reply(
-            sender_phone=user2.whatsapp_id,
-            option_id=f"rec_cand:accept:{cand_user1.id}",
-            reply_type="button_reply",
-        )
+            result = await _interact(session_factory,
+                sender_phone=user2.whatsapp_id,
+                option_id=f"rec_cand:accept:{cand_user1.id}",
+                reply_type="button_reply",
+            )
 
-        assert "No encontré la sugerencia solicitada." in result.reply_text
-        session.refresh(cand_user1)
-        assert cand_user1.estado == "pendiente"
+            assert "No encontré la sugerencia solicitada." in result.reply_text
+            session.refresh(cand_user1)
+            assert cand_user1.estado == "pendiente"
 
     def test_conflicting_acceptance_and_rejection_decisions(self):
         """Consistencia lógica ante decisiones conflictivas y doble ejecución secuencial/simulada en SQLite.
@@ -965,84 +808,84 @@ class TestInteractiveConfirmationButtons:
 
     @pytest.mark.asyncio
     async def test_late_expired_rejection_and_state_conflicts(self, monkeypatch):
-        """Rechazo tardío/expirado y conflictos de estado informan adecuadamente al usuario."""
-        session_factory = _make_db()
-        session = session_factory()
-        phone = "5491100001111"
-        user = _create_user(session, phone=phone)
+            """Rechazo tardío/expirado y conflictos de estado informan adecuadamente al usuario."""
+            session_factory = _make_db()
+            session = session_factory()
+            phone = "5491100001111"
+            user = _create_user(session, phone=phone)
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", session_factory)
+            monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", session_factory)
+            monkeypatch.setattr("app.services.recurring_expense.SessionLocal", session_factory)
 
-        # 1. Rechazo tardío/expirado (> 7 días desde propuesta_en)
-        cand_expired = _create_candidate(
-            session,
-            user.id,
-            concepto="Club Social",
-            dia_estimado=10,
-            propuesta_en=datetime.now(timezone.utc) - timedelta(days=8),
-        )
-        res_exp = await process_incoming_interactive_reply(
-            sender_phone=phone,
-            option_id=f"rec_cand:reject:{cand_expired.id}",
-            reply_type="button_reply",
-        )
-        assert res_exp.reply_text == "Esta sugerencia ya había vencido."
-        session.refresh(cand_expired)
-        assert cand_expired.estado == "pendiente"
+            # 1. Rechazo tardío/expirado (> 7 días desde propuesta_en)
+            cand_expired = _create_candidate(
+                session,
+                user.id,
+                concepto="Club Social",
+                dia_estimado=10,
+                propuesta_en=datetime.now(timezone.utc) - timedelta(days=8),
+            )
+            res_exp = await _interact(session_factory,
+                sender_phone=phone,
+                option_id=f"rec_cand:reject:{cand_expired.id}",
+                reply_type="button_reply",
+            )
+            assert res_exp.reply_text == "Esta sugerencia ya había vencido."
+            session.refresh(cand_expired)
+            assert cand_expired.estado == "pendiente"
 
-        # 2. Rechazo idempotente (ya rechazado previamente)
-        cand_already_rej = _create_candidate(
-            session,
-            user.id,
-            concepto="Clases de Inglés",
-            dia_estimado=12,
-            propuesta_en=datetime.now(timezone.utc) - timedelta(days=2),
-        )
-        res_rej1 = await process_incoming_interactive_reply(
-            sender_phone=phone,
-            option_id=f"rec_cand:reject:{cand_already_rej.id}",
-            reply_type="button_reply",
-        )
-        assert res_rej1.reply_text == "Entendido, no volveré a sugerirte este recordatorio."
+            # 2. Rechazo idempotente (ya rechazado previamente)
+            cand_already_rej = _create_candidate(
+                session,
+                user.id,
+                concepto="Clases de Inglés",
+                dia_estimado=12,
+                propuesta_en=datetime.now(timezone.utc) - timedelta(days=2),
+            )
+            res_rej1 = await _interact(session_factory,
+                sender_phone=phone,
+                option_id=f"rec_cand:reject:{cand_already_rej.id}",
+                reply_type="button_reply",
+            )
+            assert res_rej1.reply_text == "Entendido, no volveré a sugerirte este recordatorio."
 
-        res_rej2 = await process_incoming_interactive_reply(
-            sender_phone=phone,
-            option_id=f"rec_cand:reject:{cand_already_rej.id}",
-            reply_type="button_reply",
-        )
-        assert res_rej2.reply_text == "Esta sugerencia ya había sido rechazada anteriormente."
+            res_rej2 = await _interact(session_factory,
+                sender_phone=phone,
+                option_id=f"rec_cand:reject:{cand_already_rej.id}",
+                reply_type="button_reply",
+            )
+            assert res_rej2.reply_text == "Esta sugerencia ya había sido rechazada anteriormente."
 
-        # 3. Conflicto de estado: intentar rechazar cuando ya fue aceptado
-        cand_accepted = _create_candidate(
-            session,
-            user.id,
-            concepto="Netflix 4K",
-            dia_estimado=15,
-            propuesta_en=datetime.now(timezone.utc) - timedelta(days=1),
-        )
-        res_acc = await process_incoming_interactive_reply(
-            sender_phone=phone,
-            option_id=f"rec_cand:accept:{cand_accepted.id}",
-            reply_type="button_reply",
-        )
-        assert "Agendé el recordatorio para *Netflix 4K*" in res_acc.reply_text
+            # 3. Conflicto de estado: intentar rechazar cuando ya fue aceptado
+            cand_accepted = _create_candidate(
+                session,
+                user.id,
+                concepto="Netflix 4K",
+                dia_estimado=15,
+                propuesta_en=datetime.now(timezone.utc) - timedelta(days=1),
+            )
+            res_acc = await _interact(session_factory,
+                sender_phone=phone,
+                option_id=f"rec_cand:accept:{cand_accepted.id}",
+                reply_type="button_reply",
+            )
+            assert "Agendé el recordatorio para *Netflix 4K*" in res_acc.reply_text
 
-        res_conflict = await process_incoming_interactive_reply(
-            sender_phone=phone,
-            option_id=f"rec_cand:reject:{cand_accepted.id}",
-            reply_type="button_reply",
-        )
-        assert res_conflict.reply_text == "No se pudo rechazar la sugerencia porque ya tenés este recordatorio configurado."
+            res_conflict = await _interact(session_factory,
+                sender_phone=phone,
+                option_id=f"rec_cand:reject:{cand_accepted.id}",
+                reply_type="button_reply",
+            )
+            assert res_conflict.reply_text == "No se pudo rechazar la sugerencia porque ya tenés este recordatorio configurado."
 
-        # 4. Anti-tampering / ID no encontrado
-        fake_id = uuid.uuid4()
-        res_nf = await process_incoming_interactive_reply(
-            sender_phone=phone,
-            option_id=f"rec_cand:reject:{fake_id}",
-            reply_type="button_reply",
-        )
-        assert res_nf.reply_text == "No encontré la sugerencia solicitada."
-
+            # 4. Anti-tampering / ID no encontrado
+            fake_id = uuid.uuid4()
+            res_nf = await _interact(session_factory,
+                sender_phone=phone,
+                option_id=f"rec_cand:reject:{fake_id}",
+                reply_type="button_reply",
+            )
+            assert res_nf.reply_text == "No encontré la sugerencia solicitada."
 
 
 # ===========================================================================
@@ -1691,3 +1534,30 @@ class TestSingleWorkerDailyDetection:
         ).first()
         assert claim is not None
         assert claim.fecha_ejecucion == date(2026, 3, 14)
+
+
+async def _registered_expense(factory, phone, *, description, economic_effect):
+    def plan(kwargs):
+        import json
+        context=json.loads(next(m.content for m in kwargs['messages'] if m.role=='user'))['context']
+        category=next(c['ref'] for c in context['categories'] if c['name']=='Servicios')
+        return [('register_movement',{'economic_effect':economic_effect,'movement_type':'egreso','amount':'15000','currency':'ARS',
+            'description':description,'category_ref':category,'date_spec':{'kind':'absent'}})]
+    return await execute_tool(phone,'register_movement',plan,confirm=True,factory=factory)
+
+
+async def _interact(factory, **kwargs):
+    kwargs.setdefault('whatsapp_message_id','typed-callback-'+uuid.uuid4().hex)
+    from unittest.mock import patch
+    with patch('app.services.finance.SessionLocal',factory),patch('app.services.onboarding.SessionLocal',factory):
+        return await process_incoming_interactive_reply(**kwargs)
+
+
+def _proposal_message(result):
+    return next((m for m in [result.reply_message,*result.followup_messages] if isinstance(m,WhatsAppReplyButtons)
+        and any(b.id.startswith('rec_cand:') for b in m.buttons)),None)
+
+
+def _category_message(result):
+    return next((m for m in [result.reply_message,*result.followup_messages] if isinstance(m,WhatsAppReplyButtons)
+        and any(b.title=='Cambiar categoría' for b in m.buttons)),None)

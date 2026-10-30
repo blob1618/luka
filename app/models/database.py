@@ -494,6 +494,26 @@ class MovimientoFinanciero(Base):
     )
 
 
+class AssistantWriteReceipt(Base):
+    """Backend-only result committed atomically with a confirmed movement command."""
+    __tablename__ = 'assistant_write_receipts'
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id = Column(Uuid(as_uuid=True), ForeignKey('usuario.id'), nullable=False)
+    operation_id = Column(String(64), nullable=False)
+    command_hash = Column(String(64), nullable=False)
+    source_message_id = Column(String, nullable=False)
+    confirmation_message_id = Column(String, nullable=False)
+    movement_id = Column(Uuid(as_uuid=True), ForeignKey('movimientos_financieros.id'), nullable=False)
+    command_kind = Column(String(32), nullable=False)
+    result = Column(JSON().with_variant(JSONB, 'postgresql'), nullable=False)
+    committed_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    __table_args__ = (
+        UniqueConstraint('owner_id', 'operation_id', name='assistant_receipt_operation_key'),
+        UniqueConstraint('owner_id', 'confirmation_message_id', name='assistant_receipt_confirmation_key'),
+        CheckConstraint("command_kind IN ('register','correct_date','register_batch','update','annul')", name='assistant_receipt_kind_check'),
+    )
+
+
 class ConversationFlow(Base):
     __tablename__ = "conversation_flow"
 

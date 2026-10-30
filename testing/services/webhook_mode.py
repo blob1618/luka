@@ -1,175 +1,121 @@
-"""Webhook mode — simulates the full dispatcher pipeline."""
-
+"""Explicit synthetic delivery through the production dispatcher and inbound wrappers."""
+import asyncio
 import os
 import time
 from dataclasses import dataclass, field
+from uuid import uuid4
 
-import redis.asyncio as redis
-
-from app.services.dispatcher import process_incoming_message
-from app.api.whatsapp import WhatsAppCTAURL, WhatsAppImage
-from app.services.llm import LLMService
-from app.services.conversation import (
-    ConversationHistoryService,
-    ConversationService,
-    _memory_key,
+from app.api.whatsapp import (
+    InboundInteractiveReply, WhatsAppCTAURL, WhatsAppImage, WhatsAppList, WhatsAppReplyButtons,
 )
-from app.services.webhook_idempotency import _visible_reply_text
+from app.services import assistant_state
+from app.services.assistant_runtime import _owner
+from app.services.conversation import ConversationHistoryService, ConversationService, _memory_key
+from app.services.dispatcher import process_incoming_interactive_reply, process_incoming_message
+from app.services.llm import LLMService
+from app.services.telemetry import start_message_telemetry, finish_message_telemetry
+from app.services.webhook_idempotency import (
+    _visible_reply_text, process_interactive_message_once, process_text_message_once,
+)
 from testing.config.settings import set_model_env
+
+
+async def purge_user_state(phone: str) -> list[str]:
+    """Delete the simulated user's workspace, claim and visible history from Redis."""
+    owner = await asyncio.to_thread(_owner, phone)
+    client = await ConversationService._get_client()
+    keys = []
+    if owner is not None:
+        keys.extend([assistant_state.key(owner), assistant_state.key(owner) + ':claim'])
+    keys.append(_memory_key(phone))
+    await client.delete(*keys)
+    return keys
 
 
 @dataclass
 class WebhookModeResult:
-    """Result of a full webhook simulation."""
     reply_text: str
-    raw_llm_response: dict | None
-    service_invoked: str | None
-    intent: str | None
     latency_ms: float
     provider: str
     prompt_path: str
-    redis_state: dict | None
-    model: str = ""
+    redis_state: dict | None = None
+    service_invoked: str | None = None
+    model: str = ''
+    message_id: str = ''
+    status: str = 'completed'
+    tool_trace: list[dict] = field(default_factory=list)
+    metrics: dict = field(default_factory=dict)
     memory: list[dict[str, str]] | None = None
     memory_ttl_seconds: int | None = None
     image_pngs: list[bytes] = field(default_factory=list)
     cta_urls: list[tuple[str, str]] = field(default_factory=list)
+    interactions: list[dict[str, str]] = field(default_factory=list)
+    error: str | None = None
+    delivery: str = 'synthetic: successful local capture; no WhatsApp/Meta request'
+
+
+def interaction_options(messages):
+    options = []
+    for message in messages:
+        if isinstance(message, WhatsAppReplyButtons):
+            options.extend({'id': item.id, 'title': item.title, 'reply_type': 'button_reply'} for item in message.buttons)
+        elif isinstance(message, WhatsAppList):
+            options.extend({'id': item.id, 'title': item.title, 'reply_type': 'list_reply'}
+                           for section in message.sections for item in section.rows)
+    return options
 
 
 class WebhookModeService:
-    """Simulates the full webhook dispatch pipeline without HTTP."""
-
-    async def send_message(
-        self,
-        text: str,
-        phone: str,
-        provider: str,
-        prompt_path: str,
-        model: str = "",
-    ) -> WebhookModeResult:
-        """
-        Send a message through the full dispatcher pipeline.
-
-        Configures the provider and prompt, invokes the dispatcher,
-        captures Redis state, and measures latency.
-        """
-        os.environ["LLM_PROVIDER"] = provider
+    async def send_message(self, text, phone, provider, prompt_path, model='', *, option_id=None,
+                           reply_type='button_reply', title=None):
+        os.environ['LLM_PROVIDER'] = provider
         set_model_env(provider, model)
         LLMService.reset_provider()
         LLMService.set_prompt_path(prompt_path)
-
-        redis_client = None
+        message_id = 'simulated-' + uuid4().hex
+        start = time.perf_counter()
+        start_message_telemetry(message_id)
+        captured, sent = None, []
+        status, error = 'failed', None
+        memory, memory_ttl, state = None, None, None
         try:
-            redis_client = redis.from_url(
-                os.getenv("REDIS_URL", "redis://localhost:6379"),
-                decode_responses=True,
-                socket_connect_timeout=3,
-                socket_timeout=3,
-            )
-            await redis_client.ping()
-        except Exception:
-            if redis_client is not None:
-                try:
-                    await redis_client.aclose()
-                except Exception:
-                    pass
-            redis_client = None
-
-        try:
-            start = time.perf_counter()
-
-            history: list[dict[str, str]] = []
-            if redis_client is not None:
-                try:
-                    recent = await ConversationHistoryService.get_recent(
-                        redis_client, phone
-                    )
-                    history = [message.to_dict() for message in recent]
-                except Exception:
-                    history = []
-
-            dispatch_result = await process_incoming_message(
-                sender_phone=phone,
-                text_body=text,
-                whatsapp_message_id=None,
-                conversation_history=history,
-            )
-            latency_ms = (time.perf_counter() - start) * 1000
-
-            memory = None
-            memory_ttl_seconds = None
-            if redis_client is not None:
-                try:
-                    if getattr(dispatch_result, "clear_memory", False):
-                        await ConversationHistoryService.clear(redis_client, phone)
-                    else:
-                        await ConversationHistoryService.append_exchange(
-                            redis_client,
-                            phone,
-                            text,
-                            _visible_reply_text(dispatch_result),
-                            message_id=None,
-                        )
-                    final_history = await ConversationHistoryService.get_recent(
-                        redis_client, phone
-                    )
-                    memory = [message.to_dict() for message in final_history]
-                    ttl = int(await redis_client.ttl(_memory_key(phone)))
-                    memory_ttl_seconds = ttl if ttl >= 0 else None
-                except Exception:
-                    memory = None
-                    memory_ttl_seconds = None
-
-            # Capture current Redis state for debug
-            redis_state = None
+            client = await ConversationService._get_client()
+            async def process_text(**kwargs):
+                nonlocal captured
+                captured = await process_incoming_message(**kwargs)
+                return captured
+            async def process_reply(**kwargs):
+                nonlocal captured
+                captured = await process_incoming_interactive_reply(**kwargs)
+                return captured
+            async def deliver_synthetically(sender_phone, message):
+                sent.append(message)
+                return True
+            if option_id:
+                status = await process_interactive_message_once(redis_client=client,
+                    interactive_reply=InboundInteractiveReply(message_id, phone, reply_type, option_id, title),
+                    process_reply=process_reply, send_message=deliver_synthetically)
+            else:
+                status = await process_text_message_once(redis_client=client, sender_phone=phone, text_body=text,
+                    whatsapp_message_id=message_id, process_message=process_text, send_message=deliver_synthetically)
+            memory = [item.to_dict() for item in await ConversationHistoryService.get_recent(client, phone)]
+            ttl = int(await client.ttl(_memory_key(phone)))
+            memory_ttl = ttl if ttl >= 0 else None
             try:
-                state = await ConversationService.get_state(phone)
-                redis_state = state.to_dict()
-            except Exception:
-                redis_state = {"error": "Could not read Redis state"}
-
-            sent = [dispatch_result.reply_message, *dispatch_result.followup_messages]
-            return WebhookModeResult(
-                reply_text=dispatch_result.reply_text,
-                raw_llm_response=dispatch_result.raw_llm_response,
-                service_invoked=dispatch_result.service_invoked,
-                intent=dispatch_result.intent,
-                latency_ms=latency_ms,
-                provider=provider,
-                prompt_path=prompt_path,
-                redis_state=redis_state,
-                model=model,
-                memory=memory,
-                memory_ttl_seconds=memory_ttl_seconds,
-                image_pngs=[
-                    message.content for message in sent
-                    if isinstance(message, WhatsAppImage)
-                ],
-                cta_urls=[
-                    (message.display_text, message.url) for message in sent
-                    if isinstance(message, WhatsAppCTAURL)
-                ],
-            )
+                owner = await asyncio.to_thread(_owner, phone)
+                state = await assistant_state.read(owner) if owner else None
+            except Exception as exc:
+                state = {'error': type(exc).__name__}
         except Exception as exc:
-            latency_ms = (time.perf_counter() - start) * 1000
-            return WebhookModeResult(
-                reply_text=f"Error del dispatcher: {type(exc).__name__}: {exc}",
-                raw_llm_response=None,
-                service_invoked=None,
-                intent=None,
-                latency_ms=latency_ms,
-                provider=provider,
-                prompt_path=prompt_path,
-                redis_state=None,
-                model=model,
-                memory=None,
-                memory_ttl_seconds=None,
-                image_pngs=[],
-                cta_urls=[],
-            )
-        finally:
-            if redis_client is not None:
-                try:
-                    await redis_client.aclose()
-                except Exception:
-                    pass
+            error = type(exc).__name__
+        metrics = finish_message_telemetry(status) or {}
+        return WebhookModeResult(
+            reply_text=(_visible_reply_text(captured) or '') if captured and status == 'completed'
+                       else 'No se pudo completar la entrega simulada. Volvé a intentar.',
+            latency_ms=(time.perf_counter() - start) * 1000, provider=provider, prompt_path=prompt_path,
+            redis_state=state, service_invoked=getattr(captured, 'service_invoked', None), model=model,
+            message_id=message_id, status=status, tool_trace=getattr(captured, 'tool_trace', []),
+            metrics=metrics, memory=memory, memory_ttl_seconds=memory_ttl, error=error,
+            image_pngs=[item.content for item in sent if isinstance(item, WhatsAppImage)],
+            cta_urls=[(item.display_text, item.url) for item in sent if isinstance(item, WhatsAppCTAURL)],
+            interactions=interaction_options(sent))

@@ -26,7 +26,20 @@ from app.models.database import (
     CandidatoGastoRecurrente,
     MovimientoFinanciero,
     Recordatorio,
+    SessionLocal,
 )
+from app.services.telemetry import track_phase
+
+
+def record_proposal_sent(candidate_id: str | UUID) -> None:
+    """Delivery recorder shared by outgoing presentations."""
+    with track_phase('db'):
+        with SessionLocal() as session:
+            identifier = candidate_id if isinstance(candidate_id, UUID) else UUID(str(candidate_id))
+            now = datetime.now(timezone.utc)
+            session.execute(update(CandidatoGastoRecurrente).where(CandidatoGastoRecurrente.id == identifier).values(
+                propuesta_en=now, propuesta_conteo=CandidatoGastoRecurrente.propuesta_conteo + 1, actualizado_en=now))
+            session.commit()
 
 ARGENTINA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 

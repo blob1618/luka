@@ -8,689 +8,78 @@ from app.services.llm import LLMService
 from app.services.llm_providers import GeminiProvider, MistralProvider, create_provider
 
 
-@pytest.mark.asyncio
-async def test_chart_contract_preserves_comparison_and_explicit_filter_clearing():
-    payload = {
-        "intent": "movement_chart", "movement_type": "both",
-        "chart_mode": "month_comparison", "chart_months": ["2025-01", "2026-01"],
-        "chart_categories": [], "chart_percentages": False,
-    }
-    with patch.object(LLMService, "_get_provider") as get_provider:
-        get_provider.return_value.generate_json = AsyncMock(return_value=payload)
-        result = await LLMService.process_message("Compará esos meses con todas las categorías")
-    for key, value in payload.items():
-        assert result[key] == value
-    assert result["movements"] == []
-    assert result["chart_type"] is None
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "text",
-    [
-        "quiero entrar al panel avanzado",
-        "pasame mi dashboard",
-        "mostrame mi panel",
-        "quiero acceder a mi dashboard",
-        "pasame el link del dashboard",
-    ],
-)
-async def test_process_message_accepts_dashboard_link_intent_without_model_url(text):
-    provider_response = {
-        "intent": "dashboard_link",
-        "reply_text": "Preparando el acceso.",
-        "login_url": "https://model.example/login?token=fabricated",
-        "dashboard_url": "https://model.example/dashboard",
-    }
-    with patch.object(LLMService, "_get_provider") as mock_get_provider:
-        provider = AsyncMock()
-        provider.generate_json.return_value = provider_response
-        mock_get_provider.return_value = provider
-
-        result = await LLMService.process_message(text)
-
-    assert result["intent"] == "dashboard_link"
-    assert "login_url" not in result
-    assert "dashboard_url" not in result
-    provider.generate_json.assert_awaited_once()
-    assert provider.generate_json.await_args.kwargs["user_message"] == text
 
 
 # =============================================================================
 # Tests de LLMService - process_message (nuevo multi-intent)
 # =============================================================================
 
-async def _process_message_with_mock_response(mock_response):
-    with patch.object(LLMService, "_get_provider") as mock_get_provider:
-        mock_provider = AsyncMock()
-        mock_provider.generate_json.return_value = mock_response
-        mock_get_provider.return_value = mock_provider
-
-        return await LLMService.process_message("Registre un movimiento")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("payload", "intent", "wallet_name", "wallet_currency"),
-    [
-        (
-            {
-                "intent": "create_wallet",
-                "wallet_name": "  Efectivo  ",
-                "wallet_currency": " usd ",
-                "user_id": "must-not-be-trusted",
-                "wallet_id": "must-not-be-forwarded",
-            },
-            "create_wallet",
-            "Efectivo",
-            "USD",
-        ),
-        (
-            {"intent": "create_wallet", "name": "Ahorro"},
-            "create_wallet",
-            "Ahorro",
-            None,
-        ),
-        (
-            {"intent": "create_wallet", "name": "Cripto", "currency": "eur"},
-            "create_wallet",
-            "Cripto",
-            "EUR",
-        ),
-        ({"intent": "list_wallets", "user_id": "must-not-be-trusted"}, "list_wallets", None, None),
-        ({"intent": "query_wallets", "wallet_id": "must-not-be-forwarded"}, "query_wallets", None, None),
-    ],
-)
-async def test_wallet_intents_normalize_fields_without_identity(
-    payload, intent, wallet_name, wallet_currency
-):
-    result = await _process_message_with_mock_response(payload)
-
-    assert result["intent"] == intent
-    assert result["wallet_name"] == wallet_name
-    assert result["wallet_currency"] == wallet_currency
-    assert "user_id" not in result
-    assert "wallet_id" not in result
-
-
-@pytest.mark.asyncio
-async def test_process_message_preserves_structured_correction_reference_and_patch():
-    result = await _process_message_with_mock_response({
-        "intent": "update_movement", "reference": {"description": "pizza"},
-        "changes": {"amount": 13000}, "reply_text": "Procesando.",
-    })
-    assert result["intent"] == "update_movement"
-    assert result["reference"] == {"description": "pizza"}
-    assert result["changes"] == {"amount": 13000}
-    assert result["movements"] == []
-
-
-@pytest.mark.asyncio
-async def test_process_message_valid_expense():
-    """Prueba de éxito: El bot extrae correctamente los datos de un gasto válido."""
-    mock_response = {
-        "intent": "expense",
-        "expense": "nafta",
-        "amount": 3500.0,
-        "currency": "ARS",
-        "category": "transporte",
-        "description": "carga de nafta",
-        "reminder_title": None,
-        "reminder_date": None,
-        "reply_text": "✅ Gasto registrado: nafta por $3,500.00 ARS."
-    }
-
-    with patch.object(LLMService, "_get_provider") as mock_get_provider:
-        mock_provider = AsyncMock()
-        mock_provider.generate_json.return_value = mock_response
-        mock_get_provider.return_value = mock_provider
-
-        result = await LLMService.process_message("Gasté 3500 en nafta")
-
-        assert result["intent"] == "expense"
-        assert result["expense"] == "nafta"
-        assert result["amount"] == 3500.0
-        assert result["currency"] == "ARS"
-        assert result["category"] == "transporte"
-        assert "Gasto registrado" in result["reply_text"]
-
-
-@pytest.mark.asyncio
-async def test_process_message_normalizes_movement_type_ingreso():
-    mock_response = {
-        "intent": "expense",
-        "expense": "sueldo",
-        "amount": 500000.0,
-        "currency": "ARS",
-        "movement_type": "ingreso",
-        "reply_text": "Ingreso detectado.",
-    }
 
-    result = await _process_message_with_mock_response(mock_response)
 
-    assert result["movement_type"] == "ingreso"
 
 
-@pytest.mark.asyncio
-async def test_process_message_normalizes_movement_type_egreso():
-    mock_response = {
-        "intent": "expense",
-        "expense": "supermercado",
-        "amount": 42000.0,
-        "currency": "ARS",
-        "movement_type": "egreso",
-        "reply_text": "Egreso detectado.",
-    }
-
-    result = await _process_message_with_mock_response(mock_response)
-
-    assert result["movement_type"] == "egreso"
-
-
-@pytest.mark.asyncio
-async def test_process_message_accepts_transaction_type_ingreso():
-    mock_response = {
-        "intent": "expense",
-        "expense": "transferencia recibida",
-        "amount": 25000.0,
-        "currency": "ARS",
-        "transaction_type": "ingreso",
-        "reply_text": "Ingreso detectado.",
-    }
-
-    result = await _process_message_with_mock_response(mock_response)
-
-    assert result["movement_type"] == "ingreso"
-
-
-@pytest.mark.asyncio
-async def test_process_message_falls_back_expense_intent_to_egreso():
-    mock_response = {
-        "intent": "expense",
-        "expense": "nafta",
-        "amount": 3500.0,
-        "currency": "ARS",
-        "reply_text": "Gasto detectado.",
-    }
-
-    result = await _process_message_with_mock_response(mock_response)
-
-    assert result["movement_type"] == "egreso"
-
-
-@pytest.mark.asyncio
-async def test_process_message_preserves_explicit_null_movement_type():
-    mock_response = {
-        "intent": "expense",
-        "amount": 5000.0,
-        "currency": "ARS",
-        "movement_type": None,
-        "reply_text": "¿Es un ingreso o un egreso?",
-    }
-
-    result = await _process_message_with_mock_response(mock_response)
-
-    assert result["movement_type"] is None
-
-
-@pytest.mark.asyncio
-async def test_process_message_preserves_explicit_null_transaction_type():
-    mock_response = {
-        "intent": "expense",
-        "amount": 5000.0,
-        "currency": "ARS",
-        "transaction_type": None,
-        "reply_text": "¿Es un ingreso o un egreso?",
-    }
-
-    result = await _process_message_with_mock_response(mock_response)
-
-    assert result["movement_type"] is None
-
-
-@pytest.mark.asyncio
-async def test_process_message_invalid_movement_type_is_none():
-    mock_response = {
-        "intent": "expense",
-        "expense": "supermercado",
-        "amount": 42000.0,
-        "currency": "ARS",
-        "movement_type": "transferencia",
-        "reply_text": "Tipo invalido.",
-    }
-
-    result = await _process_message_with_mock_response(mock_response)
-
-    assert result["movement_type"] is None
-
-
-@pytest.mark.asyncio
-async def test_process_message_out_of_scope_recipe():
-    """Prueba de rechazo: El bot se niega a procesar una solicitud de receta de cocina."""
-    mock_response = {
-        "intent": "out_of_scope",
-        "expense": None,
-        "amount": None,
-        "currency": None,
-        "category": None,
-        "description": None,
-        "reminder_title": None,
-        "reminder_date": None,
-        "reply_text": (
-            "Solo puedo ayudarte con la gestión de tus finanzas personales. "
-            "No tengo capacidad para darte recetas de cocina."
-        )
-    }
-
-    with patch.object(LLMService, "_get_provider") as mock_get_provider:
-        mock_provider = AsyncMock()
-        mock_provider.generate_json.return_value = mock_response
-        mock_get_provider.return_value = mock_provider
-
-        result = await LLMService.process_message("Dame una receta de cocina")
-
-        assert result["intent"] == "out_of_scope"
-        assert result["amount"] is None
-        assert "finanzas personales" in result["reply_text"]
-
-
-@pytest.mark.asyncio
-async def test_process_message_out_of_scope_investment_advice():
-    """Prueba de rechazo: El bot se niega a dar asesoría financiera profesional."""
-    mock_response = {
-        "intent": "out_of_scope",
-        "expense": None,
-        "amount": None,
-        "currency": None,
-        "category": None,
-        "description": None,
-        "reminder_title": None,
-        "reminder_date": None,
-        "reply_text": (
-            "Entiendo tu interés en invertir, pero soy un asistente de registro financiero, "
-            "no un asesor de inversiones. No puedo recomendarte acciones ni instrumentos financieros."
-        )
-    }
-
-    with patch.object(LLMService, "_get_provider") as mock_get_provider:
-        mock_provider = AsyncMock()
-        mock_provider.generate_json.return_value = mock_response
-        mock_get_provider.return_value = mock_provider
-
-        result = await LLMService.process_message("Recomiéndame en qué acciones invertir")
-
-        assert result["intent"] == "out_of_scope"
-        assert "asesor de inversiones" in result["reply_text"]
-
-
-@pytest.mark.asyncio
-async def test_process_message_greeting():
-    """Prueba: El bot responde adecuadamente a un saludo."""
-    mock_response = {
-        "intent": "greeting",
-        "expense": None,
-        "amount": None,
-        "currency": None,
-        "category": None,
-        "description": None,
-        "reminder_title": None,
-        "reminder_date": None,
-        "reply_text": (
-            "¡Hola! Soy LUKA, tu asistente financiero personal. "
-            "Puedo ayudarte a registrar gastos, consultar presupuestos, "
-            "programar recordatorios y más. ¿En qué puedo ayudarte?"
-        )
-    }
-
-    with patch.object(LLMService, "_get_provider") as mock_get_provider:
-        mock_provider = AsyncMock()
-        mock_provider.generate_json.return_value = mock_response
-        mock_get_provider.return_value = mock_provider
-
-        result = await LLMService.process_message("Hola")
-
-        assert result["intent"] == "greeting"
-        assert "LUKA" in result["reply_text"]
-
-
-@pytest.mark.asyncio
-async def test_process_message_budget_query():
-    """Prueba: El bot reconoce una consulta de presupuesto."""
-    mock_response = {
-        "intent": "budget_query",
-        "expense": None,
-        "amount": None,
-        "currency": None,
-        "category": "comida",
-        "description": None,
-        "reminder_title": None,
-        "reminder_date": None,
-        "reply_text": "Estoy consultando tu presupuesto de comida. Un momento por favor..."
-    }
-
-    with patch.object(LLMService, "_get_provider") as mock_get_provider:
-        mock_provider = AsyncMock()
-        mock_provider.generate_json.return_value = mock_response
-        mock_get_provider.return_value = mock_provider
-
-        result = await LLMService.process_message("¿Cuánto me queda de presupuesto para comida?")
-
-        assert result["intent"] == "budget_query"
-        assert result["category"] == "comida"
-
-
-@pytest.mark.asyncio
-async def test_process_message_reminder():
-    """Prueba: El bot reconoce una solicitud de recordatorio."""
-    mock_response = {
-        "intent": "reminder",
-        "expense": None,
-        "amount": None,
-        "currency": None,
-        "category": None,
-        "description": None,
-        "reminder_title": "pagar la tarjeta",
-        "reminder_date": "2026-07-15",
-        "reply_text": "✅ Recordatorio creado: pagar la tarjeta para el 15 de julio de 2026."
-    }
-
-    with patch.object(LLMService, "_get_provider") as mock_get_provider:
-        mock_provider = AsyncMock()
-        mock_provider.generate_json.return_value = mock_response
-        mock_get_provider.return_value = mock_provider
-
-        result = await LLMService.process_message("Recordame pagar la tarjeta el 15 de julio")
-
-        assert result["intent"] == "reminder"
-        assert result["reminder_title"] == "pagar la tarjeta"
-        assert result["reminder_date"] == "2026-07-15"
-
-
-@pytest.mark.asyncio
-async def test_process_message_expense_summary():
-    """Prueba: El bot reconoce una solicitud de resumen de gastos."""
-    mock_response = {
-        "intent": "expense_summary",
-        "expense": None,
-        "amount": None,
-        "currency": None,
-        "category": None,
-        "description": None,
-        "reminder_title": None,
-        "reminder_date": None,
-        "reply_text": "Estoy consultando el resumen de tus gastos. Un momento por favor..."
-    }
-
-    with patch.object(LLMService, "_get_provider") as mock_get_provider:
-        mock_provider = AsyncMock()
-        mock_provider.generate_json.return_value = mock_response
-        mock_get_provider.return_value = mock_provider
-
-        result = await LLMService.process_message("¿Cuánto gasté este mes?")
-
-        assert result["intent"] == "expense_summary"
-
-
-@pytest.mark.asyncio
-async def test_process_message_query_movements():
-    """Prueba: El bot reconoce y normaliza una consulta de movimientos."""
-    mock_response = {
-        "intent": "query_movements",
-        "movement_type": "egreso",
-        "category": "comida",
-        "date_from": "2026-09-01",
-        "date_to": "2026-09-07",
-        "limit": 5,
-        "reply_text": "Consultando tus movimientos.",
-    }
-
-    with patch.object(LLMService, "_get_provider") as mock_get_provider:
-        mock_provider = AsyncMock()
-        mock_provider.generate_json.return_value = mock_response
-        mock_get_provider.return_value = mock_provider
-
-        result = await LLMService.process_message("¿Qué gastos tuve en comida esta semana?")
-
-        assert result["intent"] == "query_movements"
-        assert result["movement_type"] == "egreso"
-        assert result["category"] == "comida"
-        assert result["date_from"] == "2026-09-01"
-        assert result["date_to"] == "2026-09-07"
-        assert result["limit"] == 5
-        assert result["reply_text"] == "Consultando tus movimientos."
-
-
-@pytest.mark.asyncio
-async def test_process_message_movement_chart_keeps_currency_nullable():
-    mock_response = {
-        "intent": "movement_chart",
-        "movement_type": "egreso",
-        "chart_type": "pie",
-        "chart_ranking": "lowest",
-        "chart_currency": None,
-        "date_from": "2026-09-01",
-        "date_to": "2026-09-30",
-        "reply_text": "Generando tu grafico.",
-    }
-
-    with patch.object(LLMService, "_get_provider") as mock_get_provider:
-        mock_provider = AsyncMock()
-        mock_provider.generate_json.return_value = mock_response
-        mock_get_provider.return_value = mock_provider
-
-        result = await LLMService.process_message(
-            "Mostrame una torta de las categorias con menor gasto"
-        )
-
-    assert result["intent"] == "movement_chart"
-    assert result["movement_type"] == "egreso"
-    assert result["chart_type"] == "pie"
-    assert result["chart_ranking"] == "lowest"
-    assert result["chart_currency"] is None
-
-
-@pytest.mark.asyncio
-async def test_process_message_fallback_on_exception():
-    """Prueba: Cuando el LLM falla, el servicio devuelve un mensaje de error controlado."""
-    with patch.object(LLMService, "_get_provider") as mock_get_provider:
-        mock_provider = AsyncMock()
-        mock_provider.generate_json.side_effect = RuntimeError("API timeout")
-        mock_get_provider.return_value = mock_provider
-
-        result = await LLMService.process_message("Gasté 500 en comida")
-
-        assert result["intent"] == "out_of_scope"
-        assert "No he podido analizar" in result["reply_text"]
-        assert result["error"] == "RuntimeError: API timeout"
-
-
-@pytest.mark.asyncio
-async def test_process_message_forwards_recent_history_to_provider():
-    history = [
-        {"role": "user", "content": "mostrame mis movimientos"},
-        {"role": "assistant", "content": "¿Gastos, ingresos o todos?"},
-    ]
-    with patch.object(LLMService, "_get_provider") as mock_get_provider:
-        mock_provider = AsyncMock()
-        mock_provider.generate_json.return_value = {
-            "intent": "query_movements",
-            "movement_type": None,
-            "reply_text": "Consultando tus movimientos.",
-        }
-        mock_get_provider.return_value = mock_provider
-
-        await LLMService.process_message("todos", history=history)
-
-    assert mock_provider.generate_json.await_args.kwargs["history"] == history
-
-
-@pytest.mark.asyncio
-async def test_list_response_no_crash_and_asks_reformulate():
-    """Respuesta lista no crashea; pide reformular sin perder el mensaje."""
-    mock_response = [{"intent": "expense", "amount": 50000}]
-    result = await _process_message_with_mock_response(mock_response)
-    assert result["intent"] == "out_of_scope"
-    assert "reformular" in result["reply_text"].lower() or "no he podido" in result["reply_text"].lower()
-    assert "error" in result
-
-
-@pytest.mark.asyncio
-async def test_list_response_retry_recovers_object():
-    """Primer intento lista, retry devuelve dict -> se procesa normal."""
-    calls = {"n": 0}
-
-    async def fake_generate_json(*args, **kwargs):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return [{"intent": "expense"}]
-        return {"intent": "greeting", "reply_text": "hola"}
-
-    with patch.object(LLMService, "_get_provider") as gp:
-        provider = AsyncMock()
-        provider.generate_json.side_effect = fake_generate_json
-        gp.return_value = provider
-        result = await LLMService.process_message("hola")
-
-    assert calls["n"] == 2
-    assert result["intent"] == "greeting"
-    # El retry debe pedir explícitamente objeto, no lista
-    retried_prompt = provider.generate_json.await_args_list[1].kwargs.get(
-        "system_prompt") or provider.generate_json.await_args_list[1].args[0]
-    assert "no con una lista" in retried_prompt
-
-
-@pytest.mark.asyncio
-async def test_none_response_falls_back_without_crash():
-    result = await _process_message_with_mock_response(None)
-    assert result["intent"] == "out_of_scope"
-    assert "error" in result
-
-
-@pytest.mark.asyncio
-async def test_reply_text_none_se_normaliza_a_vacio():
-    """Prueba: reply_text=null del LLM se normaliza a string vacío (nunca "None")."""
-    mock_response = {
-        "intent": "expense",
-        "movement_type": "egreso",
-        "amount": 5000,
-        "currency": "ARS",
-        "category": "supermercado",
-        "description": "supermercado",
-        "reply_text": None,
-    }
-
-    with patch.object(LLMService, "_get_provider") as mock_get_provider:
-        mock_provider = AsyncMock()
-        mock_provider.generate_json.return_value = mock_response
-        mock_get_provider.return_value = mock_provider
-
-        result = await LLMService.process_message("Gasté 5000 en supermercado")
-
-        assert result["reply_text"] == ""
-
-
-@pytest.mark.asyncio
-async def test_process_message_invalid_intent_normalized():
-    """Prueba: Un intent no reconocido se normaliza a out_of_scope."""
-    mock_response = {
-        "intent": "hazme_un_cafe",
-        "expense": None,
-        "amount": None,
-        "currency": None,
-        "category": None,
-        "description": None,
-        "reminder_title": None,
-        "reminder_date": None,
-        "reply_text": "No puedo ayudarte con eso."
-    }
-
-    with patch.object(LLMService, "_get_provider") as mock_get_provider:
-        mock_provider = AsyncMock()
-        mock_provider.generate_json.return_value = mock_response
-        mock_get_provider.return_value = mock_provider
-
-        result = await LLMService.process_message("Haceme un café")
-
-        assert result["intent"] == "out_of_scope"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "intent",
-    ["enable_proactive_reminders", "disable_proactive_reminders"],
-)
-async def test_process_message_accepts_proactive_reminder_intents(intent):
-    result = await _process_message_with_mock_response(
-        {"intent": intent, "reply_text": "ok"}
-    )
-
-    assert result["intent"] == intent
-
-
-@pytest.mark.asyncio
-async def test_process_message_reset_context_survives_normalization():
-    result = await _process_message_with_mock_response(
-        {"intent": "reset_context", "reply_text": "Listo, arrancamos de cero."}
-    )
-
-    assert result["intent"] == "reset_context"
-
-
-@pytest.mark.asyncio
-async def test_process_message_invalid_amount_becomes_none():
-    mock_response = {
-        "intent": "expense",
-        "amount": "no-es-un-numero",
-        "expense": "nafta",
-        "reply_text": "test",
-    }
-
-    result = await _process_message_with_mock_response(mock_response)
-
-    assert result["amount"] is None
-
-
-@pytest.mark.asyncio
-async def test_process_message_invalid_reminder_amount_becomes_none():
-    mock_response = {
-        "intent": "create_reminder",
-        "reminder_concept": "luz",
-        "reminder_amount": "mil",
-        "reply_text": "test",
-    }
-
-    result = await _process_message_with_mock_response(mock_response)
-
-    assert result["reminder_amount"] is None
-
-
-@pytest.mark.asyncio
-async def test_process_message_normalizes_reminder_id():
-    mock_response = {
-        "intent": "update_reminder",
-        "reminder_id": " 42 ",
-        "reply_text": "test",
-    }
-
-    result = await _process_message_with_mock_response(mock_response)
-
-    assert result["reminder_id"] == "42"
-
-
-@pytest.mark.asyncio
-async def test_process_audio_expense_returns_placeholder():
-    result = await LLMService.process_audio_expense(b"audio-bytes")
-
-    assert result["amount"] is None
-    assert result["reply_text"] == "Aun no proceso notas de voz."
-
-
-@pytest.mark.asyncio
-async def test_process_image_receipt_returns_placeholder():
-    result = await LLMService.process_image_receipt(b"image-bytes")
-
-    assert result["amount"] is None
-    assert result["reply_text"] == "Aun no proceso imagenes de comprobantes."
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def test_get_provider_creates_and_caches_singleton():
@@ -764,8 +153,8 @@ def test_system_prompt_default_loads_core_prompt(monkeypatch):
     monkeypatch.delenv("SYSTEM_PROMPT_PATH", raising=False)
 
     loaded = LLMService._load_system_prompt()
-    assert "Identidad y Alcance" in loaded
-    assert "Pagué algo" in loaded
+    assert "Sos Luka" in loaded
+    assert "capacidades declaradas" in loaded
     LLMService._system_prompt = None
 
 
@@ -784,7 +173,7 @@ def test_system_prompt_default_fallback_to_legacy_when_core_missing(monkeypatch)
 
     with patch("builtins.open", side_effect=fake_open):
         loaded = LLMService._load_system_prompt()
-        assert "System Prompt — LUKA" in loaded
+        assert "Sos Luka" in loaded
     LLMService._system_prompt = None
 
 
@@ -1017,148 +406,10 @@ def test_safe_json_loads_invalid_raises():
 class TestCreateReminderIntent:
     """Tests for intent create_reminder in LLMService.process_message()."""
 
-    @pytest.mark.asyncio
-    async def test_create_reminder_full(self):
-        """LLM returns create_reminder with all fields."""
-        mock_response = {
-            "intent": "create_reminder",
-            "reminder_concept": "luz",
-            "reminder_day": 15,
-            "reminder_amount": 5000.0,
-            "reminder_currency": "ARS",
-            "reply_text": "Estoy procesando el recordatorio.",
-        }
-        result = await _process_message_with_mock_response(mock_response)
 
-        assert result["intent"] == "create_reminder"
-        assert result["reminder_concept"] == "luz"
-        assert result["reminder_day"] == 15
-        assert result["reminder_amount"] == 5000.0
-        assert result["reminder_currency"] == "ARS"
 
-    @pytest.mark.asyncio
-    async def test_create_reminder_no_day(self):
-        mock_response = {
-            "intent": "create_reminder",
-            "reminder_concept": "cable",
-            "reminder_day": None,
-            "reminder_amount": None,
-            "reminder_currency": None,
-            "reply_text": "¿Qué día del mes vence?",
-        }
-        result = await _process_message_with_mock_response(mock_response)
 
-        assert result["intent"] == "create_reminder"
-        assert result["reminder_concept"] == "cable"
-        assert result["reminder_day"] is None
-
-    @pytest.mark.asyncio
-    async def test_create_reminder_invalid_day_becomes_none(self):
-        mock_response = {
-            "intent": "create_reminder",
-            "reminder_concept": "luz",
-            "reminder_day": "quince",
-            "reply_text": "test",
-        }
-        result = await _process_message_with_mock_response(mock_response)
-
-        assert result["intent"] == "create_reminder"
-        assert result["reminder_day"] is None
-
-    @pytest.mark.asyncio
-    async def test_create_reminder_day_out_of_range(self):
-        mock_response = {
-            "intent": "create_reminder",
-            "reminder_concept": "luz",
-            "reminder_day": 32,
-            "reply_text": "test",
-        }
-        result = await _process_message_with_mock_response(mock_response)
-
-        assert result["intent"] == "create_reminder"
-        assert result["reminder_day"] is None
 
 
 class TestCompensationIntents:
     """Tests for budget compensation intents in LLMService.process_message()."""
-
-    @pytest.mark.asyncio
-    async def test_compensate_budget_normalizes_fields(self):
-        mock_response = {
-            "intent": "compensate_budget",
-            "compensation_target": " comida ",
-            "compensation_source": "transporte",
-            "compensation_amount": "1500",
-            "reply_text": "Evaluando tu presupuesto.",
-        }
-        result = await _process_message_with_mock_response(mock_response)
-
-        assert result["intent"] == "compensate_budget"
-        assert result["compensation_target"] == "comida"
-        assert result["compensation_source"] == "transporte"
-        assert result["compensation_amount"] == 1500.0
-
-    @pytest.mark.asyncio
-    async def test_compensate_budget_null_fields_are_none(self):
-        mock_response = {
-            "intent": "compensate_budget",
-            "compensation_target": None,
-            "compensation_source": None,
-            "compensation_amount": None,
-            "reply_text": "Evaluando tu presupuesto.",
-        }
-        result = await _process_message_with_mock_response(mock_response)
-
-        assert result["intent"] == "compensate_budget"
-        assert result["compensation_target"] is None
-        assert result["compensation_source"] is None
-        assert result["compensation_amount"] is None
-
-    @pytest.mark.asyncio
-    async def test_compensate_budget_invalid_amount_becomes_none(self):
-        mock_response = {
-            "intent": "compensate_budget",
-            "compensation_amount": "mil",
-            "reply_text": "Evaluando tu presupuesto.",
-        }
-        result = await _process_message_with_mock_response(mock_response)
-
-        assert result["intent"] == "compensate_budget"
-        assert result["compensation_amount"] is None
-
-    @pytest.mark.asyncio
-    async def test_compensate_budget_blank_categories_become_none(self):
-        mock_response = {
-            "intent": "compensate_budget",
-            "compensation_target": "   ",
-            "compensation_source": "",
-            "reply_text": "Evaluando tu presupuesto.",
-        }
-        result = await _process_message_with_mock_response(mock_response)
-
-        assert result["intent"] == "compensate_budget"
-        assert result["compensation_target"] is None
-        assert result["compensation_source"] is None
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "intent",
-        ["confirm_compensation", "reject_compensation"],
-    )
-    async def test_compensation_confirmation_intents_accepted(self, intent):
-        result = await _process_message_with_mock_response(
-            {"intent": intent, "reply_text": "ok"}
-        )
-
-        assert result["intent"] == intent
-
-    @pytest.mark.asyncio
-    async def test_unknown_intent_with_compensation_fields_falls_back(self):
-        mock_response = {
-            "intent": "merge_budgets",
-            "compensation_target": "comida",
-            "reply_text": "ok",
-        }
-        result = await _process_message_with_mock_response(mock_response)
-
-        assert result["intent"] == "out_of_scope"

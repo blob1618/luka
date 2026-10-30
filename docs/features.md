@@ -53,8 +53,10 @@ procesa en silencio para no repetir una confirmación ya enviada.
 
 - `update_movement` aplica solo los campos mencionados por el usuario: importe,
   descripción, categoría, moneda, tipo, fecha y billetera. El resto del movimiento se
-  conserva. Cambiar moneda o billetera valida conjuntamente propiedad y moneda; una
-  selección ambigua o incompatible deja el movimiento intacto.
+  conserva. Cambiar moneda o billetera valida conjuntamente propiedad y moneda; si hay
+  más de una billetera compatible se pide elegir antes de confirmar y el movimiento
+  queda intacto hasta entonces. Repetir la moneda que el movimiento ya tiene no exige
+  elegir billetera.
 - La operación exige usuario propietario, movimiento activo y que los datos coincidan
   con lo mostrado (`stale_context` si cambió). La categoría nueva debe ser una categoría
   activa del usuario.
@@ -98,6 +100,14 @@ procesa en silencio para no repetir una confirmación ya enviada.
   categoría se reactiva.
 - Para cambiar la categoría de un movimiento se usa `update_movement`. Si la nueva
   categoría no existe, se indica que primero debe crearse y el movimiento no cambia.
+- La confirmación se acepta por botón o por texto. Se reconoce `sí`, `confirmo` y
+  `confirmar` (sin distinguir acentos ni mayúsculas); `dale` y `ok` solo actúan cuando hay
+  una propuesta entregada pendiente, para no interceptar una charla normal. La cancelación
+  reconoce `cancelar` y `cancelá`. En todos los casos se valida operación, revisión y hash
+  antes de escribir.
+- El workspace admite una propuesta activa y hasta tres abiertas. Al llegar al límite no se
+  descarta ningún borrador: Luka enumera las propuestas abiertas y pide confirmar o cancelar
+  una. Si se pide cancelar sin propuesta activa, también lista los borradores disponibles.
 
 ## Billeteras
 

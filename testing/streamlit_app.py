@@ -1,6 +1,7 @@
 # testing/streamlit_app.py
 """Luka Testing Environment — Streamlit entry point."""
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -89,10 +90,18 @@ config = render_sidebar()
 # Handle DB reset
 if st.session_state.get("reset_db_requested"):
     active = config.active_session()
-    if active is not None:
+    if active is None:
+        st.toast("No hay una sesión activa para resetear")
+    else:
         UserSimulator(SessionLocal).reset_user_data(active.phone)
+        try:
+            from testing.services.webhook_mode import purge_user_state
+
+            asyncio.run(purge_user_state(active.phone))
+            st.toast("Base de datos y contexto de conversación reseteados")
+        except Exception:
+            st.toast("Base de datos reseteada; no se pudo limpiar el contexto de Redis")
     st.session_state.pop("reset_db_requested", None)
-    st.toast("Base de datos reseteada")
 
 # Render chat
 render_chat(config)

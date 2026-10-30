@@ -7,8 +7,16 @@ from enum import Enum
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func
 
 from app.models.database import OnboardingInvitacion, SessionLocal, Usuario
+
+
+def record_activity(sender_phone: str) -> None:
+    """Record the inbound activity used by the WhatsApp 24-hour window."""
+    with SessionLocal() as session:
+        session.query(Usuario).filter(Usuario.whatsapp_id == sender_phone).update({'ultimo_mensaje_en': func.now()})
+        session.commit()
 
 
 DEFAULT_REGISTRATION_URL = "http://localhost:8000/registro"

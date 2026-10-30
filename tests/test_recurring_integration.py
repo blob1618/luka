@@ -16,7 +16,7 @@ Valida el ciclo de vida completo integrado de gastos recurrentes:
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 import uuid
 from zoneinfo import ZoneInfo
 
@@ -44,10 +44,7 @@ from app.scheduler import (
     _run_daily_recurring_detection_sync,
     check_reminders,
 )
-from app.services.dispatcher import (
-    process_incoming_interactive_reply,
-    process_incoming_message,
-)
+from app.services.dispatcher import process_incoming_interactive_reply
 from app.services.onboarding import OnboardingDecision, OnboardingResult
 from app.services.recurring_expense import (
     RecurringExpenseService,
@@ -118,134 +115,120 @@ class TestRecurringIntegratedLifecycle:
 
     @pytest.mark.asyncio
     async def test_full_lifecycle_detection_to_delivery(self, monkeypatch):
-        SessionLocal = _setup_test_db()
-        session = SessionLocal()
-        phone = "5491144445555"
-        user = _create_user(session, phone=phone)
-        cat = _create_category(session, user.id, name="Servicios")
+            SessionLocal = _setup_test_db()
+            session = SessionLocal()
+            phone = "5491144445555"
+            user = _create_user(session, phone=phone)
+            cat = _create_category(session, user.id, name="Servicios")
 
-        # 1. Carga histórica de 3 meses consecutivos (día 10)
-        _insert_movement(session, user.id, cat.id, "Internet Fibertel Hogar", 12500, date(2026, 6, 10))
-        _insert_movement(session, user.id, cat.id, "Internet Fibertel Hogar", 12500, date(2026, 7, 10))
-        _insert_movement(session, user.id, cat.id, "Internet Fibertel Hogar", 12500, date(2026, 8, 10))
+            # 1. Carga histórica de 3 meses consecutivos (día 10)
+            _insert_movement(session, user.id, cat.id, "Internet Fibertel Hogar", 12500, date(2026, 6, 10))
+            _insert_movement(session, user.id, cat.id, "Internet Fibertel Hogar", 12500, date(2026, 7, 10))
+            _insert_movement(session, user.id, cat.id, "Internet Fibertel Hogar", 12500, date(2026, 8, 10))
 
-        # 2. Ejecución de la detección batch nocturna a fecha de corte 2026-08-15
-        detection_result = RecurringExpenseService.run_daily_detection(
-            session=session,
-            as_of_date=date(2026, 8, 15),
-        )
-        session.commit()
+            # 2. Ejecución de la detección batch nocturna a fecha de corte 2026-08-15
+            detection_result = RecurringExpenseService.run_daily_detection(
+                session=session,
+                as_of_date=date(2026, 8, 15),
+            )
+            session.commit()
 
-        assert detection_result.metrics.candidates_created == 1
-        cand = session.query(CandidatoGastoRecurrente).filter(
-            CandidatoGastoRecurrente.usuario_id == user.id
-        ).first()
-        assert cand is not None
-        assert cand.estado == "pendiente"
-        assert cand.proxima_fecha_estimada == date(2026, 9, 10)
+            assert detection_result.metrics.candidates_created == 1
+            cand = session.query(CandidatoGastoRecurrente).filter(
+                CandidatoGastoRecurrente.usuario_id == user.id
+            ).first()
+            assert cand is not None
+            assert cand.estado == "pendiente"
+            assert cand.proxima_fecha_estimada == date(2026, 9, 10)
 
-        # 3. El usuario registra su egreso de septiembre por WhatsApp el 2026-09-08
-        # Fijar reloj de elegibilidad de propuesta a 2026-09-08 (estimado 2026-09-10 >= 2026-09-08)
-        frozen_webhook_time = datetime(2026, 9, 8, 12, 0, tzinfo=ARGENTINA_TZ)
-        orig_eligible = RecurringExpenseService.is_candidate_eligible_for_proposal
-        orig_expired = RecurringExpenseService.is_proposal_expired
-        monkeypatch.setattr(
-            RecurringExpenseService,
-            "is_candidate_eligible_for_proposal",
-            lambda c, as_of=None: orig_eligible(c, as_of or frozen_webhook_time),
-        )
-        monkeypatch.setattr(
-            RecurringExpenseService,
-            "is_proposal_expired",
-            lambda c, as_of=None: orig_expired(c, as_of or frozen_webhook_time),
-        )
+            # 3. El usuario registra su egreso de septiembre por WhatsApp el 2026-09-08
+            # Fijar reloj de elegibilidad de propuesta a 2026-09-08 (estimado 2026-09-10 >= 2026-09-08)
+            frozen_webhook_time = datetime(2026, 9, 8, 12, 0, tzinfo=ARGENTINA_TZ)
+            orig_eligible = RecurringExpenseService.is_candidate_eligible_for_proposal
+            orig_expired = RecurringExpenseService.is_proposal_expired
+            monkeypatch.setattr(
+                RecurringExpenseService,
+                "is_candidate_eligible_for_proposal",
+                lambda c, as_of=None: orig_eligible(c, as_of or frozen_webhook_time),
+            )
+            monkeypatch.setattr(
+                RecurringExpenseService,
+                "is_proposal_expired",
+                lambda c, as_of=None: orig_expired(c, as_of or frozen_webhook_time),
+            )
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", SessionLocal)
-        monkeypatch.setattr("app.services.finance.SessionLocal", SessionLocal)
-        monkeypatch.setattr("app.services.budget.SessionLocal", SessionLocal)
-        monkeypatch.setattr("app.models.database.SessionLocal", SessionLocal)
-        monkeypatch.setattr(
-            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-            lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
-        )
+            monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", SessionLocal)
+            monkeypatch.setattr("app.services.finance.SessionLocal", SessionLocal)
+            monkeypatch.setattr("app.services.budget.SessionLocal", SessionLocal)
+            monkeypatch.setattr("app.models.database.SessionLocal", SessionLocal)
+            monkeypatch.setattr(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
+            )
 
-        # Mockear LLMService para simular interpretación exacta de egreso
-        mock_llm = {
-            "intent": "expense",
-            "movement_type": "egreso",
-            "amount": 12500,
-            "currency": "ARS",
-            "description": "Internet Fibertel Hogar",
-            "category": "Servicios",
-            "reply_text": "Registré tu egreso de Internet Fibertel Hogar por $12500 ARS.",
-        }
-        monkeypatch.setattr("app.services.dispatcher.LLMService.process_message", AsyncMock(return_value=mock_llm))
+            # Mockear LLMService para simular interpretación exacta de egreso
 
-        dispatch_result = await process_incoming_message(
-            sender_phone=phone,
-            text_body="Pagué Internet Fibertel Hogar 12500",
-            whatsapp_message_id="msg_int_001",
-        )
+            dispatch_result = await _registered(SessionLocal,phone,description='Internet Fibertel Hogar',amount=12500,economic_effect='cash_flow',now=frozen_webhook_time)
 
-        # El registro conserva el botón de categoría y entrega la propuesta aparte.
-        assert dispatch_result.reply_message is not None
-        assert isinstance(dispatch_result.reply_message, WhatsAppReplyButtons)
-        assert dispatch_result.reply_message.buttons[0].title == "Cambiar categoría"
-        assert len(dispatch_result.followup_messages) == 1
-        buttons = dispatch_result.followup_messages[0].buttons
-        assert len(buttons) == 2
-        assert buttons[0].id == f"rec_cand:accept:{cand.id}"
-        assert buttons[1].id == f"rec_cand:reject:{cand.id}"
+            # El registro conserva el botón de categoría y entrega la propuesta aparte.
+            assert dispatch_result.reply_message is not None
+            assert isinstance(dispatch_result.reply_message, WhatsAppReplyButtons)
+            assert _category_message(dispatch_result) is not None
+            assert _proposal_message(dispatch_result) is not None
+            buttons = _proposal_message(dispatch_result).buttons
+            assert len(buttons) == 2
+            assert buttons[0].id == f"rec_cand:accept:{cand.id}"
+            assert buttons[1].id == f"rec_cand:reject:{cand.id}"
 
-        # 4. El usuario acepta tocando el botón interactivo "Sí, avisame"
-        interactive_result = await process_incoming_interactive_reply(
-            sender_phone=phone,
-            option_id=f"rec_cand:accept:{cand.id}",
-            reply_type="button_reply",
-        )
-        assert "Agendé el recordatorio para *Internet Fibertel Hogar*" in interactive_result.reply_text
+            # 4. El usuario acepta tocando el botón interactivo "Sí, avisame"
+            interactive_result = await _interactive(SessionLocal,
+                sender_phone=phone,
+                option_id=f"rec_cand:accept:{cand.id}",
+                reply_type="button_reply",
+            )
+            assert "Agendé el recordatorio para *Internet Fibertel Hogar*" in interactive_result.reply_text
 
-        # Verificar estado en BD: candidato 'aceptado' y Recordatorio creado
-        session.refresh(cand)
-        assert cand.estado == "aceptado"
-        rec = session.query(Recordatorio).filter(Recordatorio.candidato_id == cand.id).first()
-        assert rec is not None
-        assert rec.estado == "activo"
-        assert rec.origen == "recurrente_inteligente"
-        assert rec.dias_anticipacion == 3
-        assert rec.dia_del_mes == 10
+            # Verificar estado en BD: candidato 'aceptado' y Recordatorio creado
+            session.refresh(cand)
+            assert cand.estado == "aceptado"
+            rec = session.query(Recordatorio).filter(Recordatorio.candidato_id == cand.id).first()
+            assert rec is not None
+            assert rec.estado == "activo"
+            assert rec.origen == "recurrente_inteligente"
+            assert rec.dias_anticipacion == 3
+            assert rec.dia_del_mes == 10
 
-        # 5. Ejecución del scheduler en fecha de alerta (3 días antes del día 10)
-        # El período se toma a 2 meses de hoy para que el gasto recién registrado
-        # (con fecha real) no suppresses la alerta y el test no dependa del mes.
-        today = date.today()
-        period_index = today.year * 12 + today.month + 1
-        due = date(period_index // 12, period_index % 12 + 1, 10)
-        fake_now = datetime(due.year, due.month, 7, 12, 0, tzinfo=ARGENTINA_TZ)
-        monkeypatch.setattr("app.scheduler.SessionLocal", SessionLocal)
+            # 5. Ejecución del scheduler en fecha de alerta (3 días antes del día 10)
+            # El período se toma a 2 meses de hoy para que el gasto recién registrado
+            # (con fecha real) no suppresses la alerta y el test no dependa del mes.
+            today = date.today()
+            period_index = today.year * 12 + today.month + 1
+            due = date(period_index // 12, period_index % 12 + 1, 10)
+            fake_now = datetime(due.year, due.month, 7, 12, 0, tzinfo=ARGENTINA_TZ)
+            monkeypatch.setattr("app.scheduler.SessionLocal", SessionLocal)
 
-        monkeypatch.setenv("WHATSAPP_REMINDER_TEMPLATE_NAME", "reminder_notice")
-        sent_messages = []
-        async def fake_send_whatsapp(recipient, message=None, template_name=None, template_parameters=None):
-            sent_messages.append({"recipient": recipient, "message": message, "template": template_name})
-            return WhatsAppSendResult(status=WhatsAppDeliveryStatus.SUCCESS, message_id="wamid_mock_123")
+            monkeypatch.setenv("WHATSAPP_REMINDER_TEMPLATE_NAME", "reminder_notice")
+            sent_messages = []
+            async def fake_send_whatsapp(recipient, message=None, template_name=None, template_parameters=None):
+                sent_messages.append({"recipient": recipient, "message": message, "template": template_name})
+                return WhatsAppSendResult(status=WhatsAppDeliveryStatus.SUCCESS, message_id="wamid_mock_123")
 
-        monkeypatch.setattr("app.scheduler.send_whatsapp_message_detailed", fake_send_whatsapp)
+            monkeypatch.setattr("app.scheduler.send_whatsapp_message_detailed", fake_send_whatsapp)
 
-        with patch("app.scheduler.datetime") as mock_dt:
-            mock_dt.now.return_value = fake_now
-            mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
-            await check_reminders()
+            with patch("app.scheduler.datetime") as mock_dt:
+                mock_dt.now.return_value = fake_now
+                mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+                await check_reminders()
 
-        # Verificar que se creó y marcó el AvisoRecordatorio como 'sent'
-        aviso = session.query(AvisoRecordatorio).filter(
-            AvisoRecordatorio.recordatorio_id == rec.id
-        ).first()
-        assert aviso is not None
-        assert aviso.estado == "sent"
-        assert aviso.periodo == due.strftime("%Y-%m")
-        assert len(sent_messages) == 1
-        assert sent_messages[0]["recipient"] == phone
+            # Verificar que se creó y marcó el AvisoRecordatorio como 'sent'
+            aviso = session.query(AvisoRecordatorio).filter(
+                AvisoRecordatorio.recordatorio_id == rec.id
+            ).first()
+            assert aviso is not None
+            assert aviso.estado == "sent"
+            assert aviso.periodo == due.strftime("%Y-%m")
+            assert len(sent_messages) == 1
+            assert sent_messages[0]["recipient"] == phone
 
 
 class TestRecurringRejectionAndSuppression:
@@ -253,88 +236,74 @@ class TestRecurringRejectionAndSuppression:
 
     @pytest.mark.asyncio
     async def test_rejection_prevents_future_proposals_and_reminders(self, monkeypatch):
-        SessionLocal = _setup_test_db()
-        session = SessionLocal()
-        phone = "5491188889999"
-        user = _create_user(session, phone=phone)
-        cat = _create_category(session, user.id, name="Servicios")
+            SessionLocal = _setup_test_db()
+            session = SessionLocal()
+            phone = "5491188889999"
+            user = _create_user(session, phone=phone)
+            cat = _create_category(session, user.id, name="Servicios")
 
-        # 1. Cargar 3 meses históricos absolutos (mayo, junio, julio 2026)
-        _insert_movement(session, user.id, cat.id, "Gimnasio Megatlon", 25000, date(2026, 5, 5))
-        _insert_movement(session, user.id, cat.id, "Gimnasio Megatlon", 25000, date(2026, 6, 5))
-        _insert_movement(session, user.id, cat.id, "Gimnasio Megatlon", 25000, date(2026, 7, 5))
+            # 1. Cargar 3 meses históricos absolutos (mayo, junio, julio 2026)
+            _insert_movement(session, user.id, cat.id, "Gimnasio Megatlon", 25000, date(2026, 5, 5))
+            _insert_movement(session, user.id, cat.id, "Gimnasio Megatlon", 25000, date(2026, 6, 5))
+            _insert_movement(session, user.id, cat.id, "Gimnasio Megatlon", 25000, date(2026, 7, 5))
 
-        RecurringExpenseService.run_daily_detection(session, as_of_date=date(2026, 7, 10))
-        session.commit()
+            RecurringExpenseService.run_daily_detection(session, as_of_date=date(2026, 7, 10))
+            session.commit()
 
-        cand = session.query(CandidatoGastoRecurrente).filter(CandidatoGastoRecurrente.usuario_id == user.id).first()
-        assert cand is not None
-        assert cand.estado == "pendiente"
-        assert cand.dia_estimado == 5
-        assert cand.proxima_fecha_estimada == date(2026, 8, 5)
+            cand = session.query(CandidatoGastoRecurrente).filter(CandidatoGastoRecurrente.usuario_id == user.id).first()
+            assert cand is not None
+            assert cand.estado == "pendiente"
+            assert cand.dia_estimado == 5
+            assert cand.proxima_fecha_estimada == date(2026, 8, 5)
 
-        frozen_rejection_time = datetime(2026, 7, 20, 12, 0, tzinfo=ARGENTINA_TZ)
-        orig_eligible = RecurringExpenseService.is_candidate_eligible_for_proposal
-        orig_expired = RecurringExpenseService.is_proposal_expired
-        monkeypatch.setattr(
-            RecurringExpenseService,
-            "is_candidate_eligible_for_proposal",
-            lambda c, as_of=None: orig_eligible(c, as_of or frozen_rejection_time),
-        )
-        monkeypatch.setattr(
-            RecurringExpenseService,
-            "is_proposal_expired",
-            lambda c, as_of=None: orig_expired(c, as_of or frozen_rejection_time),
-        )
+            frozen_rejection_time = datetime(2026, 7, 20, 12, 0, tzinfo=ARGENTINA_TZ)
+            orig_eligible = RecurringExpenseService.is_candidate_eligible_for_proposal
+            orig_expired = RecurringExpenseService.is_proposal_expired
+            monkeypatch.setattr(
+                RecurringExpenseService,
+                "is_candidate_eligible_for_proposal",
+                lambda c, as_of=None: orig_eligible(c, as_of or frozen_rejection_time),
+            )
+            monkeypatch.setattr(
+                RecurringExpenseService,
+                "is_proposal_expired",
+                lambda c, as_of=None: orig_expired(c, as_of or frozen_rejection_time),
+            )
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", SessionLocal)
+            monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", SessionLocal)
 
-        # Usuario rechaza con el botón interactivo
-        res = await process_incoming_interactive_reply(
-            sender_phone=phone,
-            option_id=f"rec_cand:reject:{cand.id}",
-            reply_type="button_reply",
-        )
-        assert "no volveré a sugerirte este recordatorio" in res.reply_text
+            # Usuario rechaza con el botón interactivo
+            res = await _interactive(SessionLocal,
+                sender_phone=phone,
+                option_id=f"rec_cand:reject:{cand.id}",
+                reply_type="button_reply",
+            )
+            assert "no volveré a sugerirte este recordatorio" in res.reply_text
 
-        session.refresh(cand)
-        assert cand.estado == "rechazado"
+            session.refresh(cand)
+            assert cand.estado == "rechazado"
 
-        # Siguiente corrida del detector nocturno: no revive ni altera el rechazo
-        RecurringExpenseService.run_daily_detection(session, as_of_date=date(2026, 8, 20))
-        session.commit()
-        session.refresh(cand)
-        assert cand.estado == "rechazado"
+            # Siguiente corrida del detector nocturno: no revive ni altera el rechazo
+            RecurringExpenseService.run_daily_detection(session, as_of_date=date(2026, 8, 20))
+            session.commit()
+            session.refresh(cand)
+            assert cand.estado == "rechazado"
 
-        # Siguiente egreso registrado: no adjunta propuesta
-        mock_llm = {
-            "intent": "expense",
-            "movement_type": "egreso",
-            "amount": 25000,
-            "currency": "ARS",
-            "description": "Gimnasio Megatlon",
-            "category": "Servicios",
-            "reply_text": "Registrado.",
-        }
-        monkeypatch.setattr("app.services.dispatcher.LLMService.process_message", AsyncMock(return_value=mock_llm))
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", SessionLocal)
-        monkeypatch.setattr("app.services.finance.SessionLocal", SessionLocal)
-        monkeypatch.setattr("app.models.database.SessionLocal", SessionLocal)
-        monkeypatch.setattr(
-            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-            lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
-        )
+            # Siguiente egreso registrado: no adjunta propuesta
+            monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", SessionLocal)
+            monkeypatch.setattr("app.services.finance.SessionLocal", SessionLocal)
+            monkeypatch.setattr("app.models.database.SessionLocal", SessionLocal)
+            monkeypatch.setattr(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
+            )
 
-        res_exp = await process_incoming_message(
-            sender_phone=phone,
-            text_body="Gimnasio 25000",
-            whatsapp_message_id="msg_int_002",
-        )
-        # Sin propuesta recurrente, pero con la corrección de categoría del registro.
-        assert isinstance(res_exp.reply_message, WhatsAppReplyButtons)
-        assert res_exp.reply_message.buttons[0].title == "Cambiar categoría"
-        assert res_exp.proposal_candidate_id is None
-        assert res_exp.followup_messages == []
+            res_exp = await _registered(SessionLocal,phone,description='Gimnasio Megatlon',amount=25000,economic_effect='cash_flow',now=frozen_rejection_time)
+            # Sin propuesta recurrente, pero con la corrección de categoría del registro.
+            assert _category_message(res_exp) is not None
+            assert _category_message(res_exp) is not None
+            assert res_exp.proposal_candidate_id is None
+            assert _proposal_message(res_exp) is None
 
     @pytest.mark.asyncio
     async def test_scheduler_suppression_when_user_pays_early(self, monkeypatch):
@@ -407,98 +376,84 @@ class TestSecurityAndConversationalSafety:
 
     @pytest.mark.asyncio
     async def test_free_text_does_not_corrupt_candidate_and_processes_expenses(self, monkeypatch):
-        SessionLocal = _setup_test_db()
-        session = SessionLocal()
-        phone = "5491177778888"
-        user = _create_user(session, phone=phone)
-        _create_category(session, user.id, name="Comida")
+            SessionLocal = _setup_test_db()
+            session = SessionLocal()
+            phone = "5491177778888"
+            user = _create_user(session, phone=phone)
+            _create_category(session, user.id, name="Comida")
 
-        # Crear un candidato pendiente
-        norm_desc = normalize_description("Internet Personal")
-        p_hash = calculate_pattern_hash(norm_desc, None, "ARS")
-        cand = CandidatoGastoRecurrente(
-            id=uuid.uuid4(),
-            usuario_id=user.id,
-            patron_hash=p_hash,
-            descripcion_normalizada=norm_desc,
-            categoria_id=None,
-            moneda="ARS",
-            concepto="Internet Personal",
-            dia_estimado=15,
-            proxima_fecha_estimada=date(2026, 10, 15),
-            estado="pendiente",
-            ultima_fecha_movimiento=date(2026, 9, 15),
-            evidencia_movimiento_ids=[],
-        )
-        session.add(cand)
-        session.commit()
+            # Crear un candidato pendiente
+            norm_desc = normalize_description("Internet Personal")
+            p_hash = calculate_pattern_hash(norm_desc, None, "ARS")
+            cand = CandidatoGastoRecurrente(
+                id=uuid.uuid4(),
+                usuario_id=user.id,
+                patron_hash=p_hash,
+                descripcion_normalizada=norm_desc,
+                categoria_id=None,
+                moneda="ARS",
+                concepto="Internet Personal",
+                dia_estimado=15,
+                proxima_fecha_estimada=date(2026, 10, 15),
+                estado="pendiente",
+                ultima_fecha_movimiento=date(2026, 9, 15),
+                evidencia_movimiento_ids=[],
+            )
+            session.add(cand)
+            session.commit()
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", SessionLocal)
-        monkeypatch.setattr("app.services.finance.SessionLocal", SessionLocal)
-        monkeypatch.setattr("app.models.database.SessionLocal", SessionLocal)
-        monkeypatch.setattr(
-            "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
-            lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
-        )
+            monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", SessionLocal)
+            monkeypatch.setattr("app.services.finance.SessionLocal", SessionLocal)
+            monkeypatch.setattr("app.models.database.SessionLocal", SessionLocal)
+            monkeypatch.setattr(
+                "app.services.dispatcher.OnboardingService.prepare_whatsapp_message",
+                lambda *args, **kwargs: OnboardingResult(OnboardingDecision.KNOWN_USER),
+            )
 
-        # Usuario escribe un gasto nuevo no relacionado: "almuerzo 4500"
-        mock_llm_expense = {
-            "intent": "expense",
-            "movement_type": "egreso",
-            "amount": 4500,
-            "currency": "ARS",
-            "description": "almuerzo",
-            "category": "Comida",
-            "reply_text": "Registré tu almuerzo por $4500.",
-        }
-        monkeypatch.setattr("app.services.dispatcher.LLMService.process_message", AsyncMock(return_value=mock_llm_expense))
+            # Usuario escribe un gasto nuevo no relacionado: "almuerzo 4500"
 
-        res = await process_incoming_message(
-            sender_phone=phone,
-            text_body="almuerzo 4500",
-            whatsapp_message_id="msg_int_003",
-        )
-        assert "almuerzo" in res.reply_text
+            res = await _registered(SessionLocal,phone,description='almuerzo',amount=4500,category='Comida',economic_effect='cash_flow',now=None)
+            assert "almuerzo" in res.reply_text
 
-        # El candidato original permanece intacto en 'pendiente'
-        session.refresh(cand)
-        assert cand.estado == "pendiente"
+            # El candidato original permanece intacto en 'pendiente'
+            session.refresh(cand)
+            assert cand.estado == "pendiente"
 
     @pytest.mark.asyncio
     async def test_anti_tampering_cross_user_button_rejection(self, monkeypatch):
-        SessionLocal = _setup_test_db()
-        session = SessionLocal()
-        user1 = _create_user(session, phone="5491111111111", name="User 1")
-        _create_user(session, phone="5491122222222", name="User 2")
+            SessionLocal = _setup_test_db()
+            session = SessionLocal()
+            user1 = _create_user(session, phone="5491111111111", name="User 1")
+            _create_user(session, phone="5491122222222", name="User 2")
 
-        cand_user1 = CandidatoGastoRecurrente(
-            id=uuid.uuid4(),
-            usuario_id=user1.id,
-            patron_hash="a" * 64,
-            descripcion_normalizada="gasto test",
-            moneda="ARS",
-            concepto="Gasto Test",
-            dia_estimado=10,
-            proxima_fecha_estimada=date(2026, 10, 10),
-            estado="pendiente",
-            ultima_fecha_movimiento=date(2026, 9, 10),
-            evidencia_movimiento_ids=[],
-        )
-        session.add(cand_user1)
-        session.commit()
+            cand_user1 = CandidatoGastoRecurrente(
+                id=uuid.uuid4(),
+                usuario_id=user1.id,
+                patron_hash="a" * 64,
+                descripcion_normalizada="gasto test",
+                moneda="ARS",
+                concepto="Gasto Test",
+                dia_estimado=10,
+                proxima_fecha_estimada=date(2026, 10, 10),
+                estado="pendiente",
+                ultima_fecha_movimiento=date(2026, 9, 10),
+                evidencia_movimiento_ids=[],
+            )
+            session.add(cand_user1)
+            session.commit()
 
-        monkeypatch.setattr("app.services.dispatcher.SessionLocal", SessionLocal)
+            monkeypatch.setattr("app.services.assistant_capabilities.movement_effects.SessionLocal", SessionLocal)
 
-        # User 2 intenta aceptar el candidato perteneciente a User 1
-        res = await process_incoming_interactive_reply(
-            sender_phone="5491122222222",
-            option_id=f"rec_cand:accept:{cand_user1.id}",
-            reply_type="button_reply",
-        )
-        # Debe rechazar por falta de propiedad
-        assert "No encontré la sugerencia solicitada" in res.reply_text
-        session.refresh(cand_user1)
-        assert cand_user1.estado == "pendiente"
+            # User 2 intenta aceptar el candidato perteneciente a User 1
+            res = await _interactive(SessionLocal,
+                sender_phone="5491122222222",
+                option_id=f"rec_cand:accept:{cand_user1.id}",
+                reply_type="button_reply",
+            )
+            # Debe rechazar por falta de propiedad
+            assert "No encontré la sugerencia solicitada" in res.reply_text
+            session.refresh(cand_user1)
+            assert cand_user1.estado == "pendiente"
 
 
 class TestAdvisoryLockRollbackRecovery:
@@ -766,3 +721,29 @@ class TestAdvisoryLockRollbackRecovery:
         assert unlock_result is False
         # Conexión 101 sigue reteniendo el lock indefinidamente (FUGA REPRODUCIDA)
         assert global_locks[5354418701] == 101
+
+
+async def _registered(factory,phone,*,description,amount,economic_effect,category='Servicios',now=None):
+    from tests.tool_scenarios import execute_tool
+    from tests.test_assistant_stage4 import initial
+    from tests.test_assistant_pilot import NOW
+    def plan(kwargs):
+        category_ref=next(c['ref'] for c in initial(kwargs)['categories'] if c['name']==category)
+        return [('register_movement',{'economic_effect':economic_effect,'movement_type':'egreso','amount':str(amount),'currency':'ARS','description':description,'category_ref':category_ref,'date_spec':{'kind':'absent'}})]
+    return await execute_tool(phone,'register_movement',plan,confirm=True,now=now or NOW,factory=factory)
+
+
+async def _interactive(factory,**kwargs):
+    from unittest.mock import patch
+    from uuid import uuid4
+    kwargs.setdefault('whatsapp_message_id','recurring-integration-'+uuid4().hex)
+    with patch('app.services.finance.SessionLocal',factory),patch('app.services.onboarding.SessionLocal',factory):
+        return await process_incoming_interactive_reply(**kwargs)
+
+
+def _proposal_message(result):
+    return next((m for m in [result.reply_message,*result.followup_messages] if isinstance(m,WhatsAppReplyButtons) and any(b.id.startswith('rec_cand:') for b in m.buttons)),None)
+
+
+def _category_message(result):
+    return next((m for m in [result.reply_message,*result.followup_messages] if isinstance(m,WhatsAppReplyButtons) and any(b.title=='Cambiar categoría' for b in m.buttons)),None)

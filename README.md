@@ -23,11 +23,11 @@
 
 ## Qué es LUKA
 
-LUKA es un asistente financiero inteligente que opera por WhatsApp. Usa inteligencia artificial para interpretar tus mensajes en lenguaje natural y registrar automáticamente tus ingresos y egresos. Sin apps complicadas, sin formularios, sin fricción: solo escribe como hablas y LUKA se encarga del resto.
+LUKA es un asistente financiero inteligente que opera por WhatsApp. Usa inteligencia artificial para interpretar tus mensajes en lenguaje natural y preparar tus ingresos y egresos para revisarlos antes de confirmar. Sin apps complicadas, sin formularios, sin fricción: solo escribe como hablas y LUKA se encarga del resto.
 
 ## Para qué se usa
 
-LUKA convierte la gestión financiera diaria en algo simple y natural. En lugar de abrir una app, buscar categorías y llenar campos, solo escribís un mensaje como *"Gasté $500 en almuerzo"* o *"Cobré mi sueldo"* y LUKA lo registra al instante.
+LUKA convierte la gestión financiera diaria en algo simple y natural. En lugar de abrir una app, buscar categorías y llenar campos, solo escribís un mensaje como *"Gasté $500 en almuerzo"* o *"Cobré mi sueldo"* y LUKA te muestra una propuesta antes de guardarla con tu confirmación.
 
 Para las personas que nunca pudieron mantener sus finanzas organizadas, LUKA elimina la barrera de entrada: no necesitás disciplina de contabilidad ni aprender a usar una herramienta nueva. Solo necesitás WhatsApp, que ya tenés en tu teléfono.
 
@@ -36,9 +36,9 @@ Con el tiempo, LUKA te ayuda a ver patrones, entender en qué gastás y tomar me
 ## Características principales
 
 - **Registro por texto** — Escribí en lenguaje natural y LUKA interpreta el monto, la categoría y el tipo de movimiento.
-- **Categorización inteligente** — LUKA identifica automáticamente si es un ingreso o un egreso y lo clasifica según el concepto.
+- **Categorías propias** — LUKA propone una categoría existente; crear o cambiar una categoría requiere revisar el cambio.
 - **Sin duplicados** — Si Meta reenvía un mensaje, LUKA lo detecta y evita registros repetidos.
-- **Respuesta inmediata** — Confirmación al instante después de cada registro.
+- **Revisión antes de guardar** — Cada cambio se confirma después de mostrarte su propuesta completa.
 - **Multi-movimiento** — Registrá uno o varios movimientos por mensaje.
 - **Recordatorios proactivos** — Si un día no registrás gastos, LUKA te pregunta antes de que te olvides. Se apaga con un mensaje.
 - **Dashboard web** — Visualizá tus finanzas en un panel interactivo ([Frontend](https://github.com/sandralilianaacosta-ui/luka_frontend)).
@@ -68,7 +68,9 @@ Para macOS/Linux: `python3 -m venv .venv`, `source .venv/bin/activate`, `cp .env
 
 La carpeta `testing/` contiene una app Streamlit que simula el flujo de WhatsApp contra el backend local, sin depender de la API real de Meta. Solo se levanta con Docker o Podman.
 
-Ver [testing/README.md](testing/README.md) para la guía completa.
+Texto, botones y listas usan el mismo dispatcher y los mismos callbacks, con entrega local sintética identificada. Debug muestra herramientas/resultados, métricas y estado; el prompt de la sidebar afecta al agente.
+
+Ver [testing/README.md](testing/README.md), [arquitectura](docs/architecture.md) y [cierre de etapa 5](docs/assistant-stage5-coverage.md).
 
 ## Links del proyecto
 

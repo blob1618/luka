@@ -1,4 +1,6 @@
 import hashlib
+import json
+from dataclasses import replace
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -53,6 +55,7 @@ class ConversationFlowRuntime:
         sender_phone: str,
         event_key: str,
         variables: dict[str, Any],
+        backend_binding: dict | None = None,
     ) -> OutboundWhatsAppMessage | None:
         try:
             flow = ConversationFlowService.find_published_by_event(event_key)
@@ -69,6 +72,7 @@ class ConversationFlowRuntime:
                     event_key, flow.published.definition["start_node"]
                 ),
                 variables=normalized_variables,
+                backend_binding=backend_binding,
             )
         except (
             ConversationFlowDefinitionInvalid,
@@ -114,12 +118,19 @@ class ConversationFlowRuntime:
             node = cls._node(definition, pending.node_id)
             if not cls._reply_type_matches(reply_type, node["type"]):
                 return ConfiguredFlowReply(reply_text=INTERACTION_UNAVAILABLE_REPLY)
+            if pending.backend_binding is not None:
+                suffix = ':ab:' + cls._binding_token(pending.backend_binding)
+                if not option_id.endswith(suffix):
+                    return ConfiguredFlowReply(reply_text=INTERACTION_UNAVAILABLE_REPLY)
+                option_id = option_id[:-len(suffix)]
             option = cls._selected_option(version, node, option_id)
             if option is None:
                 return ConfiguredFlowReply(reply_text=INTERACTION_UNAVAILABLE_REPLY)
 
             if option.get("action"):
                 await ConversationService.clear_pending_conversation_flow(sender_phone)
+                if pending.backend_binding is not None:
+                    return await action_handler(option['action'], pending.variables, pending.backend_binding)
                 return await action_handler(option["action"], pending.variables)
 
             next_node = option.get("next_node")
@@ -131,6 +142,7 @@ class ConversationFlowRuntime:
                 version=version,
                 node_id=next_node,
                 variables=pending.variables,
+                backend_binding=pending.backend_binding,
             )
             return ConfiguredFlowReply(reply_message=message)
         except (
@@ -161,10 +173,18 @@ class ConversationFlowRuntime:
         version: FlowVersionSnapshot,
         node_id: str,
         variables: dict[str, str],
+        backend_binding: dict | None = None,
     ) -> OutboundWhatsAppMessage:
         definition = validate_flow_definition(flow.event_key, version.definition)
         node = cls._node(definition, node_id)
         message = cls._message(version, node, variables)
+        if backend_binding is not None:
+            suffix = ':ab:' + cls._binding_token(backend_binding)
+            if isinstance(message, WhatsAppReplyButtons):
+                message = replace(message, buttons=tuple(replace(button, id=button.id + suffix) for button in message.buttons))
+            elif isinstance(message, WhatsAppList):
+                message = replace(message, sections=tuple(replace(section, rows=tuple(
+                    replace(row, id=row.id + suffix) for row in section.rows)) for section in message.sections))
         if flow.event_key == "dashboard.link.sent" and node["type"] == "text":
             message = dashboard_link_message(
                 variables["login_url"],
@@ -195,9 +215,14 @@ class ConversationFlowRuntime:
                     event_key=flow.event_key,
                     node_id=node_id,
                     variables=variables,
+                    backend_binding=backend_binding,
                 ),
             )
         return message
+
+    @staticmethod
+    def _binding_token(binding):
+        return hashlib.sha256(json.dumps(binding, sort_keys=True, separators=(',', ':')).encode()).hexdigest()[:16]
 
     @staticmethod
     async def _clear_if_present(sender_phone: str) -> None:

@@ -1,6 +1,5 @@
 import uuid
 from datetime import date
-from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -18,12 +17,6 @@ from app.models.database import (
     Usuario,
 )
 from app.services.finance import FinanceService
-from app.services.budget import BudgetEvaluation
-from app.services.dispatcher import _register_and_reply_with_hint
-from app.services.intent_routing import (
-    normalize_category_management_intent,
-    normalize_movement_query_intent,
-)
 
 
 @pytest.fixture()
@@ -75,17 +68,10 @@ def create_category(session, user_id, nombre="Comida", esta_eliminado=False):
 
 
 def movement_payload(**overrides):
-    payload = {
-        "intent": "expense",
-        "movement_type": "egreso",
-        "amount": 1500,
-        "currency": "ars",
-        "description": "almuerzo",
-        "expense": "almuerzo",
-        "category": " comida ",
-    }
-    payload.update(overrides)
-    return payload
+    values = {'economic_effect': 'cash_flow', 'movement_type': 'egreso', 'amount': 1500,
+              'currency': 'ARS', 'description': 'almuerzo', 'category_name': None}
+    values.update(overrides)
+    return values
 
 
 def count_movements(session):
@@ -97,11 +83,11 @@ def test_register_movement_existing_user_and_category(db_context):
     user = create_user(session)
     category = create_category(session, user.id, nombre="Comida")
 
-    result = FinanceService.register_movement_from_whatsapp_text(
+    result = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",
         whatsapp_message_id="wamid.1",
         original_text="Gaste 1500 en almuerzo",
-        llm_result=movement_payload(),
+        **movement_payload(category_name="Comida"),
     )
 
     movement = session.query(MovimientoFinanciero).one()
@@ -121,11 +107,11 @@ def test_register_movement_existing_user_and_category(db_context):
 def test_register_movement_user_not_found_does_not_save(db_context):
     session = db_context["session"]
 
-    result = FinanceService.register_movement_from_whatsapp_text(
+    result = FinanceService.register_movement_with_category(
         sender_phone="5499999999999",
         whatsapp_message_id="wamid.2",
         original_text="Gaste 1500 en almuerzo",
-        llm_result=movement_payload(),
+        **movement_payload(),
     )
 
     assert result.status == "user_not_found"
@@ -137,11 +123,11 @@ def test_register_movement_without_matching_category_saves_null_category(db_cont
     session = db_context["session"]
     create_user(session)
 
-    result = FinanceService.register_movement_from_whatsapp_text(
+    result = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",
         whatsapp_message_id="wamid.3",
         original_text="Gaste 1500 en farmacia",
-        llm_result=movement_payload(category="salud"),
+        **movement_payload(category_name=None),
     )
 
     movement = session.query(MovimientoFinanciero).one()
@@ -155,11 +141,11 @@ def test_register_movement_synonym_attaches_user_category(db_context):
     user = create_user(session)
     luz_cat = create_category(session, user.id, nombre="Luz")
 
-    result = FinanceService.register_movement_from_whatsapp_text(
+    result = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",
         whatsapp_message_id="wamid.luz",
         original_text="Pagué la luz 3000",
-        llm_result=movement_payload(category="luz"),
+        **movement_payload(category_name="luz"),
     )
 
     movement = session.query(MovimientoFinanciero).one()
@@ -172,11 +158,11 @@ def test_register_movement_synonym_no_user_category_saves_null(db_context):
     session = db_context["session"]
     create_user(session)
 
-    result = FinanceService.register_movement_from_whatsapp_text(
+    result = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",
         whatsapp_message_id="wamid.luznone",
         original_text="Pagué la luz 3000",
-        llm_result=movement_payload(category="luz"),
+        **movement_payload(category_name=None),
     )
 
     movement = session.query(MovimientoFinanciero).one()
@@ -191,11 +177,12 @@ def test_register_movement_unknown_category_needs_confirmation(db_context):
     create_category(session, user.id, nombre="Comida")
     create_category(session, user.id, nombre="Salud")
 
-    result = FinanceService.register_movement_from_whatsapp_text(
+    result = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",
         whatsapp_message_id="wamid.crypto",
         original_text="Gaste 5000 en cripto",
-        llm_result=movement_payload(category="cryptomoneda"),
+        **movement_payload(category_name="cryptomoneda"),
+        create_category_if_missing=True,
     )
 
     assert result.status == "needs_category_confirmation"
@@ -208,11 +195,11 @@ def test_register_movement_deleted_category_is_not_used(db_context):
     user = create_user(session)
     create_category(session, user.id, nombre="Comida", esta_eliminado=True)
 
-    result = FinanceService.register_movement_from_whatsapp_text(
+    result = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",
         whatsapp_message_id="wamid.4",
         original_text="Gaste 1500 en almuerzo",
-        llm_result=movement_payload(),
+        **movement_payload(category_name=None),
     )
 
     movement = session.query(MovimientoFinanciero).one()
@@ -226,11 +213,11 @@ def test_register_movement_invalid_amount_is_invalid_data(db_context, amount):
     session = db_context["session"]
     create_user(session)
 
-    result = FinanceService.register_movement_from_whatsapp_text(
+    result = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",
         whatsapp_message_id="wamid.invalid",
         original_text="Gaste en almuerzo",
-        llm_result=movement_payload(amount=amount),
+        **movement_payload(amount=amount),
     )
 
     assert result.status == "invalid_data"
@@ -241,59 +228,14 @@ def test_register_movement_invalid_movement_type_is_invalid_data(db_context):
     session = db_context["session"]
     create_user(session)
 
-    result = FinanceService.register_movement_from_whatsapp_text(
+    result = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",
         whatsapp_message_id="wamid.invalid-type",
         original_text="Gaste 1500 en almuerzo",
-        llm_result=movement_payload(movement_type="transferencia"),
+        **movement_payload(movement_type="transferencia"),
     )
 
     assert result.status == "invalid_data"
-    assert count_movements(session) == 0
-
-
-def test_register_movement_missing_type_non_financial_intent_is_not_a_movement(db_context):
-    session = db_context["session"]
-    create_user(session)
-
-    result = FinanceService.register_movement_from_whatsapp_text(
-        sender_phone="5491111111111",
-        whatsapp_message_id="wamid.not-movement",
-        original_text="Hola",
-        llm_result={"intent": "greeting", "reply_text": "Hola"},
-    )
-
-    assert result.status == "not_a_movement"
-    assert count_movements(session) == 0
-
-
-def test_register_movement_missing_type_reminder_with_amount_is_not_a_movement(db_context):
-    session = db_context["session"]
-    create_user(session)
-
-    result = FinanceService.register_movement_from_whatsapp_text(
-        sender_phone="5491111111111",
-        whatsapp_message_id="wamid.reminder",
-        original_text="Recordame pagar 1500",
-        llm_result={"intent": "reminder", "amount": 1500, "reply_text": "Recordatorio"},
-    )
-
-    assert result.status == "not_a_movement"
-    assert count_movements(session) == 0
-
-
-def test_register_movement_missing_type_budget_query_with_amount_is_not_a_movement(db_context):
-    session = db_context["session"]
-    create_user(session)
-
-    result = FinanceService.register_movement_from_whatsapp_text(
-        sender_phone="5491111111111",
-        whatsapp_message_id="wamid.budget-query",
-        original_text="Cuanto me queda si gaste 1500?",
-        llm_result={"intent": "budget_query", "amount": 1500, "reply_text": "Consultando"},
-    )
-
-    assert result.status == "not_a_movement"
     assert count_movements(session) == 0
 
 
@@ -301,35 +243,16 @@ def test_register_movement_missing_type_financial_intent_is_invalid_data(db_cont
     session = db_context["session"]
     create_user(session)
     payload = movement_payload()
-    payload.pop("movement_type")
+    payload["movement_type"] = None
 
-    result = FinanceService.register_movement_from_whatsapp_text(
+    result = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",
         whatsapp_message_id="wamid.missing-type",
         original_text="Gaste 1500 en almuerzo",
-        llm_result=payload,
+        **payload,
     )
 
     assert result.status == "invalid_data"
-    assert count_movements(session) == 0
-
-
-def test_register_movement_invalid_type_non_expense_intent_is_not_a_movement(db_context):
-    session = db_context["session"]
-    create_user(session)
-
-    result = FinanceService.register_movement_from_whatsapp_text(
-        sender_phone="5491111111111",
-        whatsapp_message_id="wamid.invalid-type-reminder",
-        original_text="Recordame pagar 1500",
-        llm_result={
-            "intent": "reminder",
-            "movement_type": "transferencia",
-            "amount": 1500,
-        },
-    )
-
-    assert result.status == "not_a_movement"
     assert count_movements(session) == 0
 
 
@@ -337,17 +260,17 @@ def test_register_movement_duplicate_whatsapp_message_id_does_not_save_twice(db_
     session = db_context["session"]
     create_user(session)
 
-    first = FinanceService.register_movement_from_whatsapp_text(
+    first = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",
         whatsapp_message_id="wamid.duplicate",
         original_text="Gaste 1500 en almuerzo",
-        llm_result=movement_payload(),
+        **movement_payload(),
     )
-    second = FinanceService.register_movement_from_whatsapp_text(
+    second = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",
         whatsapp_message_id="wamid.duplicate",
         original_text="Gaste 1500 en almuerzo",
-        llm_result=movement_payload(),
+        **movement_payload(),
     )
 
     assert first.status == "registered"
@@ -361,17 +284,17 @@ def test_same_description_different_message_ids_register_as_distinct(db_context)
     session = db_context["session"]
     create_user(session)
 
-    first = FinanceService.register_movement_from_whatsapp_text(
+    first = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",
         whatsapp_message_id="wamid.dia1",
         original_text="Gaste 1500 en almuerzo",
-        llm_result=movement_payload(),
+        **movement_payload(),
     )
-    second = FinanceService.register_movement_from_whatsapp_text(
+    second = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",
         whatsapp_message_id="wamid.dia2",
         original_text="Gaste 1500 en almuerzo",
-        llm_result=movement_payload(),
+        **movement_payload(),
     )
 
     assert first.status == "registered"
@@ -402,11 +325,11 @@ def test_register_movement_commit_error_returns_persistence_error(db_context, mo
         lambda: FailingCommitSession(session_factory()),
     )
 
-    result = FinanceService.register_movement_from_whatsapp_text(
+    result = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",
         whatsapp_message_id="wamid.commit-error",
         original_text="Gaste 1500 en almuerzo",
-        llm_result=movement_payload(),
+        **movement_payload(),
     )
 
     assert result.status == "persistence_error"
@@ -477,11 +400,11 @@ def test_register_movement_integrity_error_rechecks_and_returns_duplicate(monkey
         )()),
     )
 
-    result = FinanceService.register_movement_from_whatsapp_text(
+    result = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",
         whatsapp_message_id="wamid.integrity-duplicate",
         original_text="Gaste 1500 en almuerzo",
-        llm_result=movement_payload(category=None),
+        **movement_payload(category_name=None),
     )
 
     assert result.status == "duplicate"
@@ -504,11 +427,11 @@ def test_register_movement_integrity_error_rechecks_and_returns_persistence_erro
         staticmethod(lambda session, message_id: next(duplicate_checks)),
     )
 
-    result = FinanceService.register_movement_from_whatsapp_text(
+    result = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",
         whatsapp_message_id="wamid.integrity-missing",
         original_text="Gaste 1500 en almuerzo",
-        llm_result=movement_payload(category=None),
+        **movement_payload(category_name=None),
     )
 
     assert result.status == "persistence_error"
@@ -636,39 +559,15 @@ def test_movement_query_resolves_unique_misspelled_category_without_modifying_it
     assert category.nombre == "Jardinería"
 
 
-@pytest.mark.asyncio
-async def test_registration_respects_named_user_category_over_llm_guess(db_context):
-    session = db_context["session"]
+def test_registration_respects_named_user_category_over_llm_guess(db_context):
+    session = db_context['session']
     user = create_user(session)
-    jardineria = create_category(session, user.id, nombre="Jardinería")
-    create_category(session, user.id, nombre="Plantas")
-    extracted = {
-        "intent": "expense", "movement_type": "egreso", "amount": 2500,
-        "currency": "ARS", "description": "macetas", "category": "Plantas",
-    }
-    with (
-        patch(
-            "app.services.dispatcher.BudgetService.evaluate_movement",
-            return_value=BudgetEvaluation(status="ok", message="no limit"),
-        ),
-        patch(
-            "app.services.dispatcher._check_pending_candidate_proposal",
-            return_value=None,
-        ),
-    ):
-        reply = await _register_and_reply_with_hint(
-            user.whatsapp_id, "wamid.explicit-jardineria",
-            "Gasté 2500 ARS en macetas, categoría Jardinería", extracted,
-        )
-
-    movement = session.query(MovimientoFinanciero).one()
-    assert movement.categoria_id == jardineria.id
-    assert "📁 Categoría: Jardinería." in reply
-    query = FinanceService.query_movements(
-        user.id, movement_type="egreso", category_name="jardinera"
-    )
-    assert query.total_found == 1
-    assert query.resolved_category_name == "Jardinería"
+    chosen = create_category(session, user.id, nombre='Jardinería')
+    create_category(session, user.id, nombre='Plantas')
+    result = FinanceService.register_movement_with_category(user.whatsapp_id, 'wamid.explicit-jardineria',
+        'Categoría Jardinería', **movement_payload(category_name=chosen.nombre, description='macetas'))
+    assert result.status == 'registered'
+    assert session.query(MovimientoFinanciero).one().categoria_id == chosen.id
 
 
 def test_reclassifying_last_expense_by_por_updates_existing_movement(db_context):
@@ -684,15 +583,7 @@ def test_reclassifying_last_expense_by_por_updates_existing_movement(db_context)
     session.add(movement)
     session.commit()
 
-    routed = normalize_category_management_intent(
-        "Cambiá la categoría del último gasto por Transporte",
-        {"intent": "update_movement", "reference": "last_registered",
-         "changes": {"category": "Transporte"}},
-    )
-    assert routed["intent"] == "update_movement"
-    result = FinanceService.update_movement(
-        user.whatsapp_id, str(movement.id), routed["changes"]
-    )
+    result = FinanceService.update_movement(user.whatsapp_id, str(movement.id), {'category': 'Transporte'})
     assert result.status == "updated"
     session.refresh(movement)
     assert movement.categoria_id == transporte.id
@@ -709,18 +600,8 @@ def test_expense_query_by_category_and_month_returns_dated_movement(db_context):
     ))
     session.commit()
 
-    routed = normalize_movement_query_intent(
-        "Quiero ver los gastos referidos a Comida de octubre de 2026",
-        {"intent": "query_movements", "category": "Comida",
-         "movement_type": "egreso", "date_from": "2026-10-01",
-         "date_to": "2026-10-31"},
-    )
-    result = FinanceService.query_movements(
-        user.id, movement_type=routed["movement_type"],
-        category_name=routed["category"],
-        start_date=date.fromisoformat(routed["date_from"]),
-        end_date=date.fromisoformat(routed["date_to"]),
-    )
+    result = FinanceService.query_movements(user.id, movement_type='egreso', category_name='Comida',
+        start_date=date(2026,10,1), end_date=date(2026,10,31))
     assert result.status == "ok"
     assert result.total_found == 1
     assert result.movements[0].descripcion == "almuerzo"
@@ -876,7 +757,7 @@ def test_register_movement_with_category_existing(db_context):
         currency="ARS",
         description="almuerzo",
         category_name="Comida",
-    )
+        economic_effect='cash_flow')
 
     assert result.status == "registered"
     movement = session.query(MovimientoFinanciero).one()
@@ -897,7 +778,7 @@ def test_register_movement_with_category_requires_confirmation_even_for_taxonomy
         description="taxi",
         category_name="Transporte",
         create_category_if_missing=True,
-    )
+        economic_effect='cash_flow')
 
     assert result.status == "needs_category_confirmation"
     assert result.category_name == "Transporte"
@@ -919,7 +800,7 @@ def test_register_movement_with_category_not_found_no_create(db_context):
         description="algo",
         category_name="Inexistente",
         create_category_if_missing=False,
-    )
+        economic_effect='cash_flow')
 
     assert result.status == "category_not_found"
     assert session.query(MovimientoFinanciero).count() == 0
@@ -939,7 +820,7 @@ def test_register_movement_with_category_unknown_needs_confirmation(db_context):
         description="cripto",
         category_name="criptomoneda",
         create_category_if_missing=True,
-    )
+        economic_effect='cash_flow')
 
     assert result.status == "needs_category_confirmation"
     assert result.category_name == "criptomoneda"
@@ -961,7 +842,7 @@ def test_register_movement_with_confirmed_unknown_category(db_context):
         category_name="Jardinería de prueba",
         create_category_if_missing=True,
         category_creation_confirmed=True,
-    )
+        economic_effect='cash_flow')
 
     assert result.status == "registered"
     movement = session.query(MovimientoFinanciero).one()
@@ -1006,11 +887,11 @@ def test_correct_and_annul_movement_preserves_original_message_id(db_context):
     session = db_context["session"]
     user = create_user(session)
     create_category(session, user.id, "Comida")
-    registered = FinanceService.register_movement_from_whatsapp_text(
+    registered = FinanceService.register_movement_with_category(
         sender_phone=user.whatsapp_id,
         whatsapp_message_id="wamid.pizza",
         original_text="Compré pizza por 10000",
-        llm_result=movement_payload(amount=10000, description="pizza", category="Comida"),
+        **movement_payload(amount=10000, description="pizza", category_name="Comida"),
     )
 
     corrected = FinanceService.update_movement(
@@ -1028,11 +909,11 @@ def test_correct_and_annul_movement_preserves_original_message_id(db_context):
     assert FinanceService.query_movements(user.id).movements == []
     assert FinanceService.get_categories_with_totals(user.id).categories[0].total_egresos == 0
     assert FinanceService.annul_movement(user.whatsapp_id, registered.movement_id).status == "already_annulled"
-    assert FinanceService.register_movement_from_whatsapp_text(
+    assert FinanceService.register_movement_with_category(
         sender_phone=user.whatsapp_id,
         whatsapp_message_id="wamid.pizza",
         original_text="Compré pizza por 10000",
-        llm_result=movement_payload(amount=10000, description="pizza", category="Comida"),
+        **movement_payload(amount=10000, description="pizza", category_name="Comida"),
     ).status == "duplicate"
     assert count_movements(session) == 1
 
@@ -1041,11 +922,11 @@ def test_movement_mutation_rejects_another_user_and_invalid_patch(db_context):
     session = db_context["session"]
     user = create_user(session)
     other = create_user(session, "5492222222222")
-    registered = FinanceService.register_movement_from_whatsapp_text(
+    registered = FinanceService.register_movement_with_category(
         sender_phone=user.whatsapp_id,
         whatsapp_message_id="wamid.owner",
         original_text="Gasté 5000 en verduras",
-        llm_result=movement_payload(amount=5000, description="verduras", category=None),
+        **movement_payload(amount=5000, description="verduras", category_name=None),
     )
     assert FinanceService.update_movement(other.whatsapp_id, registered.movement_id, {"amount": 6000}).status == "not_found"
     assert FinanceService.annul_movement(other.whatsapp_id, registered.movement_id).status == "not_found"
@@ -1057,10 +938,10 @@ def test_movement_mutation_rejects_another_user_and_invalid_patch(db_context):
 def test_movement_mutation_rejects_changed_shown_snapshot(db_context):
     session = db_context["session"]
     user = create_user(session)
-    registered = FinanceService.register_movement_from_whatsapp_text(
+    registered = FinanceService.register_movement_with_category(
         sender_phone=user.whatsapp_id, whatsapp_message_id="wamid.snapshot",
         original_text="Gasté 5000 en verduras",
-        llm_result=movement_payload(amount=5000, description="verduras", category=None),
+        **movement_payload(amount=5000, description="verduras", category_name=None),
     )
     assert FinanceService.update_movement(
         user.whatsapp_id, registered.movement_id, {"amount": 7000}
@@ -1081,10 +962,10 @@ def test_movement_patch_changes_only_requested_fields(db_context):
     session = db_context["session"]
     user = create_user(session)
     food = create_category(session, user.id, "Comida")
-    registered = FinanceService.register_movement_from_whatsapp_text(
+    registered = FinanceService.register_movement_with_category(
         sender_phone=user.whatsapp_id, whatsapp_message_id="wamid.partial",
         original_text="Gasté 5000 en almuerzo",
-        llm_result=movement_payload(amount=5000, description="almuerzo", category="Comida"),
+        **movement_payload(amount=5000, description="almuerzo", category_name="Comida"),
     )
     result = FinanceService.update_movement(
         user.whatsapp_id, registered.movement_id,

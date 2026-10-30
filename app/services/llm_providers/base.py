@@ -26,6 +26,13 @@ class LLMProvider(ABC):
     RETRYABLE_STATUSES: frozenset[int] = frozenset({429, 503})
     MAX_RETRIES_PER_MODEL = 2
 
+    async def generate_with_tools(self, *, messages, tools, continuation=None, policy):
+        """Native tool turn; pins the configured model."""
+        from .tools import native_tool_turn
+        return await native_tool_turn(
+            self, messages=messages, tools=tools, continuation=continuation, policy=policy,
+        )
+
     # =========================================================================
     # Hooks que cada proveedor implementa
     # =========================================================================

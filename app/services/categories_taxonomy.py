@@ -1,4 +1,3 @@
-import re
 import unicodedata
 from collections.abc import Iterable
 from difflib import SequenceMatcher
@@ -96,25 +95,4 @@ def suggest_user_category(name: str | None, user_category_names: Iterable[str]) 
     if len(scores) > 1 and scores[0][0] - scores[1][0] < 0.08:
         return None
     return scores[0][1]
-
-
-def category_named_in_text(text: str) -> str | None:
-    """Extract an explicit category label at the end of a movement message."""
-    named = re.search(
-        r"\bcategor[ií]a\s+(?P<name>[\wÀ-ÿ][\wÀ-ÿ -]{0,99})\s*[.!]?\s*$",
-        text,
-        re.IGNORECASE,
-    )
-    return named.group("name").strip() if named else None
-
-
-def category_explicitly_named_in_text(text: str) -> str | None:
-    """Return a canonical category only when one taxonomy family is named."""
-    normalized = _normalize(text)
-    matches = {
-        canonical
-        for synonym, canonical in _SYNONYM_TO_CANONICAL.items()
-        if re.search(rf"(?<!\w){re.escape(synonym)}(?!\w)", normalized)
-    }
-    return next(iter(matches)) if len(matches) == 1 else None
 
