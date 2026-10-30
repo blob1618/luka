@@ -47,6 +47,8 @@ Copiar `.env.example` a `.env` y completar solo lo necesario. Nunca subir `.env`
 | `WHATSAPP_API_TOKEN` | Sí para enviar por WhatsApp | Token bearer de la API de Meta. |
 | `WHATSAPP_PHONE_ID` | Sí para enviar por WhatsApp | ID del número de teléfono en Meta. |
 | `WHATSAPP_GRAPH_API_VERSION` | Opcional | Versión de Graph API. Default `v26.0`; un formato inválido se rechaza. |
+| `WHATSAPP_APP_SECRET` | Recomendado en producción | Secreto de la app de Meta; valida `X-Hub-Signature-256` en `POST /webhook`. Sin valor, el webhook acepta payloads sin firma (solo local/test). |
+| `WHATSAPP_GRAPH_BASE_URL` | Opcional | Base de Graph API. Default `https://graph.facebook.com`; tests y staging pueden apuntarla a un mock. |
 | `FLOW_ADMIN_API_KEY` | Solo para la API admin de conversation flows | Se envía como bearer en `/admin/conversation-flows/*`. Sin valor, esa API responde 503. |
 | `LLM_PROVIDER` | Opcional | `gemini` (default), `mistral` o `deepseek`. |
 | `GEMINI_API_KEY` | Si `LLM_PROVIDER=gemini` | API key de Gemini. |
@@ -130,7 +132,9 @@ gunicorn -w 1 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:${POR
 
 El worker es uno solo a propósito: el scheduler debe correr una sola vez, no una vez por worker.
 
-Variables a configurar en Render: `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_API_TOKEN`, `WHATSAPP_PHONE_ID`, `LLM_PROVIDER`, `GEMINI_API_KEY`/`GEMINI_MODEL`, `MISTRAL_API_KEY`/`MISTRAL_MODEL` o `DEEPSEEK_API_KEY`/`DEEPSEEK_MODEL` según el provider, `DATABASE_URL` y `REDIS_URL`. Agregar `ONBOARDING_REGISTRATION_URL` si se usan onboarding o el link de dashboard, `WHATSAPP_REMINDER_TEMPLATE_NAME` para recordatorios de pago y `PROACTIVE_PROMPT_HOUR` para el recordatorio proactivo.
+Variables a configurar en Render: `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_API_TOKEN`, `WHATSAPP_PHONE_ID`, `WHATSAPP_APP_SECRET` (firma del webhook), `LLM_PROVIDER`, `GEMINI_API_KEY`/`GEMINI_MODEL`, `MISTRAL_API_KEY`/`MISTRAL_MODEL` o `DEEPSEEK_API_KEY`/`DEEPSEEK_MODEL` según el provider, `DATABASE_URL` y `REDIS_URL`. Agregar `ONBOARDING_REGISTRATION_URL` si se usan onboarding o el link de dashboard, `WHATSAPP_REMINDER_TEMPLATE_NAME` para recordatorios de pago y `PROACTIVE_PROMPT_HOUR` para el recordatorio proactivo.
+
+Para verificar un despliegue: `GET /version` devuelve el commit y la cantidad de migraciones locales; `GET /health` informa base, Redis y estado de migraciones; `GET /ready` responde 503 si la base/Redis fallan o si hay migraciones pendientes. En staging o pruebas se puede apuntar `WHATSAPP_GRAPH_BASE_URL` a un mock y firmar los webhooks con `WHATSAPP_APP_SECRET`; sin secreto configurado, el webhook acepta payloads sin firma solo para desarrollo local.
 
 Al arrancar, la app prueba Redis con un timeout de 3 segundos. Si falla, la API sigue disponible y el error queda en los logs; validar la conectividad con `GET /redis-test`. `main` es la rama de despliegue: Render la despliega automáticamente y las pruebas reales de WhatsApp dependen del número de Meta, la URL del webhook y la base compartida. Si el health check responde pero WhatsApp falla, revisar primero los logs de Render.
 

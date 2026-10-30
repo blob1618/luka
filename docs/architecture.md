@@ -148,6 +148,22 @@ WebhookModeService usa IDs simulados únicos y ambos wrappers reales, con éxito
 transporte sintético explícito. Botones/listas vuelven por el mismo dispatcher;
 sidebar cambia realmente modelo/prompt. No demuestra entrega Meta ni Redis real.
 
+## Borde HTTP y verificación de despliegue
+
+`POST /webhook` valida `X-Hub-Signature-256` (HMAC-SHA256 del cuerpo crudo) cuando
+`WHATSAPP_APP_SECRET` está configurado; si falta, el entorno local acepta payloads sin
+firma para no romper el simulador y Render registra una advertencia al arrancar. El
+envío sale por `WHATSAPP_GRAPH_BASE_URL` (default `https://graph.facebook.com`), de modo
+que tests y staging pueden apuntarlo a un mock que capture los mensajes sin tocar Meta.
+
+`GET /version` informa servicio, commit (`RENDER_GIT_COMMIT`) y cantidad de migraciones
+locales. `GET /health` responde 200 e informa base, Redis y estado de migraciones;
+`GET /ready` responde 503 si la base o Redis fallan o si hay migraciones pendientes.
+El estado compara los archivos de `supabase/migrations/` con
+`supabase_migrations.schema_migrations`; en SQLite local informa `unknown` en lugar de
+fallar. Un liveness check de Render no debe usar `/ready` durante un deploy con
+migraciones en curso.
+
 ## Scheduler
 
 `app/scheduler.py` usa un `AsyncIOScheduler` que arranca en el `lifespan` de la app.

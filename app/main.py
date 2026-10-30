@@ -1,4 +1,7 @@
 import asyncio
+import hashlib
+import hmac
+import json
 import logging
 import os
 import secrets
@@ -32,6 +35,7 @@ from app.api.whatsapp import (  # noqa: E402
     send_whatsapp_typing_indicator,
 )
 from app.scheduler import start_scheduler  # noqa: E402
+from app.services import deployment_status  # noqa: E402
 from app.services.telemetry import (  # noqa: E402
     finish_message_telemetry,
     start_message_telemetry,
@@ -125,6 +129,10 @@ async def lifespan(app: FastAPI):
         # No bloquear el arranque si el servicio aun no esta disponible.
         print(f"Fallo al conectar con Redis tras {REDIS_CONNECT_TIMEOUT_SECONDS}s: {e}")
 
+    if os.getenv("RENDER") and not _webhook_secret():
+        logger.warning(
+            "WHATSAPP_APP_SECRET no configurado: el webhook acepta payloads sin firma")
+
     try:
         start_scheduler()
         yield
@@ -149,6 +157,22 @@ app = FastAPI(title="Luka WhatsApp FinBot", lifespan=lifespan)
 
 # En produccion, cargar esto de forma segura desde el entorno
 VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "fallback_token")
+WEBHOOK_SIGNATURE_HEADER = "x-hub-signature-256"
+
+
+def _webhook_secret() -> str:
+    return os.getenv("WHATSAPP_APP_SECRET", "").strip()
+
+
+def _signature_valid(raw_body: bytes, header: str | None) -> bool:
+    """Meta signs the raw body. Without a configured secret (local/test) it is not required."""
+    secret = _webhook_secret()
+    if not secret:
+        return True
+    if not header or not header.startswith("sha256="):
+        return False
+    expected = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(header[len("sha256="):], expected)
 
 
 def _require_flow_admin(request: Request) -> None:
@@ -190,6 +214,69 @@ def _raise_flow_http_error(exc: Exception):
 @app.get("/")
 def read_root():
     return {"message": "Luka API is running"}
+
+
+def _database_check() -> tuple[bool, str]:
+    from sqlalchemy import text
+    from app.services import finance
+
+    try:
+        with finance.SessionLocal() as session:
+            session.execute(text("select 1"))
+        return True, "ok"
+    except Exception as exc:
+        return False, type(exc).__name__
+
+
+async def _redis_check() -> tuple[bool, str]:
+    if redis_client is None:
+        return False, "not_initialized"
+    try:
+        await asyncio.wait_for(redis_client.ping(), timeout=2)
+        return True, "ok"
+    except Exception as exc:
+        return False, type(exc).__name__
+
+
+def _checks_payload(db: tuple[bool, str], redis_status: tuple[bool, str], migrations: dict) -> dict:
+    return {
+        "checks": {
+            "database": {"ok": db[0], "detail": db[1]},
+            "redis": {"ok": redis_status[0], "detail": redis_status[1]},
+            "migrations": migrations,
+        }
+    }
+
+
+@app.get("/version")
+def read_version():
+    return {
+        "service": deployment_status.service_name(),
+        "commit": deployment_status.commit_sha(),
+        "migrations_local": len(deployment_status.local_migration_versions()),
+    }
+
+
+@app.get("/health")
+async def read_health():
+    db = _database_check()
+    redis_status = await _redis_check()
+    migrations = deployment_status.migration_status()
+    healthy = db[0] and migrations["state"] != "pending"
+    payload = {"status": "ok" if healthy else "degraded",
+               **_checks_payload(db, redis_status, migrations)}
+    return JSONResponse(status_code=200, content=payload)
+
+
+@app.get("/ready")
+async def read_ready():
+    db = _database_check()
+    redis_status = await _redis_check()
+    migrations = deployment_status.migration_status()
+    ready = db[0] and redis_status[0] and migrations["state"] != "pending"
+    payload = {"ready": ready, "status": "ok" if ready else "degraded",
+               **_checks_payload(db, redis_status, migrations)}
+    return JSONResponse(status_code=200 if ready else 503, content=payload)
 
 
 # Valores válidos de `tipos`; el endpoint comparte el vocabulario de QuoteType.
@@ -482,7 +569,14 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
     garantizada se requerirá una cola durable (ej. Celery/SQS/Outbox) en un
     ticket futuro.
     """
-    data = await request.json()
+    raw_body = await request.body()
+    if not _signature_valid(raw_body, request.headers.get(WEBHOOK_SIGNATURE_HEADER)):
+        logger.warning("webhook_signature_invalid")
+        raise HTTPException(status_code=403, detail="Invalid signature")
+    try:
+        data = json.loads(raw_body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Invalid payload") from None
     logger.info("Evento de webhook recibido")
 
     if data.get("object") == "whatsapp_business_account":
