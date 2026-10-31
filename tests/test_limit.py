@@ -1,3 +1,4 @@
+import calendar
 import uuid
 from datetime import date
 from decimal import Decimal
@@ -68,7 +69,7 @@ def create_limit(session, user_id, categoria_id, amount, month, year):
         categoria_id=categoria_id,
         cantidad_max=Decimal(str(amount)),
         inicio_periodo=date(year, month, 1),
-        fin_periodo=date(year, month, 28 if month == 2 else 30),
+        fin_periodo=date(year, month, calendar.monthrange(year, month)[1]),
     )
     session.add(limite)
     session.commit()
