@@ -1,315 +1,352 @@
-# ADR 0003 — Una billetera activa por usuario y moneda
+# ADR 0003 — Una billetera por usuario y moneda (limpieza directa)
 
-> **Status:** Aceptado como diseño (2026-10-31). Implementación pendiente en STK-258.
+> **Status:** Aceptado como diseño (2026-10-31, revisado). Implementación pendiente en STK-258.
 > Este documento **no ejecuta migraciones ni modifica datos**.
+>
+> **Revisión:** se descarta la variante con `archivada_en` y tablas de fusión. Nunca debió
+> existir más de una billetera por moneda y no hay usuarios productivos que justifiquen
+> borrado lógico ni auditoría de fusión. El esquema queda con las columnas actuales.
 
 ## Contexto
 
 Hoy un usuario puede tener varias billeteras de la misma moneda. El esquema solo impone
-unicidad por `(usuario_id, moneda, lower(trim(nombre)))` (`docs/decisions` anteriores y
-`supabase/migrations/20261012174855_add_billetera_expansion_stk237.sql`). Como consecuencia,
-`WalletService.resolve_selection` devuelve `needs_wallet_selection` cuando encuentra más de
-una billetera de la moneda pedida (`app/services/wallet.py`), y el agente pregunta «¿Qué
-billetera querés usar?» en cada registro. Es fricción permanente para el usuario y una fuente
-de estados ambiguos.
+unicidad por `(usuario_id, moneda, lower(trim(nombre)))`
+(`supabase/migrations/20261012174855_add_billetera_expansion_stk237.sql`). Por eso
+`WalletService.resolve_selection` devuelve `needs_wallet_selection` cuando encuentra más de una
+billetera de la moneda y el agente pregunta «¿Qué billetera querés usar?» en cada registro
+(`app/services/wallet.py`).
 
-La decisión de producto (STK-258) es **una única billetera activa por usuario y moneda**. Las
-existentes se archivan y sus movimientos se reasignan a una superviviente, preservando
-trazabilidad individual y permitiendo rollback determinista.
+La decisión de producto es **una única billetera por usuario y moneda**. No hay usuarios
+reales: es un proyecto académico en preparación. La transición puede ser una limpieza directa,
+sin capas de compatibilidad.
 
-Alcance de monedas: **ARS y USD**, sin ampliar.
+Monedas admitidas: **ARS y USD**.
 
 ## Decisión
 
-### 1. Contrato
+### 1. Esquema
 
-- Un usuario tiene **como máximo una billetera activa por moneda**.
-- Activa = `billetera.archivada_en IS NULL`.
-- La unicidad se garantiza en la base con un índice único parcial:
-  `(usuario_id, moneda) WHERE archivada_en IS NULL`.
-- `movimientos_financieros.billetera_id` ya es `NOT NULL`
-  (`20261012215307_hu_mon_01_wallet_transition_contract.sql`): todo movimiento tiene billetera.
-- La FK compuesta `(billetera_id, usuario_id, moneda)` sigue vigente: una reasignación solo es
-  válida dentro de la misma moneda y del mismo dueño.
+`public.billetera` conserva exactamente sus columnas: `id`, `usuario_id`, `nombre`, `moneda`,
+`creado_en`. **No se agrega `archivada_en` ni se crean tablas de fusión.**
 
-### 2. Creación y nombres
+La unicidad se garantiza con un índice único directo:
 
-- El nombre sigue siendo libre y único por `(usuario_id, moneda)`; se conserva el índice
-  existente.
-- Si no se indica nombre, el default es **«Pesos»** para ARS y **«Dólares»** para USD.
-- Crear una segunda billetera activa de una moneda ya cubierta **se rechaza sin escribir
-  nada**. La respuesta informa el nombre de la billetera activa y ofrece usarla o renombrarla.
-- **Renombrar** no existe hoy (`WalletService` no tiene operación de renombre). Como el
-  mensaje de rechazo promete esa salida, el alcance incluye:
-  - `WalletService.rename_wallet(user, wallet_id, name)` con validación de duplicado;
-  - acción de asistente y endpoint del dashboard;
-  - pruebas de colisión de nombres.
-  Si producto decide diferirlo, el mensaje debe dejar de ofrecer renombrar; no se puede
-  prometer una acción inexistente.
+```sql
+CREATE UNIQUE INDEX billetera_usuario_moneda_uidx
+    ON public.billetera (usuario_id, moneda);
+```
 
-### 3. Selección y errores
+Se elimina el índice `billetera_usuario_moneda_nombre_uidx`: con una sola billetera por
+moneda, la unicidad de nombre ya no aporta nada. Los nombres pueden repetirse entre monedas
+(por ejemplo, dos billeteras llamadas «Principal», una en ARS y otra en USD).
 
-`resolve_selection` solo considera billeteras activas. Estados:
+### 2. Limpieza de datos existentes
 
-| Estado | Cuándo | Comportamiento |
-|---|---|---|
-| `selected` | Hay exactamente una activa para la moneda, o el `wallet_id` explícito es activo y coincide en moneda | Se usa sin preguntar |
-| `needs_wallet_creation` | No hay activa para la moneda | Se guía a crearla antes de confirmar. **Nunca** se muestran opciones vacías |
-| `needs_wallet_selection` | Defensivo: más de una activa (no debería ocurrir post-migración) | Pregunta con opciones reales |
-| `archived_wallet` | El usuario nombró una billetera archivada | Se informa que está archivada, se propone la activa de esa moneda y se muestra el preview con ella; no se escribe sin confirmación |
-| `invalid_selection` / `currency_mismatch` | Billetera inexistente, ajena o de otra moneda | Error explícito, sin selector |
+Para cada `(usuario_id, moneda)` con más de una billetera:
 
-El caso `needs_wallet_creation` está mal tratado hoy en
-`app/services/assistant_capabilities/movements.py` (líneas 163–170): cualquier estado distinto
-de `selected` arma `selection.options` y devuelve la pregunta de selección. Como
-`needs_wallet_creation` no trae opciones, el usuario ve «Elegí una de las opciones» con una
-lista vacía. El fix forma parte de este alcance:
+1. Elegir la superviviente:
+   - mayor cantidad **total** de movimientos (`count(*)`);
+   - si empatan, priorizar una billetera cuyo nombre normalizado **no** sea `'inicial'`
+     (la generada por el backfill de STK-237);
+   - si siguen empatando, `creado_en ASC, id ASC`.
+2. Reasignar todos los movimientos de las demás a la superviviente:
+   `UPDATE movimientos_financieros SET billetera_id = superviviente WHERE billetera_id = duplicada`.
+   La FK compuesta `(billetera_id, usuario_id, moneda)` sigue válida porque la superviviente
+   pertenece al mismo usuario y a la misma moneda.
+3. `DELETE FROM public.billetera` físico de las duplicadas sobrantes.
+4. Reemplazar el índice por `billetera_usuario_moneda_uidx`.
+
+No se modifican importes, fechas, categorías ni estado de anulación. Los movimientos
+anulados también se reasignan para que la FK y el historial sigan consistentes.
+
+### 3. Huérfanos
+
+La FK `movimientos_financieros_billetera_fkey` está validada
+(`20261012174901_backfill_billetera_historica_stk237.sql`) y `billetera_id` es `NOT NULL`
+(`20261012215307_hu_mon_01_wallet_transition_contract.sql`). Por lo tanto **no puede haber
+movimientos huérfanos**: todo movimiento apunta a una billetera existente del mismo dueño y
+moneda.
+
+Si la migración encontrara una violación previa (constraint no válida, datos cargados fuera
+del backend), **aborta y reporta**; no borra movimientos financieros. La instrucción de
+eliminar huérfanos no se implementa porque borrar el registro contable es peor que fallar la
+migración. Esta es una desviación explícita a confirmar por producto.
+
+### 4. Rollback
+
+El borrado físico es irreversible. La migración corre en una transacción: si falla, rollback
+automático. Si termina bien, el único rollback es **restaurar el backup previo** de
+`public.billetera` y `public.movimientos_financieros`.
+
+Antes de ejecutar:
+
+```bash
+pg_dump --table=public.billetera --table=public.movimientos_financieros \
+        --data-only --column-inserts "$DATABASE_URL" > backup_stk258.sql
+```
+
+No se agregan tablas de auditoría para evitar el costo permanente de una decisión que no
+tiene usuarios que la necesiten. El backup es el mecanismo de rollback y queda documentado en
+el runbook de la migración.
+
+### 5. Backend
+
+#### `WalletService.create_wallet`
+
+- Si no se indica nombre (o está vacío), usar **«Pesos»** para ARS y **«Dólares»** para USD.
+- Si el usuario ya tiene una billetera en esa moneda, rechazar sin escribir:
+  `status='wallet_already_exists'`, con `wallet_id`, `name` y `currency` de la existente.
+  El mensaje informa cuál es y ofrece usarla o renombrarla.
+- El estado `name_already_exists` deja de existir como caso separado: con una billetera por
+  moneda, un nombre repetido en la misma moneda es la misma billetera.
+
+#### `WalletService.resolve_selection`
+
+- Para una moneda, el usuario tiene 0 o 1 billetera. Se elimina la rama de ambigüedad y el
+  campo `options` de `WalletSelectionResult`.
+- Estados resultantes: `selected`, `needs_wallet_creation`, `invalid_selection`,
+  `currency_mismatch`, `invalid_data`, `user_not_found`.
+- Con `wallet_id` explícito: se valida dueño y moneda; si la billetera no existe, error
+  explícito.
+- Sin `wallet_id`: 0 billeteras → `needs_wallet_creation`; 1 → `selected`.
+
+#### `movements.py` (líneas 163–170)
+
+Hoy cualquier estado distinto de `selected` arma `selection.options` y devuelve la pregunta de
+selección; con `needs_wallet_creation` las opciones están vacías y el usuario ve «Elegí una de
+las opciones» sin opciones. Se corrige con una rama explícita, igual que
+`movement_management.py` (líneas 124–131):
 
 ```python
 if selection.status == 'needs_wallet_creation':
     return IncompleteOperation(missing_fields=(FieldRequest(
         field='wallet_ref', reason='missing',
         question=f"No tenés una billetera en {selection.currency}. ¿La creo?"),))
-if selection.status == 'needs_wallet_selection':
-    ...  # opciones reales, solo legado
 if selection.status != 'selected':
     raise ValueError('No pude usar esa billetera; revisá la moneda y la billetera indicadas')
 ```
 
-`movement_management.py` (líneas 124–131) ya distingue ambos estados y se toma como referencia.
+Se elimina la rama de `needs_wallet_selection` en `movements.py` y en
+`movement_management.py`.
 
-### 4. Billeteras archivadas
+#### Renombrar billetera
 
-Quedan en la base con `archivada_en` por trazabilidad y rollback, pero **se ocultan** de:
+No existe hoy. Se agrega:
 
-- listados operativos de billeteras (`WalletService.list_wallets`);
-- saldos y patrimonio (`get_balances_own_user`);
-- selectores del dashboard y del asistente;
-- contexto de entidades que ve el modelo (`app/services/assistant_context.py`).
+- `WalletService.rename_wallet(user_id, wallet_id, name)` con dueño, nombre no vacío y
+  longitud acotada.
+- Capacidad de asistente `rename_wallet` (`WalletRenameDraft` con `wallet_ref` y `name`), con
+  preview y confirmación como el resto de las mutaciones.
+- Si el dashboard necesita renombrar, endpoint del backend correspondiente; el alcance mínimo
+  es servicio + asistente.
 
-No se borran ni se fusionan filas de billetera. No se reescriben movimientos anulados.
+#### `entities.py`
 
-### 5. Cuentas existentes: archivar y reasignar
+`WalletDraft.name` pasa a ser opcional (default resuelto por el servicio). Se agrega la
+operación de renombre; `create_wallet` informa el rechazo con la billetera actual.
 
-Para cada `(usuario_id, moneda)` con más de una billetera activa se elige una superviviente:
+### 6. Receipts y snapshots
 
-1. Mayor cantidad de **movimientos activos** (`anulado_en IS NULL`).
-2. Si empatan, mayor cantidad de **movimientos totales**.
-3. Si siguen empatando, se prioriza una billetera **creada o nombrada por el usuario** sobre
-   la generada por el backfill de STK-237 (identificada por `lower(btrim(nombre)) = 'inicial'`).
-4. Último desempate: `creado_en ASC, id ASC`.
-
-Las demás se archivan, sus movimientos se reasignan a la superviviente y se registra el mapeo
-individual por movimiento. La reasignación conserva moneda y dueño, por lo que la FK compuesta
-sigue válida; no cambia importe, fecha, categoría ni estado de anulación. Los movimientos
-anulados también se reasignan, para que la FK y el historial sigan siendo consistentes.
-
-### 6. Trazabilidad y rollback
-
-`billetera_fusion (origen_id, destino_id, ejecutada_en)` no alcanza para revertir: al mover
-`movimientos_financieros.billetera_id` se pierde qué movimientos estaban originalmente en
-`origen_id` y cuáles ya estaban en `destino_id`.
-
-Se agrega **mapeo por movimiento**:
-
-```sql
-CREATE TABLE public.billetera_fusion_movimiento (
-    movimiento_id uuid PRIMARY KEY REFERENCES public.movimientos_financieros(id),
-    billetera_origen_id uuid NOT NULL REFERENCES public.billetera(id),
-    billetera_destino_id uuid NOT NULL REFERENCES public.billetera(id),
-    ejecutada_en timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT billetera_fusion_movimiento_distinta CHECK (billetera_origen_id <> billetera_destino_id)
-);
-CREATE INDEX billetera_fusion_movimiento_destino_idx
-    ON public.billetera_fusion_movimiento (billetera_destino_id);
-```
-
-`billetera_fusion` (nivel billetera) se conserva para auditar billeteras sin movimientos y
-para el rollback de `archivada_en`. El rollback de movimientos usa exclusivamente
-`billetera_fusion_movimiento`; no depende de backups externos.
-
-### 7. Receipts y snapshots
-
-- `MovementSnapshot` incluye `wallet_id` (`app/services/assistant_contracts.py`), y
-  `snapshot()` lo toma del movimiento (`app/services/movement_commands.py`). Después del
-  backfill, todo movimiento reasignado queda con el `wallet_id` de la superviviente; las
-  lecturas y validaciones posteriores usan ese valor.
+- `MovementSnapshot` incluye `wallet_id` (`app/services/assistant_contracts.py`) y
+  `snapshot()` lo toma del movimiento (`app/services/movement_commands.py`). Después de la
+  limpieza, todo movimiento reasignado apunta a la superviviente; las lecturas y validaciones
+  posteriores usan ese valor.
 - `assistant_write_receipts.result` guarda el snapshot del momento de la confirmación. **No se
-  reescribe**: es evidencia histórica y conserva la billetera original. La presentación actual
-  se proyecta en lectura con `movement_presentation`, sin alterar el JSON persistido.
-- `validate_dependencies` debe exigir además `archivada_en IS NULL`: un borrador pendiente en
-  Redis que apunte a una billetera archivada falla con un mensaje claro («La billetera ya no
-  está disponible») en lugar de escribir sobre una archivada, y el usuario vuelve a preparar.
-- Las migraciones se ejecutan en ventana de mantenimiento; los borradores pendientes pueden
-  invalidarse y eso es aceptable. Los recibos ya confirmados no se tocan.
+  reescribe**: es evidencia histórica y conserva la billetera original.
+- `validate_dependencies` no necesita cambios adicionales: al borrarse la billetera duplicada,
+  un borrador pendiente que la referencie falla con «La billetera ya no está disponible», y el
+  usuario vuelve a preparar. Los borradores pendientes pueden invalidarse durante la ventana
+  de mantenimiento; los recibos confirmados no se tocan.
 
-### 8. STK-246: alcance separado
+### 7. STK-246
 
-STK-246 **no se cierra como duplicada**. Cubre que el usuario nombre explícitamente su
-billetera y el agente no vuelva a preguntar, y los casos de nombre desconocido o medio de pago
-que no coincide con la única billetera activa:
+STK-246 **no se cierra como duplicada**. Cubre la resolución cuando el usuario nombra su
+billetera:
 
-1. Nombre de billetera activa → resolver por nombre, sin selector.
-2. Nombre de billetera archivada → explicar y proponer la activa; preview para confirmar.
-3. Nombre desconocido o medio de pago («Mercado Pago») que no es una billetera → preguntar
-   con una frase concreta que nombre la activa («Tu billetera de pesos es “Pesos”; ¿la uso?”),
+1. Nombre de la única billetera de esa moneda → usarla, sin preguntar.
+2. Nombre de una billetera inexistente o medio de pago («Mercado Pago») → preguntar con una
+   frase concreta que nombre la billetera real («Tu billetera de pesos es “Pesos”; ¿la uso?”),
    nunca un selector vacío.
-4. Si el usuario insiste en otra billetera, el camino es crearla (o renombrar), no duplicar.
+3. Si el usuario insiste en otra billetera, el camino es crearla o renombrar la existente.
 
-Este ADR define los estados y mensajes; STK-246 conserva su tarjeta para la resolución de
-lenguaje natural y sus pruebas.
+Este ADR elimina la ambigüedad estructural; STK-246 conserva su tarjeta para el lenguaje
+natural y sus pruebas.
 
 ## Migración (diseño, no ejecutada)
 
-### Paso 1 — Expansión
+Archivo propuesto: `supabase/migrations/20261031_stk258_unique_wallet_per_currency.sql`.
 
 ```sql
-ALTER TABLE public.billetera ADD COLUMN IF NOT EXISTS archivada_en timestamptz;
--- tablas de mapeo (ver arriba), sin tocar datos
-```
+BEGIN;
 
-### Paso 2 — Backfill idempotente
+-- Snapshot de control
+CREATE TEMP TABLE movimientos_antes AS
+SELECT usuario_id, moneda,
+       count(*) AS total,
+       count(*) FILTER (WHERE anulado_en IS NULL) AS activos,
+       coalesce(sum(cantidad) FILTER (WHERE tipo = 'ingreso'), 0) AS ingresos,
+       coalesce(sum(cantidad) FILTER (WHERE tipo = 'egreso'), 0) AS egresos
+FROM public.movimientos_financieros
+GROUP BY usuario_id, moneda;
 
-Para cada `(usuario_id, moneda)` con más de una activa:
+-- Superviviente por (usuario_id, moneda)
+CREATE TEMP TABLE billetera_superviviente AS
+SELECT usuario_id, moneda, id AS survivor_id
+FROM (
+    SELECT b.id, b.usuario_id, b.moneda,
+           row_number() OVER (
+               PARTITION BY b.usuario_id, b.moneda
+               ORDER BY (
+                   SELECT count(*) FROM public.movimientos_financieros m
+                   WHERE m.billetera_id = b.id
+               ) DESC,
+               (lower(btrim(b.nombre)) = 'inicial') ASC,
+               b.creado_en ASC,
+               b.id ASC
+           ) AS rn
+    FROM public.billetera b
+) ranked
+WHERE rn = 1;
 
-1. Elegir superviviente con el orden del punto 5.
-2. Insertar `billetera_fusion(origen, destino)`.
-3. Insertar `billetera_fusion_movimiento` para cada movimiento con `billetera_id = origen`.
-4. `UPDATE movimientos_financieros SET billetera_id = destino WHERE billetera_id = origen`.
-5. `UPDATE billetera SET archivada_en = now() WHERE id = origen`.
-
-Propiedades: `ON CONFLICT DO NOTHING` en el mapeo, filtros `archivada_en IS NULL`, y el
-`UPDATE` es idempotente. Se puede correr dos veces sin duplicar ni perder filas.
-
-### Paso 3 — Restricción
-
-```sql
-CREATE UNIQUE INDEX billetera_usuario_moneda_activa_uidx
-    ON public.billetera (usuario_id, moneda)
-    WHERE archivada_en IS NULL;
-```
-
-El modelo de SQLAlchemy debe declarar el índice con `postgresql_where` y `sqlite_where` para
-que las pruebas locales también lo validen.
-
-### Validaciones previas a la restricción
-
-- Cero pares `(usuario_id, moneda)` con más de una activa.
-- Conteos y sumas por moneda iguales antes y después: movimientos totales, activos, anulados,
-  ingresos y egresos.
-- Toda fila de `billetera_fusion_movimiento` apunta a un movimiento que hoy referencia a
-  `billetera_destino_id`.
-- Toda billetera archivada tiene una fila en `billetera_fusion` con destino activo.
-- Ninguna FK compuesta rota.
-- La cantidad de filas mapeadas coincide con la cantidad de movimientos reasignados.
-
-### Rollback determinista
-
-```sql
-DROP INDEX IF EXISTS billetera_usuario_moneda_activa_uidx;
-
+-- Reasignar movimientos de las duplicadas
 UPDATE public.movimientos_financieros m
-SET billetera_id = f.billetera_origen_id
-FROM public.billetera_fusion_movimiento f
-WHERE m.id = f.movimiento_id
-  AND m.billetera_id = f.billetera_destino_id;  -- no pisa ediciones posteriores
+SET billetera_id = s.survivor_id
+FROM public.billetera_superviviente s
+WHERE m.usuario_id = s.usuario_id
+  AND m.moneda = s.moneda
+  AND m.billetera_id <> s.survivor_id
+  AND m.billetera_id IN (
+      SELECT b.id FROM public.billetera b
+      WHERE b.usuario_id = s.usuario_id AND b.moneda = s.moneda
+  );
 
-UPDATE public.billetera b
-SET archivada_en = NULL
-FROM public.billetera_fusion f
-WHERE b.id = f.origen_id;
+-- Borrar duplicadas
+DELETE FROM public.billetera b
+USING public.billetera_superviviente s
+WHERE b.usuario_id = s.usuario_id
+  AND b.moneda = s.moneda
+  AND b.id <> s.survivor_id;
+
+-- Restricción final
+DROP INDEX IF EXISTS public.billetera_usuario_moneda_nombre_uidx;
+CREATE UNIQUE INDEX billetera_usuario_moneda_uidx
+    ON public.billetera (usuario_id, moneda);
+
+-- Validaciones
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM public.billetera
+        GROUP BY usuario_id, moneda HAVING count(*) > 1
+    ) THEN
+        RAISE EXCEPTION 'STK-258: quedaron billeteras duplicadas';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM movimientos_antes a
+        FULL JOIN (
+            SELECT usuario_id, moneda, count(*) AS total,
+                   count(*) FILTER (WHERE anulado_en IS NULL) AS activos,
+                   coalesce(sum(cantidad) FILTER (WHERE tipo = 'ingreso'), 0) AS ingresos,
+                   coalesce(sum(cantidad) FILTER (WHERE tipo = 'egreso'), 0) AS egresos
+            FROM public.movimientos_financieros GROUP BY usuario_id, moneda
+        ) d USING (usuario_id, moneda)
+        WHERE a.total IS DISTINCT FROM d.total
+           OR a.activos IS DISTINCT FROM d.activos
+           OR a.ingresos IS DISTINCT FROM d.ingresos
+           OR a.egresos IS DISTINCT FROM d.egresos
+    ) THEN
+        RAISE EXCEPTION 'STK-258: cambiaron los totales de movimientos';
+    END IF;
+END $$;
+
+COMMIT;
 ```
 
-Las tablas de mapeo se conservan como auditoría; si producto pide limpiarlas, se hace en un
-paso separado y explícito. El rollback deja el estado anterior: varias activas por moneda
-(esperado), movimientos con su billetera original y la restricción eliminada.
+Notas de ejecución:
 
-## Consecuencias
+- Corre en una transacción; cualquier fallo revierte todo (incluido el `DELETE`).
+- `UPDATE`/`DELETE` toman locks de fila; con el volumen actual es inmediato. Para una base
+  grande se batchea por `(usuario_id, moneda)`, pero no es el caso.
+- `DROP INDEX` y `CREATE UNIQUE INDEX` no son `CONCURRENTLY` porque van dentro de la
+  transacción; bloquean `billetera` unos instantes, aceptable con mantenimiento.
+- Idempotencia: si se vuelve a correr, no hay duplicados y el `CREATE INDEX IF NOT EXISTS`
+  no falla. La migración se ejecuta una vez igual.
 
-**Positivas**
+### Backup obligatorio
 
-- Registrar deja de preguntar billetera: menos fricción y menos estados ambiguos.
-- Saldos y patrimonio por moneda son deterministas.
-- La unicidad queda garantizada por la base, no por una convención del servicio.
-- El rollback es auditable y no depende de backups.
-
-**Costos y riesgos**
-
-- Migración de datos con reasignación; requiere ventana y validaciones.
-- Borradores pendientes que apunten a billeteras archivadas se invalidan (mensaje claro).
-- Hay que revisar **todas** las lecturas de billetera para filtrar archivadas; una consulta
-  olvidada mostraría una billetera que ya no se puede usar.
-- Renombrar entra al alcance para que el rechazo de duplicado tenga una salida real.
-- El desempate por «Inicial» usa el nombre como heurística; si en el futuro se renombra, el
-  criterio debe migrar a una marca explícita (columna `origen`) o congelarse antes.
+Antes de ejecutar, `pg_dump` de `billetera` y `movimientos_financieros` (ver sección 4). Sin
+backup no se ejecuta: el `DELETE` es físico y no hay tabla de mapeo para reconstruirlo.
 
 ## Impacto por capa
 
 | Capa | Cambio |
 |---|---|
-| Esquema | `archivada_en`, `billetera_fusion`, `billetera_fusion_movimiento`, índice único parcial |
-| `WalletService` | `create_wallet` rechaza duplicado activo; defaults de nombre; `rename_wallet`; `list_wallets` solo activas |
-| `resolve_selection` | Filtra archivadas; estados `archived_wallet`, `needs_wallet_creation` explícito; sin opciones vacías |
-| `finance.py` | Registro y actualización usan la resolución nueva; rechazan archivadas |
-| `movements.py` | Rama explícita para `needs_wallet_creation`; nunca arma opciones vacías |
-| `movement_management.py` | Alineado a los mismos estados y mensajes |
-| `movement_commands.validate_dependencies` | Exige billetera activa; borradores viejos fallan claro |
-| `assistant_context.py` | Solo billeteras activas en el contexto del modelo |
-| Dashboard | Oculta archivadas; alta con rechazo; renombrar |
+| Esquema | Índice único `(usuario_id, moneda)`; se elimina el índice por nombre; sin columnas ni tablas nuevas |
+| Datos | Reasignación de movimientos y `DELETE` de billeteras duplicadas; backup previo |
+| `WalletService` | `create_wallet` rechaza duplicado con la billetera actual y aplica defaults; `resolve_selection` sin ambigüedad; `rename_wallet` nuevo |
+| `movements.py` | Rama explícita para `needs_wallet_creation`; se elimina el selector vacío |
+| `movement_management.py` | Se elimina la rama de selección múltiple |
+| `entities.py` | `WalletDraft.name` opcional; capacidad `rename_wallet` |
+| `finance.py` | Sin cambios de contrato: sigue usando `resolve_selection` |
+| `validate_dependencies` | Sin cambios: la billetera borrada produce «La billetera ya no está disponible» |
 | Recibos | Sin cambios de esquema ni reescritura; snapshot histórico inmutable |
-| Pruebas | Servicio, selección, migración idempotente, rollback, comandos, E2E y staging |
+| Dashboard | Sin cambios obligatorios; si expone alta/renombre, ajustar mensajes |
+| Pruebas | Servicio, selección, contrato de renombre, migración y E2E de staging |
 
 ## Plan de pruebas
 
-1. **Servicio**: crear segunda activa → rechazo sin escritura; defaults «Pesos»/«Dólares»;
-   renombrar con colisión; listar solo activas.
-2. **Selección**: una activa → `selected`; sin activas → `needs_wallet_creation`; archivada
-   explícita → `archived_wallet`; nombre desconocido → pregunta con la activa, sin opciones
-   vacías.
-3. **Migración**: correr dos veces (idempotencia); duplicados resueltos; conteos y sumas
-   preservados; mapeo completo; rollback restaura la billetera original de cada movimiento.
-4. **Comandos**: editar/anular después del backfill usa la superviviente; borrador con
-   billetera archivada se rechaza.
-5. **E2E**: registrar con una sola billetera no pregunta; nombrar la billetera resuelve;
-   dashboard no lista archivadas.
-6. **Staging**: la conversación de humo deja de recibir la pregunta de billetera.
+1. **Servicio**: crear ARS con nombre vacío → «Pesos»; crear USD vacío → «Dólares»; segunda ARS
+   → `wallet_already_exists` sin escribir y con la billetera actual; renombrar propia; rechazar
+   ajena, vacía o demasiado larga.
+2. **Selección**: 0 billeteras → `needs_wallet_creation`; 1 → `selected`; `wallet_id` ajeno o de
+   otra moneda → error; no existe `needs_wallet_selection`.
+3. **Comandos**: registrar sin billetera informa la creación (sin opciones vacías); registrar
+   con la única billetera no pregunta; renombrar y volver a registrar usa el nombre nuevo.
+4. **Migración**: duplicados resueltos; totales, activos, ingresos y egresos iguales; sin
+   movimientos apuntando a billeteras borradas; índice único presente; correr dos veces no
+   falla.
+5. **Rollback**: restaurar backup en una base de prueba y verificar que reaparecen las
+   billeteras y los movimientos originales.
+6. **E2E/staging**: la conversación de humo deja de recibir la pregunta de billetera; el
+   dashboard lista una sola billetera por moneda.
 
 ## Alcance revisable de STK-258
 
 ### Incluye
 
-- Este ADR.
-- Migraciones: expansión, backfill y restricción, con validaciones y rollback.
-- Contrato de creación/nombres/renombre y rechazo de duplicados.
-- Resolución de billetera y estados nuevos.
-- Filtrado de archivadas en servicio, contexto, saldos, patrimonio y dashboard.
-- Fix de `needs_wallet_creation` en `movements.py`.
-- Pruebas y documentación de usuario.
+- Migración de limpieza (reasignación + `DELETE` + índice único) con validaciones y backup.
+- `create_wallet` con rechazo, defaults y mensaje de billetera actual.
+- `resolve_selection` sin ambigüedad y sin `options`.
+- Fix de `needs_wallet_creation` en `movements.py`; limpieza en `movement_management.py`.
+- `rename_wallet` en servicio y capacidad de asistente.
+- Pruebas y documentación.
 
 ### No incluye
 
+- `archivada_en`, `billetera_fusion` ni borrado lógico.
 - Monedas distintas de ARS/USD.
-- Fusión entre monedas o conversión de saldos.
 - Reescritura de recibos históricos.
-- Cierre de STK-246 (se implementa coordinado, conserva su tarjeta).
-- Borrado físico de billeteras o de las tablas de mapeo.
+- Cierre de STK-246 (se implementa coordinado).
+- Endpoint de renombre en dashboard si no existe hoy (se evalúa aparte).
 
 ### Criterios de aceptación
 
-- No se puede crear una segunda billetera activa por moneda; el rechazo no escribe y nombra
-  la activa.
-- Ningún registro pregunta billetera cuando hay una sola activa.
-- Las archivadas no aparecen en listados, saldos, selectores ni contexto del modelo.
-- La migración deja cero pares activos duplicados y conserva conteos, sumas y moneda.
-- El rollback revierte exactamente los movimientos mapeados sin tocar los posteriores.
-- Un borrador que apunta a una billetera archivada falla con mensaje claro.
-- La suite completa y el E2E de staging quedan en verde.
+- No se puede crear una segunda billetera por moneda; el rechazo no escribe y nombra la actual.
+- La base no tiene pares `(usuario_id, moneda)` duplicados y el índice único existe.
+- Ningún movimiento apunta a una billetera borrada; totales y conteos no cambian.
+- Ningún registro pregunta billetera cuando hay una sola.
+- `needs_wallet_creation` informa la falta de billetera y guía a crearla, sin opciones vacías.
+- Renombrar funciona con confirmación y no permite nombres inválidos.
+- Suite completa y E2E de staging en verde.
 
 ### Decisiones abiertas
 
-1. ¿Renombrar entra en esta entrega o se difiere y se ajusta el mensaje?
-2. ¿Se conserva `billetera_fusion` a nivel billetera (recomendado, para billeteras sin
-   movimientos) o alcanza solo el mapeo por movimiento?
-3. ¿Se acepta invalidar borradores pendientes durante la migración?
-4. ¿La heurística «Inicial» es suficiente o se agrega una marca explícita de origen?
-5. ¿Las archivadas quedan accesibles en una vista de auditoría o solo por SQL?
+1. ¿Se acepta que el rollback sea solo por backup (sin tabla de mapeo)? Recomendado: sí, con
+   backup obligatorio y ventana de mantenimiento.
+2. ¿La migración aborta ante un huérfano en lugar de borrar movimientos? Recomendado: sí.
+3. ¿Renombrar se limita al asistente o también se expone en el dashboard en esta entrega?
+4. ¿Se permite el mismo nombre en ARS y USD (por ejemplo, «Principal» en ambas)? Recomendado:
+   sí, porque la unicidad es por moneda.
+5. ¿Ventana de mantenimiento y responsable del backup?
