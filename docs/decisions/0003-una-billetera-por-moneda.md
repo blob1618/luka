@@ -341,12 +341,13 @@ backup no se ejecuta: el `DELETE` es físico y no hay tabla de mapeo para recons
 - Renombrar funciona con confirmación y no permite nombres inválidos.
 - Suite completa y E2E de staging en verde.
 
-### Decisiones abiertas
+### Decisiones resueltas (2026-10-31)
 
-1. ¿Se acepta que el rollback sea solo por backup (sin tabla de mapeo)? Recomendado: sí, con
-   backup obligatorio y ventana de mantenimiento.
-2. ¿La migración aborta ante un huérfano en lugar de borrar movimientos? Recomendado: sí.
-3. ¿Renombrar se limita al asistente o también se expone en el dashboard en esta entrega?
-4. ¿Se permite el mismo nombre en ARS y USD (por ejemplo, «Principal» en ambas)? Recomendado:
-   sí, porque la unicidad es por moneda.
-5. ¿Ventana de mantenimiento y responsable del backup?
+1. **Rollback solo por backup:** aceptado. El `DELETE` es irreversible y la migración exige
+   backup previo verificado y ventana de mantenimiento.
+2. **Huérfanos:** la migración aborta y reporta; no borra movimientos financieros.
+3. **Renombrar:** servicio y capacidad de asistente en esta entrega; el dashboard solo si ya
+   expone la operación.
+4. **Mismo nombre en ARS y USD:** permitido; la unicidad es por moneda.
+5. **Ventana y responsable del backup:** se definen antes de ejecutar la migración; sin backup
+   verificado no se corre.
