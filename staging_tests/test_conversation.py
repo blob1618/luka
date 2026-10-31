@@ -112,10 +112,16 @@ def _confirm_id(messages):
     return None
 
 
+def _body(payload):
+    """Texto visible de un mensaje saliente (texto plano o cuerpo interactivo)."""
+    if payload.get('type') == 'text':
+        return payload.get('text', {}).get('body', '')
+    return payload.get('interactive', {}).get('body', {}).get('text', '')
+
+
 def _reply_for(messages):
     """Responde la pregunta previa al preview (billetera, moneda, fecha o categoría)."""
-    bodies = [payload['text']['body'] for payload in messages
-              if payload.get('type') == 'text' and payload.get('text', {}).get('body')]
+    bodies = [_body(payload) for payload in messages if _body(payload)]
     if not bodies:
         return None
     body = bodies[-1].lower()
@@ -127,6 +133,15 @@ def _reply_for(messages):
         return 'hoy'
     if 'categoría' in body or 'categoria' in body:
         return '1'
+    return None
+
+
+def _cancel_id(messages):
+    for payload in reversed(messages):
+        for button in payload.get('interactive', {}).get('action', {}).get('buttons', []):
+            identifier = button.get('reply', {}).get('id', '')
+            if identifier.startswith('assistant:cancel:'):
+                return identifier
     return None
 
 
@@ -169,14 +184,20 @@ def test_register_then_confirm_conversation():
         time.sleep(2)
 
     if not preview:
-        last = [payload.get('text', {}).get('body', '') for payload in _outbox(phone)
-                if payload.get('type') == 'text']
+        last = [_body(payload) for payload in _outbox(phone) if _body(payload)]
         raise AssertionError(f'No llegó el preview; últimos mensajes={last[-3:]}')
 
     button_id = _confirm_id(preview)
     _send_button(phone, button_id)
 
     confirmed = _wait(phone, lambda messages: any(
-        'Registré' in payload.get('text', {}).get('body', '') for payload in messages))
-    assert any('Registré' in payload.get('text', {}).get('body', '') for payload in confirmed)
+        'Registré' in _body(payload) for payload in messages))
+    assert any('Registré' in _body(payload) for payload in confirmed)
+
+    # El gasto puede disparar una propuesta de compensación por presupuesto.
+    # Se cancela para dejar el estado limpio antes de terminar la prueba.
+    cancel_id = _cancel_id(_outbox(phone))
+    if cancel_id:
+        _send_button(phone, cancel_id)
+        time.sleep(3)
     _clear(phone)
