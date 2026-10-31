@@ -1,8 +1,11 @@
-"""Corre una conversación real contra un entorno de staging desplegado.
+"""Corre una conversación real contra un entorno desplegado.
 
 Requiere STAGING_BASE_URL, STAGING_APP_SECRET y STAGING_TEST_TOKEN. No se
 recolecta en la suite normal (vive fuera de tests/): se ejecuta a mano o desde
 el workflow Staging E2E.
+
+El teléfono debe ser de un usuario registrado. Con TEST_CAPTURE_PHONES en el
+servidor, las respuestas se capturan y no se envían por Meta.
 """
 import hashlib
 import hmac
@@ -40,6 +43,41 @@ def _post_webhook(payload):
     assert response.status_code == 200, response.text
 
 
+def _message(phone, body, message_type='text'):
+    message = {'id': f'wamid.staging.{uuid.uuid4().hex}', 'from': phone,
+               'timestamp': '1760000000', 'type': message_type}
+    if message_type == 'text':
+        message['text'] = {'body': body}
+    return message
+
+
+def _send_text(phone, body):
+    _post_webhook({
+        'object': 'whatsapp_business_account',
+        'entry': [{'id': 'waba', 'changes': [{'field': 'messages', 'value': {
+            'messaging_product': 'whatsapp',
+            'metadata': {'phone_number_id': 'staging'},
+            'messages': [_message(phone, body)],
+        }}]}],
+    })
+
+
+def _send_button(phone, button_id):
+    _post_webhook({
+        'object': 'whatsapp_business_account',
+        'entry': [{'id': 'waba', 'changes': [{'field': 'messages', 'value': {
+            'messaging_product': 'whatsapp',
+            'metadata': {'phone_number_id': 'staging'},
+            'messages': [{
+                'id': f'wamid.staging.{uuid.uuid4().hex}', 'from': phone,
+                'timestamp': '1760000001', 'type': 'interactive',
+                'interactive': {'type': 'button_reply',
+                                'button_reply': {'id': button_id, 'title': 'Confirmar'}},
+            }],
+        }}]}],
+    })
+
+
 def _outbox(phone):
     response = httpx.get(f'{BASE_URL}/__test__/outbox', params={'phone': phone},
                          headers=_headers(), timeout=30)
@@ -74,6 +112,24 @@ def _confirm_id(messages):
     return None
 
 
+def _reply_for(messages):
+    """Responde la pregunta previa al preview (billetera, moneda, fecha o categoría)."""
+    bodies = [payload['text']['body'] for payload in messages
+              if payload.get('type') == 'text' and payload.get('text', {}).get('body')]
+    if not bodies:
+        return None
+    body = bodies[-1].lower()
+    if 'billetera' in body:
+        return '1'
+    if 'pesos o dólares' in body:
+        return 'pesos'
+    if 'fecha no es válida' in body:
+        return 'hoy'
+    if 'categoría' in body or 'categoria' in body:
+        return '1'
+    return None
+
+
 def _unique_phone():
     return FIXED_PHONE or '54911' + str(int(time.time()))[-8:]
 
@@ -90,32 +146,35 @@ def test_version_and_ready():
 def test_register_then_confirm_conversation():
     phone = _unique_phone()
     _clear(phone)
-    message_id = f'wamid.staging.{uuid.uuid4().hex}'
-    _post_webhook({
-        'object': 'whatsapp_business_account',
-        'entry': [{'id': 'waba', 'changes': [{'field': 'messages', 'value': {
-            'messaging_product': 'whatsapp',
-            'metadata': {'phone_number_id': 'staging'},
-            'messages': [{'id': message_id, 'from': phone, 'timestamp': '1760000000',
-                          'type': 'text', 'text': {'body': 'Gasté 5000 en nafta'}}],
-        }}]}],
-    })
 
-    preview = _wait(phone, lambda messages: _confirm_id(messages) is not None)
+    # Cancela cualquier borrador que haya quedado de una corrida anterior.
+    _send_text(phone, 'cancelar')
+    time.sleep(4)
+    _clear(phone)
+
+    _send_text(phone, 'Gasté 5000 en nafta')
+
+    deadline = time.time() + 180
+    answered = 0
+    preview = []
+    while time.time() < deadline:
+        messages = _outbox(phone)
+        if _confirm_id(messages):
+            preview = messages
+            break
+        reply = _reply_for(messages)
+        if reply and len(messages) > answered:
+            _send_text(phone, reply)
+            answered = len(messages)
+        time.sleep(2)
+
+    if not preview:
+        last = [payload.get('text', {}).get('body', '') for payload in _outbox(phone)
+                if payload.get('type') == 'text']
+        raise AssertionError(f'No llegó el preview; últimos mensajes={last[-3:]}')
+
     button_id = _confirm_id(preview)
-
-    _post_webhook({
-        'object': 'whatsapp_business_account',
-        'entry': [{'id': 'waba', 'changes': [{'field': 'messages', 'value': {
-            'messaging_product': 'whatsapp',
-            'metadata': {'phone_number_id': 'staging'},
-            'messages': [{'id': f'wamid.staging.{uuid.uuid4().hex}', 'from': phone,
-                          'timestamp': '1760000001', 'type': 'interactive',
-                          'interactive': {'type': 'button_reply',
-                                          'button_reply': {'id': button_id,
-                                                           'title': 'Confirmar'}}}],
-        }}]}],
-    })
+    _send_button(phone, button_id)
 
     confirmed = _wait(phone, lambda messages: any(
         'Registré' in payload.get('text', {}).get('body', '') for payload in messages))
