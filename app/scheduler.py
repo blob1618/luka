@@ -28,8 +28,10 @@ from app.models.database import (
 from app.services.recurring_expense import RecurringExpenseService
 from app.services.google_calendar import reconcile_google_calendar
 
-scheduler = AsyncIOScheduler()
 logger = logging.getLogger(__name__)
+_MISSING_TEMPLATE_LOGGED: set[str] = set()
+
+scheduler = AsyncIOScheduler()
 
 WHATSAPP_WINDOW_HOURS = 24
 ARGENTINA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
@@ -582,10 +584,14 @@ async def check_reminders(_now: datetime | None = None):
         else:
             template_name = os.getenv("WHATSAPP_REMINDER_TEMPLATE_NAME")
             if not template_name:
-                print(
-                    f"[REMINDER_TEMPLATE_MISSING] user={item['whatsapp_id']} "
-                    f"reminder={item['recordatorio_id']}"
-                )
+                key = str(item["recordatorio_id"])
+                if key not in _MISSING_TEMPLATE_LOGGED:
+                    _MISSING_TEMPLATE_LOGGED.add(key)
+                    logger.warning(
+                        "[REMINDER_TEMPLATE_MISSING] user=%s reminder=%s "
+                        "(configurá WHATSAPP_REMINDER_TEMPLATE_NAME y un template aprobado)",
+                        item["whatsapp_id"], item["recordatorio_id"],
+                    )
                 continue
             due_date_text = item["due_date"].strftime("%d/%m")
             amount_text = (
