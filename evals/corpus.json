@@ -1,0 +1,84 @@
+{
+  "scenarios": [
+    {
+      "id": "register_expense",
+      "text": "gasté 1000 en taxi",
+      "expect_tools": ["register_movement"],
+      "kind": "write",
+      "verify": {"movement": {"amount": "1000", "currency": "ARS", "type": "egreso", "description_contains": "taxi"}}
+    },
+    {
+      "id": "register_income",
+      "text": "cobré 50000 de sueldo",
+      "expect_tools": ["register_movement"],
+      "kind": "write",
+      "verify": {"movement": {"amount": "50000", "currency": "ARS", "type": "ingreso", "description_contains": "sueldo"}}
+    },
+    {
+      "id": "register_yesterday",
+      "text": "ayer gasté 2500 en supermercado",
+      "expect_tools": ["register_movement"],
+      "kind": "write",
+      "verify": {"movement": {"amount": "2500", "currency": "ARS", "type": "egreso", "date_offset": -1}}
+    },
+    {
+      "id": "update_amount",
+      "text": "cambiá el gasto de taxi a 1200",
+      "expect_tools": ["update_movement"],
+      "kind": "write",
+      "seed_movement": {"description": "taxi", "amount": "1000", "type": "egreso"},
+      "verify": {"movement": {"amount": "1200", "description_contains": "taxi"}}
+    },
+    {
+      "id": "annul_taxi",
+      "text": "anulá el gasto de taxi",
+      "expect_tools": ["annul_movements"],
+      "kind": "write",
+      "seed_movement": {"description": "taxi", "amount": "1000", "type": "egreso"},
+      "verify": {"movement": {"description_contains": "taxi", "annulled": true}}
+    },
+    {
+      "id": "balances",
+      "text": "cuánto tengo",
+      "expect_tools": ["query_net_worth", "wallet_balances"],
+      "kind": "read",
+      "verify": {"reply_contains": "ARS"}
+    },
+    {
+      "id": "list_movements",
+      "text": "mostrame mis últimos movimientos",
+      "expect_tools": ["find_movements"],
+      "kind": "read",
+      "seed_movement": {"description": "taxi", "amount": "1000", "type": "egreso"},
+      "verify": {"reply_contains": "taxi"}
+    },
+    {
+      "id": "create_limit",
+      "text": "poné un límite de 50000 pesos en comida para octubre de 2026",
+      "expect_tools": ["create_limit"],
+      "kind": "write",
+      "verify": {"limit": {"amount": "50000"}}
+    },
+    {
+      "id": "limit_missing_slots",
+      "text": "poné un límite de 50000 en comida",
+      "expect_tools": ["create_limit"],
+      "kind": "clarify",
+      "verify": {"no_limit": true}
+    },
+    {
+      "id": "create_reminder",
+      "text": "recordame pagar internet el 10",
+      "expect_tools": ["create_reminder"],
+      "kind": "write",
+      "verify": {"reminder": {"title_contains": "internet"}}
+    },
+    {
+      "id": "dashboard_link",
+      "text": "mandame el dashboard",
+      "expect_tools": ["dashboard_link"],
+      "kind": "read",
+      "verify": {}
+    }
+  ]
+}
