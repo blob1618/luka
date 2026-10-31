@@ -1,0 +1,70 @@
+name: Deploy Smoke
+
+on:
+  workflow_run:
+    workflows: ["CI Pipeline"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Verificar que Render sirve el commit mergeado
+        env:
+          BASE_URL: https://luka-f2nb.onrender.com
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          base = os.environ["BASE_URL"].rstrip("/")
+          expected = os.environ["EXPECTED_SHA"][:7]
+          deadline = time.time() + 600
+          state = "sin respuesta"
+
+          while time.time() < deadline:
+              try:
+                  with urllib.request.urlopen(f"{base}/version", timeout=30) as response:
+                      commit = json.load(response).get("commit", "")[:7]
+                  state = f"version={commit}"
+                  if commit == expected:
+                      try:
+                          with urllib.request.urlopen(f"{base}/ready", timeout=30) as response:
+                              ready = json.load(response)
+                          if ready.get("ready") is True:
+                              print(f"deploy ok commit={commit} ready=true")
+                              break
+                          state = f"ready={json.dumps(ready)}"
+                      except urllib.error.HTTPError as exc:
+                          state = f"ready_http={exc.code}"
+              except Exception as exc:  # noqa: BLE001 - reportar y reintentar
+                  state = f"error={type(exc).__name__}"
+              time.sleep(15)
+          else:
+              raise SystemExit(
+                  f"El deploy no quedó listo: esperado {expected}, estado final {state}"
+              )
+
+          request = urllib.request.Request(
+              f"{base}/webhook",
+              data=b'{"object":"whatsapp_business_account","entry":[]}',
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          try:
+              urllib.request.urlopen(request, timeout=30)
+          except urllib.error.HTTPError as exc:
+              if exc.code != 403:
+                  raise SystemExit(f"La firma no se exige: POST sin firma respondió {exc.code}")
+              print("firma ok: POST sin firma respondió 403")
+          else:
+              raise SystemExit("La firma no se exige: POST sin firma fue aceptado")
+          PY
