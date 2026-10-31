@@ -195,7 +195,9 @@ Los datos de prueba quedan en la base de producción, algo aceptable mientras se
 académico sin usuarios reales; conviene limpiarlos cuando exista el primer usuario.
 
 Sin `TEST_INGRESS_TOKEN` la captura, el outbox y el seed quedan deshabilitados (404), aunque
-el teléfono esté listado.
+el teléfono esté listado. Al arrancar, si la captura está activa, el log de Render muestra
+`staging_capture_activo phones=N (***XXXX)`: los teléfonos se enmascaran y no se exponen
+completos.
 
 ## Flujo de trabajo del equipo
 

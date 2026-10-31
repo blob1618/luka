@@ -119,3 +119,34 @@ def test_allowlist_without_token_stays_fail_closed(monkeypatch, fake_redis):
     assert result.is_permanent and result.error_code == 'missing_credentials'
     assert client.get('/__test__/outbox', params={'phone': PHONE},
                       headers={'x-test-token': 'staging-token'}).status_code == 404
+
+
+def test_startup_warning_none_without_token(monkeypatch):
+    monkeypatch.delenv('TEST_INGRESS_TOKEN', raising=False)
+    assert staging_ingress.startup_warning() is None
+
+
+def test_startup_warning_reports_global_capture():
+    message = staging_ingress.startup_warning()
+    assert message is not None and 'global' in message
+
+
+def test_startup_warning_masks_capture_phones(monkeypatch):
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.delenv('WHATSAPP_TRANSPORT', raising=False)
+    monkeypatch.setenv('TEST_CAPTURE_PHONES', PHONE)
+
+    message = staging_ingress.startup_warning()
+
+    assert message is not None and 'phones=1' in message
+    assert PHONE not in message and PHONE[-4:] in message
+
+
+def test_startup_warning_reports_ingress_without_capture(monkeypatch):
+    monkeypatch.setenv('APP_ENV', 'staging')
+    monkeypatch.delenv('WHATSAPP_TRANSPORT', raising=False)
+    monkeypatch.delenv('TEST_CAPTURE_PHONES', raising=False)
+
+    message = staging_ingress.startup_warning()
+
+    assert message is not None and 'sin captura' in message
