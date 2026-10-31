@@ -8,6 +8,8 @@
 4. Configurar en Render `GOOGLE_CALENDAR_CLIENT_ID`, `GOOGLE_CALENDAR_CLIENT_SECRET`, `GOOGLE_CALENDAR_REDIRECT_URI` y `GOOGLE_CALENDAR_FERNET_KEY`. Generar la clave una sola vez con el comando indicado en `.env.example`; conservarla entre despliegues. Perderla impide descifrar los permisos ya guardados y requiere reconectar a cada usuario.
 5. Desplegar con un solo worker de scheduler, como indica el `Dockerfile`.
 
+Si la pantalla OAuth es de tipo **External** y permanece en **Testing**, agregar las cuentas autorizadas como usuarios de prueba. Google hace vencer sus autorizaciones y refresh tokens a los siete días; sirve para validar el flujo, pero no para una sincronización sostenida. Antes de ofrecer la integración a usuarios reales, pasar la app a producción y completar la verificación que Google requiera.
+
 No se debe poner ninguna de estas credenciales en el frontend ni en el repositorio. El backend necesita HTTPS público para recibir el callback.
 
 ## Uso
