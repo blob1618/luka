@@ -18,9 +18,14 @@ descartable.
 .\.codex\venv\Scripts\python.exe evals\runner.py
 .\.codex\venv\Scripts\python.exe evals\runner.py --runs 3
 .\.codex\venv\Scripts\python.exe evals\runner.py --providers deepseek,gemini --runs 2
+.\.codex\venv\Scripts\python.exe evals\runner.py --corpus evals\holdout.json --runs 3
 .\.codex\venv\Scripts\python.exe evals\runner.py --only register_expense --runs 5
 .\.codex\venv\Scripts\python.exe evals\runner.py --limit 3 --runs 1
 ```
+
+`--corpus` permite usar el set de desarrollo (`corpus.json`, por defecto) o el retenido
+(`holdout.json`). El set retenido no se ajusta después de ver los resultados: sus métricas están
+en [HOLDOUT.md](HOLDOUT.md).
 
 Cada corrida imprime una fila **agregada por escenario** y un resumen por proveedor; además
 escribe `evals/results/eval-<UTC>.json` con cada repetición, las herramientas elegidas, la

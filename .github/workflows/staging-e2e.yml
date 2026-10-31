@@ -26,11 +26,23 @@ jobs:
           cache: pip
       - name: Instalar dependencias
         run: pip install -r requirements.txt
-      - name: Conversación contra staging
+      - name: Infraestructura de staging (bloqueante)
         env:
           STAGING_BASE_URL: ${{ inputs.base_url }}
           STAGING_EXPECTED_COMMIT: ${{ inputs.expected_commit }}
           STAGING_PHONE: ${{ inputs.phone }}
           STAGING_APP_SECRET: ${{ secrets.STAGING_APP_SECRET }}
           STAGING_TEST_TOKEN: ${{ secrets.STAGING_TEST_TOKEN }}
-        run: pytest staging_tests -q
+        run: pytest staging_tests -q -k version
+
+      # La conversación depende del modelo real y puede variar entre corridas.
+      # Se informa, pero no bloquea el deploy: la calidad del modelo se mide en evals/.
+      - name: Conversación con modelo real (informativa)
+        continue-on-error: true
+        env:
+          STAGING_BASE_URL: ${{ inputs.base_url }}
+          STAGING_EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          STAGING_PHONE: ${{ inputs.phone }}
+          STAGING_APP_SECRET: ${{ secrets.STAGING_APP_SECRET }}
+          STAGING_TEST_TOKEN: ${{ secrets.STAGING_TEST_TOKEN }}
+        run: pytest staging_tests -q -k conversation

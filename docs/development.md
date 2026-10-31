@@ -177,6 +177,10 @@ la suite normal porque vive fuera de `tests/`; se ejecuta con `pytest staging_te
 el workflow `Staging E2E` (`workflow_dispatch`, recibe la URL, el commit esperado y el
 teléfono).
 
+El workflow separa dos pasos: **infraestructura** (bloqueante: `/version` y `/ready`) y
+**conversación con modelo real** (informativa: `continue-on-error`). La conversación puede variar
+por el modelo; la calidad se mide con el corpus de `evals/`, no con el deploy.
+
 #### Captura por teléfono en producción
 
 Mientras el proyecto no tenga usuarios reales, no hace falta un segundo entorno: con

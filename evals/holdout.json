@@ -1,0 +1,80 @@
+{
+  "scenarios": [
+    {
+      "id": "register_transport",
+      "text": "pagué 3500 de subte y colectivo",
+      "expect_tools": ["register_movement", "register_movement_batch"],
+      "kind": "write",
+      "verify": {"movement": {"amount": "3500", "currency": "ARS", "type": "egreso"}}
+    },
+    {
+      "id": "register_salary_usd",
+      "text": "me pagaron 800 dólares de freelance",
+      "expect_tools": ["register_movement"],
+      "kind": "write",
+      "seed_wallets": ["ARS", "USD"],
+      "verify": {"movement": {"amount": "800", "currency": "USD", "type": "ingreso"}}
+    },
+    {
+      "id": "update_description",
+      "text": "cambiá la descripción del gasto de cena a cena con amigos",
+      "expect_tools": ["update_movement"],
+      "kind": "write",
+      "seed_movement": {"description": "cena", "amount": "2000", "type": "egreso"},
+      "verify": {"movement": {"description_contains": "amigos"}}
+    },
+    {
+      "id": "annul_income",
+      "text": "anulá el ingreso de sueldo",
+      "expect_tools": ["annul_movements"],
+      "kind": "write",
+      "seed_movement": {"description": "sueldo", "amount": "50000", "type": "ingreso"},
+      "verify": {"movement": {"description_contains": "sueldo", "type": "ingreso", "annulled": true}}
+    },
+    {
+      "id": "list_income",
+      "text": "mostrame mis ingresos",
+      "expect_tools": ["find_movements"],
+      "kind": "read",
+      "seed_movement": {"description": "sueldo", "amount": "50000", "type": "ingreso"},
+      "verify": {"reply_contains": "sueldo"}
+    },
+    {
+      "id": "create_limit_transport",
+      "text": "poné un límite de 20000 pesos en transporte para noviembre de 2026",
+      "expect_tools": ["create_limit"],
+      "kind": "write",
+      "seed_categories": ["Transporte"],
+      "verify": {"limit": {"amount": "20000"}}
+    },
+    {
+      "id": "reminder_rent",
+      "text": "recordame pagar el alquiler el 5",
+      "expect_tools": ["create_reminder"],
+      "kind": "write",
+      "verify": {"reminder": {"title_contains": "alquiler"}}
+    },
+    {
+      "id": "rename_wallet_other",
+      "text": "cambiá el nombre de mi billetera a Gastos",
+      "expect_tools": ["rename_wallet"],
+      "kind": "write",
+      "verify": {"wallet": {"currency": "ARS", "name": "Gastos"}}
+    },
+    {
+      "id": "financial_education_emergency",
+      "text": "¿qué es un fondo de emergencia?",
+      "expect_tools": ["financial_education"],
+      "kind": "read",
+      "verify": {"reply_nonempty": true}
+    },
+    {
+      "id": "chart_monthly",
+      "text": "graficá mis gastos de los últimos meses",
+      "expect_tools": ["movement_chart"],
+      "kind": "read",
+      "seed_movement": {"description": "taxi", "amount": "1000", "type": "egreso"},
+      "verify": {}
+    }
+  ]
+}
