@@ -35,7 +35,7 @@ from app.api.whatsapp import (  # noqa: E402
     send_whatsapp_typing_indicator,
 )
 from app.scheduler import start_scheduler  # noqa: E402
-from app.services import deployment_status  # noqa: E402
+from app.services import deployment_status, staging_ingress  # noqa: E402
 from app.services.telemetry import (  # noqa: E402
     finish_message_telemetry,
     start_message_telemetry,
@@ -310,6 +310,31 @@ async def read_ready():
     payload = {"ready": ready, "status": "ok" if ready else "degraded",
                **_checks_payload(db, redis_status, migrations)}
     return JSONResponse(status_code=200 if ready else 503, content=payload)
+
+
+def _require_test_ingress(request: Request) -> None:
+    if not staging_ingress.ingress_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    if not staging_ingress.token_valid(request.headers.get(staging_ingress.TEST_TOKEN_HEADER)):
+        raise HTTPException(status_code=401, detail="Invalid test token")
+
+
+@app.get("/__test__/outbox")
+async def read_test_outbox(request: Request, phone: str):
+    _require_test_ingress(request)
+    if redis_client is None:
+        raise HTTPException(status_code=503, detail="Redis unavailable")
+    return {"phone": phone,
+            "messages": await staging_ingress.read_outbox(redis_client, phone)}
+
+
+@app.delete("/__test__/outbox")
+async def clear_test_outbox(request: Request, phone: str):
+    _require_test_ingress(request)
+    if redis_client is None:
+        raise HTTPException(status_code=503, detail="Redis unavailable")
+    removed = await staging_ingress.clear_outbox(redis_client, phone)
+    return {"phone": phone, "removed": removed}
 
 
 # Valores válidos de `tipos`; el endpoint comparte el vocabulario de QuoteType.

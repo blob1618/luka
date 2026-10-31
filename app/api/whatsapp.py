@@ -5,8 +5,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TypeAlias
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx
+
+from app.services.staging_ingress import capture_enabled, capture_for_phone, record_outbound
 
 
 DEFAULT_WHATSAPP_GRAPH_API_VERSION = "v26.0"
@@ -405,40 +408,45 @@ async def send_whatsapp_message_detailed(
     template_parameters: list[str] | None = None,
 ) -> WhatsAppSendResult:
     """Send a supported message through Meta returning a detailed result."""
+    capture = capture_for_phone(to_number)
     api_token = os.getenv("WHATSAPP_API_TOKEN")
     phone_id = os.getenv("WHATSAPP_PHONE_ID")
     api_version = whatsapp_graph_api_version()
-    if not api_token or not phone_id:
-        print("Falta WHATSAPP_API_TOKEN o WHATSAPP_PHONE_ID. No se puede enviar el mensaje.")
-        return WhatsAppSendResult(
-            status=WhatsAppDeliveryStatus.PERMANENT,
-            error_code="missing_credentials",
-            error_message="Falta WHATSAPP_API_TOKEN o WHATSAPP_PHONE_ID.",
-        )
-    if api_version is None:
-        print("WHATSAPP_GRAPH_API_VERSION tiene un formato invalido.")
-        return WhatsAppSendResult(
-            status=WhatsAppDeliveryStatus.PERMANENT,
-            error_code="invalid_graph_version",
-            error_message="WHATSAPP_GRAPH_API_VERSION tiene un formato invalido.",
-        )
+    if not capture:
+        if not api_token or not phone_id:
+            print("Falta WHATSAPP_API_TOKEN o WHATSAPP_PHONE_ID. No se puede enviar el mensaje.")
+            return WhatsAppSendResult(
+                status=WhatsAppDeliveryStatus.PERMANENT,
+                error_code="missing_credentials",
+                error_message="Falta WHATSAPP_API_TOKEN o WHATSAPP_PHONE_ID.",
+            )
+        if api_version is None:
+            print("WHATSAPP_GRAPH_API_VERSION tiene un formato invalido.")
+            return WhatsAppSendResult(
+                status=WhatsAppDeliveryStatus.PERMANENT,
+                error_code="invalid_graph_version",
+                error_message="WHATSAPP_GRAPH_API_VERSION tiene un formato invalido.",
+            )
 
     try:
         if isinstance(message_text, WhatsAppImage):
             _validate_image(message_text)
-            upload_result, media_id = await _upload_whatsapp_image(
-                message_text,
-                api_token=api_token,
-                phone_id=phone_id,
-                api_version=api_version,
-            )
-            if media_id is None:
-                return await _image_failure_with_fallback(
-                    to_number,
-                    upload_result,
-                    ambiguous=upload_result.is_unknown,
+            if capture:
+                payload = _image_payload(to_number, "capture-media", message_text.caption)
+            else:
+                upload_result, media_id = await _upload_whatsapp_image(
+                    message_text,
+                    api_token=api_token,
+                    phone_id=phone_id,
+                    api_version=api_version,
                 )
-            payload = _image_payload(to_number, media_id, message_text.caption)
+                if media_id is None:
+                    return await _image_failure_with_fallback(
+                        to_number,
+                        upload_result,
+                        ambiguous=upload_result.is_unknown,
+                    )
+                payload = _image_payload(to_number, media_id, message_text.caption)
         else:
             payload = build_whatsapp_payload(
                 to_number,
@@ -460,6 +468,13 @@ async def send_whatsapp_message_detailed(
                 ambiguous=False,
             )
         return invalid_result
+
+    if capture:
+        await record_outbound(to_number, payload)
+        return WhatsAppSendResult(
+            status=WhatsAppDeliveryStatus.SUCCESS,
+            message_id=f"wamid.capture.{uuid4().hex}",
+        )
 
     url = graph_api_url(f"{api_version}/{phone_id}/messages")
     headers = {
@@ -676,6 +691,8 @@ async def send_whatsapp_reaction(
     emoji: str = "⏳",
 ) -> bool:
     """Send an immediate reaction emoji for an inbound WhatsApp message."""
+    if capture_for_phone(to_number):
+        return True
     api_token = os.getenv("WHATSAPP_API_TOKEN")
     phone_id = os.getenv("WHATSAPP_PHONE_ID")
     api_version = whatsapp_graph_api_version()
@@ -722,6 +739,8 @@ async def send_whatsapp_reaction(
 
 async def send_whatsapp_typing_indicator(message_id: str) -> bool:
     """Show the typing indicator for an inbound WhatsApp message (marks it read)."""
+    if capture_enabled():
+        return True
     api_token = os.getenv("WHATSAPP_API_TOKEN")
     phone_id = os.getenv("WHATSAPP_PHONE_ID")
     api_version = whatsapp_graph_api_version()

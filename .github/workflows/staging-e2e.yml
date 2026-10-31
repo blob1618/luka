@@ -1,0 +1,35 @@
+name: Staging E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: URL del servicio (staging o producción con captura por teléfono)
+        required: true
+      expected_commit:
+        description: Commit esperado (opcional)
+        required: false
+      phone:
+        description: Teléfono de prueba (debe estar en TEST_CAPTURE_PHONES si es producción)
+        required: false
+
+jobs:
+  staging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Conversación contra staging
+        env:
+          STAGING_BASE_URL: ${{ inputs.base_url }}
+          STAGING_EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          STAGING_PHONE: ${{ inputs.phone }}
+          STAGING_APP_SECRET: ${{ secrets.STAGING_APP_SECRET }}
+          STAGING_TEST_TOKEN: ${{ secrets.STAGING_TEST_TOKEN }}
+        run: pytest staging_tests -q

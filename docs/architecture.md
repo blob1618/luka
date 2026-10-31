@@ -164,6 +164,15 @@ El estado compara los archivos de `supabase/migrations/` con
 fallar. Un liveness check de Render no debe usar `/ready` durante un deploy con
 migraciones en curso.
 
+En staging se puede activar `WHATSAPP_TRANSPORT=capture` (con `APP_ENV=staging` y
+`TEST_INGRESS_TOKEN`): el cliente no llama a Graph, guarda el payload en Redis y lo publica
+en `GET /__test__/outbox` para que el runner de `staging_tests/` verifique botones y textos
+sin depender de Meta. Fuera de staging esos endpoints responden 404.
+
+Como alternativa sin segundo entorno, `TEST_CAPTURE_PHONES` permite capturar solo los
+teléfonos listados aun en producción: el resto de los envíos sigue saliendo por Meta. Exige
+`TEST_INGRESS_TOKEN`; sin él la captura y el outbox quedan deshabilitados.
+
 ## Scheduler
 
 `app/scheduler.py` usa un `AsyncIOScheduler` que arranca en el `lifespan` de la app.

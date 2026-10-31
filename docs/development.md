@@ -162,6 +162,35 @@ firma responda 403. Si el deploy quedó en un commit anterior, la base no está 
 firma dejó de exigirse, el job falla. No usa secretos y puede ejecutarse a mano con
 `workflow_dispatch`.
 
+### Staging con captura de salida
+
+Para probar conversaciones completas contra un entorno desplegado sin enviar nada por Meta,
+el servicio de staging se configura con `APP_ENV=staging`, `WHATSAPP_TRANSPORT=capture` y
+`TEST_INGRESS_TOKEN`. En ese modo `app/api/whatsapp.py` guarda en Redis el payload que habría
+enviado (sin llamar a Graph) y lo expone en `GET /__test__/outbox?phone=...`; `DELETE` sobre
+el mismo endpoint limpia la cola. Ambos exigen el header `x-test-token` y responden 404 fuera
+de staging, así que no son una superficie de producción.
+
+`staging_tests/` contiene la conversación de humo (registro, preview y confirmación) que corre
+contra `STAGING_BASE_URL` con `STAGING_APP_SECRET` y `STAGING_TEST_TOKEN`. No se recolecta en
+la suite normal porque vive fuera de `tests/`; se ejecuta con `pytest staging_tests` o desde
+el workflow `Staging E2E` (`workflow_dispatch`, recibe la URL, el commit esperado y el
+teléfono).
+
+#### Captura por teléfono en producción
+
+Mientras el proyecto no tenga usuarios reales, no hace falta un segundo entorno: con
+`TEST_CAPTURE_PHONES=54911...` (y `TEST_INGRESS_TOKEN`) la app captura **solo ese teléfono** y
+sigue enviando el resto por Meta. `staging_tests` se puede apuntar a la URL de producción con
+`STAGING_PHONE` igual al teléfono listado: los webhooks se inyectan firmados, las respuestas
+quedan en el outbox y **no se envía nada por Meta**, así que no hay riesgo de baneo ni
+automatización de WhatsApp Web. Los datos de prueba quedan en la base de producción, algo
+aceptable mientras sea un entorno académico sin usuarios reales; conviene limpiarlos cuando
+exista el primer usuario.
+
+Sin `TEST_INGRESS_TOKEN` la captura y el outbox quedan deshabilitados (404), aunque el
+teléfono esté listado.
+
 ## Flujo de trabajo del equipo
 
 La rama compartida y de despliegue es `main`. El flujo de ramas, PRs y verificación de tareas está en [../CONTRIBUTING.md](../CONTRIBUTING.md). GitHub Actions corre en pushes y en PRs a `main`; Render despliega `main` automáticamente.
