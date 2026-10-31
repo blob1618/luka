@@ -162,6 +162,20 @@ firma responda 403. Si el deploy quedó en un commit anterior, la base no está 
 firma dejó de exigirse, el job falla. No usa secretos y puede ejecutarse a mano con
 `workflow_dispatch`.
 
+### Staging con captura de salida
+
+Para probar conversaciones completas contra un entorno desplegado sin enviar nada por Meta,
+el servicio de staging se configura con `APP_ENV=staging`, `WHATSAPP_TRANSPORT=capture` y
+`TEST_INGRESS_TOKEN`. En ese modo `app/api/whatsapp.py` guarda en Redis el payload que habría
+enviado (sin llamar a Graph) y lo expone en `GET /__test__/outbox?phone=...`; `DELETE` sobre
+el mismo endpoint limpia la cola. Ambos exigen el header `x-test-token` y responden 404 fuera
+de staging, así que no son una superficie de producción.
+
+`staging_tests/` contiene la conversación de humo (registro, preview y confirmación) que corre
+contra `STAGING_BASE_URL` con `STAGING_APP_SECRET` y `STAGING_TEST_TOKEN`. No se recolecta en
+la suite normal porque vive fuera de `tests/`; se ejecuta con `pytest staging_tests` o desde
+el workflow `Staging E2E` (`workflow_dispatch`, recibe la URL y el commit esperado).
+
 ## Flujo de trabajo del equipo
 
 La rama compartida y de despliegue es `main`. El flujo de ramas, PRs y verificación de tareas está en [../CONTRIBUTING.md](../CONTRIBUTING.md). GitHub Actions corre en pushes y en PRs a `main`; Render despliega `main` automáticamente.
