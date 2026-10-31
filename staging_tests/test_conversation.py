@@ -126,15 +126,21 @@ def _reply_for(messages):
     if not bodies:
         return None
     body = bodies[-1].lower()
-    if 'billetera' in body:
+    if '¿qué billetera' in body or 'billetera querés usar' in body:
         return '1'
-    if 'pesos o dólares' in body:
+    if '¿pesos o dólares' in body:
         return 'pesos'
-    if 'fecha no es válida' in body:
+    if 'la fecha no es válida' in body:
         return 'hoy'
-    if 'categoría' in body or 'categoria' in body:
+    if body.startswith('¿qué categoría') or 'elegí una categoría' in body:
         return '1'
     return None
+
+
+def _looks_like_help(messages):
+    body = _body(messages[-1]).lower() if messages else ''
+    return any(marker in body for marker in (
+        'podés registrar', 'necesito que aclares', 'no entendí', 'no pude entender'))
 
 
 def _cancel_id(messages):
@@ -177,25 +183,35 @@ def test_register_then_confirm_conversation():
     time.sleep(4)
     _clear(phone)
 
-    _send_text(phone, 'Gasté 5000 en nafta')
+    intent = 'gasté 1000 en taxi'
+    _send_text(phone, intent)
 
     deadline = time.time() + 180
     answered = 0
+    attempts = 0
     preview = []
     while time.time() < deadline:
         messages = _outbox(phone)
         if _confirm_id(messages):
             preview = messages
             break
-        reply = _reply_for(messages)
-        if reply and len(messages) > answered:
-            _send_text(phone, reply)
-            answered = len(messages)
+        if len(messages) > answered:
+            reply = _reply_for(messages)
+            if reply:
+                _send_text(phone, reply)
+                answered = len(messages)
+            elif _looks_like_help(messages):
+                if attempts >= 1:
+                    break
+                _send_text(phone, intent)
+                attempts += 1
+                answered = len(messages)
         time.sleep(2)
 
     if not preview:
         last = [_body(payload) for payload in _outbox(phone) if _body(payload)]
-        raise AssertionError(f'No llegó el preview; últimos mensajes={last[-3:]}')
+        raise AssertionError(f'No llegó el preview tras {attempts + 1} intento(s); '
+                             f'últimos mensajes={last[-3:]}')
 
     button_id = _confirm_id(preview)
     _send_button(phone, button_id)
