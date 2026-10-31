@@ -158,12 +158,12 @@ def test_wallet_name_cannot_be_blank(session, nombre):
         session.commit()
 
 
-def test_user_cannot_repeat_normalized_wallet_name_per_currency(session):
+def test_user_cannot_have_two_wallets_per_currency(session):
     user = create_user(session, whatsapp_id="5491100000009")
     create_wallet(session, user, moneda="ARS", nombre="Efectivo")
 
     with pytest.raises(IntegrityError):
-        create_wallet(session, user, moneda="ARS", nombre="  efectivo  ")
+        create_wallet(session, user, moneda="ARS", nombre="Otra")
         session.commit()
 
 
@@ -203,6 +203,9 @@ def test_metadata_declares_wallet_integrity_objects():
         constraint.name for constraint in wallet_table.constraints
     }
     assert {
-        "billetera_usuario_moneda_nombre_uidx",
+        "billetera_usuario_moneda_uidx",
         "billetera_usuario_id_idx",
     } <= {index.name for index in wallet_table.indexes}
+    assert "billetera_usuario_moneda_nombre_uidx" not in {
+        index.name for index in wallet_table.indexes
+    }

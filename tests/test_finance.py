@@ -426,6 +426,19 @@ def test_register_movement_integrity_error_rechecks_and_returns_persistence_erro
         "_find_duplicate",
         staticmethod(lambda session, message_id: next(duplicate_checks)),
     )
+    monkeypatch.setattr(
+        finance_module.WalletService,
+        "resolve_selection",
+        staticmethod(lambda *args, **kwargs: type(
+            "Selection", (), {
+                "status": "selected",
+                "wallet_id": str(uuid.uuid4()),
+                "wallet_name": "Fixture",
+                "currency": "ARS",
+                "message": "",
+            }
+        )()),
+    )
 
     result = FinanceService.register_movement_with_category(
         sender_phone="5491111111111",

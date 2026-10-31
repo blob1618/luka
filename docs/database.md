@@ -22,7 +22,7 @@ Tablas oficiales de Release 1:
 - `public.usuario` — usuarios oficiales del sistema.
 - `public.categorias` — categorías para clasificar movimientos.
 - `public.movimientos_financieros` — entidad central para ingresos y egresos.
-- `public.billetera` — billeteras propias del usuario, separadas por moneda (fase de expansión de STK-237).
+- `public.billetera` — una billetera activa por usuario y moneda (`ARS`/`USD`); índice único `(usuario_id, moneda)` desde STK-258.
 - `public.limite_categoria` — presupuestos mensuales por categoría.
 - `public.recordatorio` — recordatorios financieros del usuario.
 - `public.evento` — auditoría y trazabilidad de acciones relevantes.

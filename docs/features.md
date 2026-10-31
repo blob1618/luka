@@ -17,9 +17,9 @@ financiero: `ingreso` o `egreso`. El backend confirma únicamente después de pe
 - La moneda se normaliza a mayúsculas y admite `ARS` o `USD`. Si no se indica moneda,
   el registro busca una billetera `ARS`; si se proporciona solo una billetera explícita,
   se infiere su moneda. Si se indican ambas y no coinciden, el registro se rechaza.
-- El movimiento se vincula a una billetera propia compatible. Una única billetera de la
-  moneda se selecciona automáticamente; varias requieren selección explícita y ninguna
-  produce `needs_wallet_creation`. El writer no crea billeteras ni elige entre varias.
+- El movimiento se vincula a la única billetera propia de esa moneda. Si no hay ninguna,
+  el registro no se persiste y responde `needs_wallet_creation` con una guía para crearla.
+  El writer no crea billeteras.
 - La fecha del movimiento se resuelve contra la fecha actual cuando el mensaje usa
   expresiones relativas («ayer», «el martes») y por defecto es hoy. «Hoy», «ayer»,
   «anteayer» y «pasado mañana» se resuelven desde el texto citado aunque el modelo los
@@ -40,8 +40,7 @@ Estados posibles del registro:
 | `duplicate` | El `whatsapp_message_id` ya existía; no se inserta otra fila y la respuesta visible se suprime. |
 | `user_not_found` | No hay usuario vinculado a ese WhatsApp; no se persiste nada. |
 | `invalid_data` | Faltan datos válidos (monto, tipo o descripción); se pide reformular. |
-| `needs_wallet_creation` | El usuario no tiene una billetera para la moneda; no se registra el movimiento. |
-| `needs_wallet_selection` | Hay varias billeteras compatibles; no se registra hasta elegir una. |
+| `needs_wallet_creation` | El usuario no tiene una billetera para la moneda; no se registra el movimiento y se guía a crearla. |
 | `invalid_selection` / `currency_mismatch` | La billetera no existe, no pertenece al usuario o no coincide con la moneda; no se registra. |
 | `persistence_error` | La escritura falló; no se confirma el registro. |
 | `not_a_movement` | El mensaje no es un movimiento financiero registrable. |
@@ -56,10 +55,9 @@ procesa en silencio para no repetir una confirmación ya enviada.
 
 - `update_movement` aplica solo los campos mencionados por el usuario: importe,
   descripción, categoría, moneda, tipo, fecha y billetera. El resto del movimiento se
-  conserva. Cambiar moneda o billetera valida conjuntamente propiedad y moneda; si hay
-  más de una billetera compatible se pide elegir antes de confirmar y el movimiento
-  queda intacto hasta entonces. Repetir la moneda que el movimiento ya tiene no exige
-  elegir billetera.
+  conserva. Cambiar moneda o billetera valida conjuntamente propiedad y moneda contra la
+  única billetera de esa moneda; si no existe, se pide crearla antes de confirmar. Repetir
+  la moneda que el movimiento ya tiene no exige cambiar de billetera.
 - La operación exige usuario propietario, movimiento activo y que los datos coincidan
   con lo mostrado (`stale_context` si cambió). La categoría nueva debe ser una categoría
   activa del usuario.
@@ -114,14 +112,13 @@ procesa en silencio para no repetir una confirmación ya enviada.
 
 ## Billeteras
 
-- Cada usuario puede tener billeteras en `ARS` y `USD`. Los movimientos financieros se asocian obligatoriamente a una billetera (`billetera_id`).
-- Creación de billeteras (`create_wallet`): Requiere nombre y moneda (`ARS` o `USD`). Si se omite la moneda, se asume `ARS` por defecto. No admite nombres duplicados para la misma moneda en el mismo usuario.
+- Cada usuario tiene **una billetera activa por moneda** (`ARS` y `USD`). Los movimientos financieros se asocian obligatoriamente a una billetera (`billetera_id`).
+- Creación de billeteras (`create_wallet`): pide la moneda (`ARS` o `USD`) y, opcionalmente, el nombre. Sin nombre usa «Pesos» para ARS y «Dólares» para USD. Si el usuario ya tiene una billetera en esa moneda, se rechaza sin escribir y se informa cuál es la activa, ofreciendo usarla o renombrarla.
+- Renombre (`rename_wallet`): cambia el nombre de la billetera propia; requiere confirmación como el resto de las mutaciones.
 - Consulta de saldos (`list_wallets` / `query_wallets`): Muestra el saldo actual calculado por billetera y moneda a partir de los ingresos y egresos no anulados. No se mezclan monedas. El acceso está estrictamente aislado por usuario.
-- Desambiguación en registro de movimientos: Si el usuario tiene una sola billetera en la moneda del movimiento, se auto-selecciona. Si tiene múltiples billeteras en esa moneda y no indicó una (tanto con categoría inferida como sin categoría), el registro no persiste filas, almacena el `PendingMovement` en Redis con `awaiting_wallet_selection` y presenta las opciones numeradas (1..N).
-- Selección multi-turno: Al recibir la respuesta del usuario, se valida que sea un ordinal dentro de las opciones presentadas. Una opción inválida o ajena no registra y vuelve a solicitar una opción válida. «cancelar» y «reiniciar» descartan el estado pendiente sin escribir.
-- Manejo determinista sin billeteras: Si el usuario no tiene ninguna billetera en la moneda del movimiento (`needs_wallet_creation`), se devuelve un mensaje determinista indicándole crear una billetera primero. El texto del modelo (`reply_text`) se suprime por completo y no se realizan escrituras.
-- Persistencia y confirmación: Al recibir una opción válida, `FinanceService` revalida propiedad y moneda y persiste el movimiento con su importe `Decimal` exacto, fecha contable y el `whatsapp_message_id` original. Si se requiere crear una nueva categoría, se preserva la billetera seleccionada (`wallet_id`) y la fecha resuelta (`resolved_fecha_movimiento`) a través del paso de confirmación y corrección de categoría.
-- Cobertura automatizada del simulador: `tests/test_wallet_simulator_acceptance.py` valida de extremo a extremo el flujo de billeteras mediante `WebhookModeService.send_message` (mismo adaptador que utiliza el simulador Streamlit), con SQLite aislado (`StaticPool`), `FakeRedis` y respuestas LLM deterministas. Verifica la creación de billeteras, desambiguación con cero escrituras ante múltiples opciones, selección válida, consulta de saldos independientes por moneda (ARS/USD), anulación lógica y aislamiento estricto entre usuarios. La ruta automatizada no realiza llamadas reales a WhatsApp/Meta, proveedores LLM ni servicios remotos y no reemplaza la comprobación manual del simulador interactivo con Redis de testing, que permanece pendiente como criterio del DoD.
+- Registro de movimientos: la billetera de la moneda se selecciona automáticamente; no hay selector de billeteras. Si no existe, se devuelve `needs_wallet_creation` con una guía para crearla, sin escrituras ni texto ambiguo.
+- Persistencia y confirmación: `FinanceService` revalida propiedad y moneda y persiste el movimiento con su importe `Decimal` exacto, fecha contable y el `whatsapp_message_id` original. Si se requiere crear una nueva categoría, se preserva la billetera (`wallet_id`) y la fecha resuelta (`resolved_fecha_movimiento`) a través del paso de confirmación y corrección de categoría.
+- Cobertura automatizada del simulador: `tests/test_wallet_simulator_acceptance.py` valida de extremo a extremo el flujo de billeteras mediante `WebhookModeService.send_message` (mismo adaptador que utiliza el simulador Streamlit), con SQLite aislado (`StaticPool`), `FakeRedis` y respuestas LLM deterministas. Verifica la creación de una billetera por moneda, el rechazo de duplicados, la consulta de saldos independientes por moneda (ARS/USD), la anulación lógica y el aislamiento estricto entre usuarios. La ruta automatizada no realiza llamadas reales a WhatsApp/Meta, proveedores LLM ni servicios remotos y no reemplaza la comprobación manual del simulador interactivo con Redis de testing, que permanece pendiente como criterio del DoD.
 
 ## Capital consolidado y cotizaciones
 

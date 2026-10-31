@@ -50,7 +50,7 @@ def test_register_whatsapp_text_auto_select_ars(finance_db):
     mov = session.query(MovimientoFinanciero).filter(MovimientoFinanciero.id == uuid.UUID(res.movement_id)).first()
     assert mov is not None and str(mov.billetera_id) == wallet.wallet_id
 
-def test_register_missing_and_ambiguous_and_foreign_rejects(finance_db):
+def test_register_missing_and_duplicate_and_foreign_rejects(finance_db):
     session = finance_db['session']
     u1 = make_user(session, 'U1', '5491111111111')
     u2 = make_user(session, 'U2', '5492222222222')
@@ -60,9 +60,7 @@ def test_register_missing_and_ambiguous_and_foreign_rejects(finance_db):
     assert res_usd.status == 'needs_wallet_creation'
     res_for = FinanceService.register_movement_with_category(sender_phone=u1.whatsapp_id, whatsapp_message_id='m-for', original_text='taxi', wallet_id=w_foreign.wallet_id, movement_type='egreso', amount=100, description='Taxi', currency=None, economic_effect='cash_flow')
     assert res_for.status == 'invalid_selection'
-    WalletService.create_wallet(u1.id, 'W1-bis', 'ARS')
-    res_amb = FinanceService.register_movement_with_category(sender_phone=u1.whatsapp_id, whatsapp_message_id='m-amb', original_text='taxi', movement_type='egreso', amount=100, description='Taxi', currency=None, economic_effect='cash_flow')
-    assert res_amb.status == 'needs_wallet_selection'
+    assert WalletService.create_wallet(u1.id, 'W1-bis', 'ARS').status == 'wallet_already_exists'
     assert session.query(MovimientoFinanciero).count() == 0
 
 def test_register_currency_mismatch_and_amount_validation(finance_db):
@@ -88,7 +86,7 @@ def test_own_duplicate_and_foreign_duplicate_privacy(finance_db):
     res_foreign = FinanceService.register_movement_with_category(sender_phone=u2.whatsapp_id, whatsapp_message_id='msg-shared', original_text='gaste 500', movement_type='egreso', amount='500.00', description='Cena', currency=None, economic_effect='cash_flow')
     assert res_foreign.status == 'invalid_data' and res_foreign.movement_id is None
 
-def test_update_movement_currency_wallet_and_reject_ambiguity_stale(finance_db):
+def test_update_movement_currency_wallet_and_reject_stale(finance_db):
     session = finance_db['session']
     user = make_user(session)
     w_ars = WalletService.create_wallet(user.id, 'Pesos', 'ARS')
@@ -104,12 +102,7 @@ def test_update_movement_currency_wallet_and_reject_ambiguity_stale(finance_db):
     mov = session.query(MovimientoFinanciero).filter(MovimientoFinanciero.id == uuid.UUID(res.movement_id)).first()
     assert mov.descripcion == 'Original' and mov.moneda == 'ARS'
     assert str(mov.billetera_id) == w_ars.wallet_id
-    WalletService.create_wallet(user.id, 'Otros dolares', 'USD')
     before = (mov.cantidad, mov.descripcion, mov.fecha_movimiento, mov.moneda, mov.billetera_id)
-    ambiguous = FinanceService.update_movement(user.whatsapp_id, res.movement_id, {'currency': 'USD', 'amount': '25.50', 'description': 'Not saved', 'fecha': '2026-10-04'})
-    assert ambiguous.status == 'needs_wallet_selection'
-    session.expire_all()
-    assert (mov.cantidad, mov.descripcion, mov.fecha_movimiento, mov.moneda, mov.billetera_id) == before
     upd_ok = FinanceService.update_movement(sender_phone=user.whatsapp_id, movement_id=res.movement_id, changes={'currency': 'USD', 'wallet_id': w_usd.wallet_id})
     assert upd_ok.status == 'updated' and upd_ok.after.moneda == 'USD' and (upd_ok.after.wallet_id == w_usd.wallet_id)
     assert upd_ok.after.cantidad == before[0]

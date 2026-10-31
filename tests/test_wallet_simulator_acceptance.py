@@ -1,5 +1,4 @@
 """Wallet simulation through real dispatcher, local delivery callbacks and visible history."""
-from datetime import datetime
 from decimal import Decimal
 from uuid import uuid4
 from unittest.mock import AsyncMock
@@ -36,45 +35,37 @@ async def test_streamlit_simulator_wallet_flow_keeps_selection_currency_and_annu
         result=await service.send_message('',phone,'gemini','prompts/core_prompt.md',option_id=option['id'],reply_type=option['reply_type'],title=option['title'])
         assert result.status=='completed' and result.error is None
         return result
-    for name,currency in [('Efectivo','ARS'),('Mercado Pago','ARS'),('Dólares','USD')]:
+    for name,currency in [('Efectivo','ARS'),('Dólares','USD')]:
         preview=await send_tool('create_wallet',{'name':name,'currency':currency})
         await confirm(preview)
     with isolated_db() as session:
         wallets={w.nombre:w for w in session.query(Billetera).filter_by(usuario_id=owner)}
-        wallets['Efectivo'].creado_en=datetime(2026,10,12,10,0,0)
-        wallets['Mercado Pago'].creado_en=datetime(2026,10,12,10,0,1)
         session.commit()
         ids={name:row.id for name,row in wallets.items()}
     def expense(kwargs):
         category=next(c['ref'] for c in initial(kwargs)['categories'] if c['name']=='Comida')
         return [('register_movement',{'economic_effect':'cash_flow','movement_type':'egreso','amount':'5400','currency':'ARS','description':'almuerzo','category_ref':category,'date_spec':{'kind':'absent'}})]
-    ambiguous=await send_tool('register_movement',expense)
-    assert 'Efectivo' in ambiguous.reply_text and 'Mercado Pago' in ambiguous.reply_text
+    preview=await send_tool('register_movement',expense)
+    assert 'Efectivo' in preview.reply_text
     with isolated_db() as session:
         assert session.query(MovimientoFinanciero).count()==0
-    def select(kwargs):
-        context=initial(kwargs)
-        operation=context['operations'][-1]
-        ref=next(x['ref'] for x in context['selection_options'].values() if x['label']=='Mercado Pago')
-        return [('operation_amend',{'ref':operation['ref'],'expected_revision':operation['revision'],'changes':{'wallet_ref':ref}})]
-    selected=await send_tool('operation_amend',select,'Mercado Pago')
-    await confirm(selected)
+    await confirm(preview)
     with isolated_db() as session:
         row=session.query(MovimientoFinanciero).one()
-        assert row.billetera_id==ids['Mercado Pago'] and row.cantidad==5400 and row.moneda=='ARS'
+        assert row.billetera_id==ids['Efectivo'] and row.cantidad==5400 and row.moneda=='ARS'
     usd=await send_tool('register_movement',{'economic_effect':'cash_flow','movement_type':'ingreso','amount':'375','currency':'USD','description':'trabajo freelance','date_spec':{'kind':'absent'}})
     await confirm(usd)
     before=await send_tool('wallet_balances',{})
     assert all(name in before.reply_text for name in ids) and 'Privada' not in before.reply_text
     balances={b.name:Decimal(str(b.balance)) for b in WalletService.get_balances_own_user(owner)}
-    assert balances=={'Efectivo':Decimal(0),'Mercado Pago':Decimal(-5400),'Dólares':Decimal(375)}
+    assert balances=={'Efectivo':Decimal(-5400),'Dólares':Decimal(375)}
     def annul(kwargs):
         ref=next(ref for ref,item in initial(kwargs)['references'].items() if item['kind']=='movement' and item['details']['description']=='trabajo freelance')
         return [('annul_movements',{'movement_refs':[ref]})]
     preview=await send_tool('annul_movements',annul)
     await confirm(preview)
     balances={b.name:Decimal(str(b.balance)) for b in WalletService.get_balances_own_user(owner)}
-    assert balances=={'Efectivo':Decimal(0),'Mercado Pago':Decimal(-5400),'Dólares':Decimal(0)}
+    assert balances=={'Efectivo':Decimal(-5400),'Dólares':Decimal(0)}
     foreign=WalletService.create_wallet(other,'Privada','ARS')
     assert FinanceService.register_movement_with_category(foreign_phone,'foreign-fixture','Ingreso privado','ingreso',Decimal(999999),'ARS','Privado',wallet_id=foreign.wallet_id,economic_effect='cash_flow').status=='registered'
     last=await send_tool('wallet_balances',{})

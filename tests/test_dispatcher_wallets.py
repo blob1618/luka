@@ -11,34 +11,24 @@ ingress=scenarios.ingress
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('with_category',[False,True])
-async def test_ambiguity_prompts_wallet_selection_zero_writes(ingress,accounts,with_category):
+async def test_registration_uses_single_wallet_without_asking(ingress,accounts,with_category):
     with accounts[0]() as session:
-        session.add(Billetera(usuario_id=accounts[1],nombre='Segunda ARS',moneda='ARS'))
-        session.commit()
         before=session.query(MovimientoFinanciero).count()
     def plan(kwargs):
         patch={'category_ref':initial(kwargs)['categories'][0]['ref']} if with_category else {}
         return [('register_movement',register_now(**patch))]
-    question=await ingress.send('Gasto',steps=[plan])
-    assert 'billetera' in question.reply_text and 'Caja A' in question.reply_text and 'Segunda ARS' in question.reply_text
+    preview=await ingress.send('Gasto',steps=[plan])
+    assert 'billetera Caja A' in preview.reply_text and 'Segunda' not in preview.reply_text
     with accounts[0]() as session:
         assert session.query(MovimientoFinanciero).count()==before
-    def select(kwargs):
-        op=initial(kwargs)['operations'][0]
-        ref=next(item['ref'] for item in initial(kwargs)['selection_options'].values() if item['label']=='Segunda ARS')
-        return [('operation_amend',{'ref':op['ref'],'expected_revision':op['revision'],'changes':{'wallet_ref':ref}})]
-    preview=await ingress.send('Segunda ARS',steps=[select])
     await ingress.confirm(preview)
     with accounts[0]() as session:
         new=session.query(MovimientoFinanciero).filter(MovimientoFinanciero.whatsapp_message_id.like('stage5-%')).one()
-        assert new.billetera_id==session.query(Billetera).filter_by(nombre='Segunda ARS').one().id and new.cantidad==106
+        assert new.billetera_id==accounts[3] and new.cantidad==106
 
 
 @pytest.mark.asyncio
-async def test_cancel_wallet_selection_clears_state(ingress,accounts):
-    with accounts[0]() as session:
-        session.add(Billetera(usuario_id=accounts[1],nombre='Segunda',moneda='ARS'))
-        session.commit()
+async def test_cancel_pending_registration_clears_state(ingress,accounts):
     await ingress.tool('register_movement',register_now())
     await ingress.send('cancelar')
     state=await assistant_state.read(accounts[1])
@@ -48,22 +38,15 @@ async def test_cancel_wallet_selection_clears_state(ingress,accounts):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change',['deleted','currency','owner'])
-async def test_multiturn_wallet_changed_after_preview_prevents_write(ingress,accounts,change):
+async def test_wallet_deleted_after_preview_prevents_write(ingress,accounts):
     def plan(kwargs):
         wallet=next(w['ref'] for w in initial(kwargs)['wallets'] if w['name']=='Caja A')
         return [('register_movement',register_now(wallet_ref=wallet))]
     preview=await ingress.send('Gasté',steps=[plan])
     with accounts[0]() as session:
         row=session.get(Billetera,accounts[3])
-        if change=='deleted':
-            # Existing movements reference this wallet; a deletion flag is not in this schema.
-            session.query(MovimientoFinanciero).filter_by(billetera_id=row.id).delete()
-            session.delete(row)
-        elif change=='currency':
-            row.moneda='USD'
-        else:
-            row.usuario_id=accounts[2]
+        session.query(MovimientoFinanciero).filter_by(billetera_id=row.id).delete()
+        session.delete(row)
         session.commit()
         before=session.query(MovimientoFinanciero).count()
     rejected=await ingress.confirm(preview)
@@ -73,13 +56,26 @@ async def test_multiturn_wallet_changed_after_preview_prevents_write(ingress,acc
 
 
 @pytest.mark.asyncio
-async def test_create_wallet_intent(ingress,accounts):
+async def test_create_wallet_reports_existing_wallet(ingress,accounts):
     preview=await ingress.tool('create_wallet',{'name':'Nueva','currency':'USD'})
     with accounts[0]() as session:
         assert session.query(Billetera).filter_by(nombre='Nueva').count()==0
+    result=await ingress.confirm(preview)
+    assert 'USD A' in result.reply_text
+    with accounts[0]() as session:
+        assert session.query(Billetera).filter_by(usuario_id=accounts[1],nombre='Nueva',moneda='USD').count()==0
+
+
+@pytest.mark.asyncio
+async def test_rename_wallet_intent(ingress,accounts):
+    def plan(kwargs):
+        ref=next(w['ref'] for w in initial(kwargs)['wallets'] if w['name']=='Caja A')
+        return [('rename_wallet',{'wallet_ref':ref,'name':'Caja principal'})]
+    preview=await ingress.send('Renombrá Caja A',steps=[plan])
+    assert 'Caja principal' in preview.reply_text
     await ingress.confirm(preview)
     with accounts[0]() as session:
-        assert session.query(Billetera).filter_by(usuario_id=accounts[1],nombre='Nueva',moneda='USD').count()==1
+        assert session.query(Billetera).filter_by(usuario_id=accounts[1],nombre='Caja principal').count()==1
 
 
 @pytest.mark.asyncio

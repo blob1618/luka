@@ -15,6 +15,6 @@ def test_prompt_has_bounded_capability_and_confirmation_rules():
 
 def test_prompt_domains_live_in_typed_catalog_not_global_examples():
     registry=build_tool_registry()
-    assert len(registry.tools)==42 and 'commit_command' not in registry.tools
+    assert len(registry.tools)==43 and 'commit_command' not in registry.tools
     schema=RegisterMovement.model_json_schema()
     assert 'economic_effect' in schema['properties'] and 'cash_flow' in str(schema)
