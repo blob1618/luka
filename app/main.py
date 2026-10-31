@@ -143,6 +143,11 @@ async def lifespan(app: FastAPI):
     if ingress_warning:
         logger.warning(ingress_warning)
 
+    if not os.getenv("WHATSAPP_REMINDER_TEMPLATE_NAME", "").strip():
+        logger.warning(
+            "WHATSAPP_REMINDER_TEMPLATE_NAME no configurado: los recordatorios fuera de la "
+            "ventana de 24h no se envían")
+
     try:
         start_scheduler()
         yield
