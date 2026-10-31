@@ -62,3 +62,19 @@ def test_version_reports_commit_and_migration_count(monkeypatch):
     body = client.get('/version').json()
     assert body['commit'] == 'deadbeef' and body['service'] == 'luka-web'
     assert body['migrations_local'] >= 2
+
+
+def test_version_reports_deepseek_model(monkeypatch):
+    monkeypatch.setenv('LLM_PROVIDER', 'deepseek')
+    monkeypatch.setenv('DEEPSEEK_MODEL', 'deepseek-flash')
+    body = client.get('/version').json()
+    assert body['llm_provider'] == 'deepseek'
+    assert body['llm_model'] == 'deepseek-flash'
+
+
+def test_version_reports_default_provider_and_model(monkeypatch):
+    monkeypatch.delenv('LLM_PROVIDER', raising=False)
+    monkeypatch.delenv('GEMINI_MODEL', raising=False)
+    body = client.get('/version').json()
+    assert body['llm_provider'] == 'gemini'
+    assert body['llm_model'] == 'gemini-3.1-flash-lite'
