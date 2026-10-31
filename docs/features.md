@@ -265,6 +265,8 @@ procesa en silencio para no repetir una confirmación ya enviada.
 
 ## Recordatorios
 
+La conexión opcional con Google Calendar se solicita por WhatsApp con «conectar calendario». Tras la autorización OAuth, los recordatorios manuales e inteligentes aceptados se reflejan como eventos mensuales privados. Los cambios se reconcilian en el siguiente ciclo del scheduler; si Google falla, el recordatorio interno permanece. Ver [sincronización con Google Calendar](google-calendar-sync.md).
+
 - Un recordatorio de pago tiene concepto, día del mes (1-31) y, opcionalmente, monto y
   moneda (`ARS` por defecto).
 - El título es único por usuario. Si ya existe uno con el mismo nombre, se inicia un

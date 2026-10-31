@@ -1,13 +1,60 @@
 """Unified ingress: onboarding/activity, tools and structured user callbacks."""
 import asyncio
+import logging
+import re
+import unicodedata
 
+from app.api.whatsapp import WhatsAppCTAURL
 from app.services.dispatch_contract import DispatchResult
 from app.services.onboarding import OnboardingDecision, OnboardingService, record_activity
 from app.services.conversation_flow_runtime import ConversationFlowRuntime
 from app.services.assistant_transport import assemble_reply
 from app.services.assistant_runtime import run_for_phone
 from app.services.assistant_actions import process_interaction
+from app.services.google_calendar import CalendarConfigurationError, authorization_url_for_phone
 from app.services.telemetry import track_phase
+
+logger = logging.getLogger(__name__)
+
+
+async def _handle_calendar_connect(sender_phone: str) -> DispatchResult:
+    try:
+        url = await asyncio.to_thread(authorization_url_for_phone, sender_phone)
+    except CalendarConfigurationError:
+        logger.warning("[CALENDAR_AUTH] integration_not_configured")
+        url = None
+    except Exception as exc:
+        logger.warning("[CALENDAR_AUTH] link_error=%s", type(exc).__name__)
+        url = None
+    if not url:
+        return DispatchResult(
+            reply_text="No pude preparar la conexión con Google Calendar. Intentá más tarde.",
+            service_invoked="google_calendar",
+            intent="calendar_connect",
+        )
+    message = WhatsAppCTAURL(
+        body=(
+            "📅 Tocá el botón para autorizar a Luka a gestionar eventos de pagos en "
+            "tu calendario de Google. El enlace vence en 10 minutos y se usa una sola vez."
+        ),
+        display_text="Conectar calendario",
+        url=url,
+    )
+    return DispatchResult(
+        reply_text=message.body,
+        reply_message=message,
+        service_invoked="google_calendar",
+        intent="calendar_connect",
+    )
+
+
+def _is_calendar_connect(text: str) -> bool:
+    normalized = unicodedata.normalize("NFKD", text.casefold())
+    normalized = "".join(c for c in normalized if not unicodedata.combining(c))
+    return bool(
+        re.search(r"\b(conectar|conecta|conectame|vincular|vincula|sincronizar|sincroniza)\b", normalized)
+        and re.search(r"\b(calendario|calendar)\b", normalized)
+    )
 
 
 async def _enter(sender_phone):
@@ -39,6 +86,8 @@ async def process_incoming_message(sender_phone: str, text_body: str,
     gate = await _enter(sender_phone)
     if gate is not None:
         return gate
+    if _is_calendar_connect(text_body):
+        return await _handle_calendar_connect(sender_phone)
     answer = await run_for_phone(sender_phone, whatsapp_message_id, text_body, history=conversation_history)
     return await assemble_reply(sender_phone, answer)
 

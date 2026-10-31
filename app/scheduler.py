@@ -26,6 +26,7 @@ from app.models.database import (
     Usuario,
 )
 from app.services.recurring_expense import RecurringExpenseService
+from app.services.google_calendar import reconcile_google_calendar
 
 scheduler = AsyncIOScheduler()
 logger = logging.getLogger(__name__)
@@ -761,6 +762,14 @@ async def check_proactive_prompts(_now: datetime | None = None):
 
 def start_scheduler():
     scheduler.add_job(check_reminders, "interval", minutes=5)
+    scheduler.add_job(
+        reconcile_google_calendar,
+        "interval",
+        minutes=1,
+        id="google_calendar_reconciliation",
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.add_job(
         check_proactive_prompts,
         "interval",

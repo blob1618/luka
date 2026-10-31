@@ -68,6 +68,9 @@ Copiar `.env.example` a `.env` y completar solo lo necesario. Nunca subir `.env`
 | `ONBOARDING_MAX_RESENDS` | Opcional | Default del ejemplo: `3`. |
 | `WHATSAPP_REMINDER_TEMPLATE_NAME` | Para recordatorios de pago | Template de WhatsApp aprobado por Meta. El ejemplo usa `recordatorio_pago_vencimiento`. |
 | `PROACTIVE_PROMPT_HOUR` | Opcional | Hora local (0-23, America/Argentina/Buenos_Aires) del recordatorio proactivo diario. Sin valor o inválida, la feature queda apagada. |
+| `GOOGLE_CALENDAR_CLIENT_ID` / `GOOGLE_CALENDAR_CLIENT_SECRET` | STK-252 | Cliente OAuth web de Google Cloud con Calendar API habilitada. |
+| `GOOGLE_CALENDAR_REDIRECT_URI` | STK-252 | URL HTTPS exacta del callback del backend registrada en Google Cloud. |
+| `GOOGLE_CALENDAR_FERNET_KEY` | STK-252 | Clave estable para cifrar refresh tokens de usuarios en la base. |
 | `DASHBOARD_LOGIN_TTL_MINUTES` | Opcional | Default del ejemplo: `10`. |
 | `DASHBOARD_LOGIN_RESEND_COOLDOWN_SECONDS` | Opcional | Default del ejemplo: `60`. |
 | `DASHBOARD_LOGIN_MAX_RESENDS` | Opcional | Default del ejemplo: `3`. |

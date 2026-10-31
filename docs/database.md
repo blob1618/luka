@@ -36,6 +36,8 @@ Tablas oficiales de Release 1:
 
 `public.usuario.proactivo_habilitado` (default `true`) y `public.usuario.proactivo_ultimo_envio` (fecha local del último aviso) sostienen el recordatorio proactivo diario: el usuario puede desactivarlo por chat y el scheduler garantiza como máximo un aviso por día. Se incorporan mediante `20260918120000_add_usuario_proactive_reminders.sql` y deben aplicarse antes del código que las consulta.
 
+La migración `20261031120000_stk252_google_calendar.sql` agrega `google_calendar_connection` (refresh token cifrado por usuario), `google_calendar_oauth_state` (estado OAuth de un solo uso) y las columnas `google_calendar_event_id` y `google_calendar_synced_fingerprint` en `recordatorio`. Las tablas nuevas tienen RLS habilitado y sin acceso de `anon` ni `authenticated`; solo el backend accede a ellas. Ver [operación de Calendar](google-calendar-sync.md).
+
 `public.onboarding_invitacion` conserva el WhatsApp destinatario, estado, vencimiento, contadores y eventual usuario asociado. Solo puede haber una invitación `pendiente` por WhatsApp. La matriz de estado exige: `pendiente` y `vencida` sin usuario ni fechas terminales; `consumida` con usuario y `consumida_en`, pero sin `revocada_en`; y `revocada` solo con `revocada_en`. La FK al usuario usa `ON DELETE RESTRICT` para preservar la trazabilidad de invitaciones consumidas. El token original nunca se persiste: la tabla almacena únicamente `token_hash`, que es único y no vacío.
 
 `public.dashboard_login_link` registra enlaces de acceso al dashboard: `token_hash` único y no vacío, estados `pendiente`/`consumido`/`vencido` con coherencia entre estado y `consumido_en`, y a lo sumo un enlace `pendiente` por usuario. La FK a `usuario` usa `ON DELETE CASCADE`.
