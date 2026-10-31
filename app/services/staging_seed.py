@@ -25,7 +25,6 @@ def reset_test_user(phone: str, name: str = 'Staging') -> dict:
                 nombre=name,
                 email=f'{phone}@staging.invalid',
                 whatsapp_id=phone,
-                auth_user_id=uuid4(),
             )
             session.add(user)
             session.flush()

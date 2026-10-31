@@ -49,6 +49,7 @@ def test_seed_creates_user_with_one_wallet_and_resets_state(isolated_db):
 
     with isolated_db() as session:
         user = session.query(Usuario).filter_by(whatsapp_id=PHONE).one()
+        assert user.auth_user_id is None
         wallet = session.query(Billetera).filter_by(usuario_id=user.id).one()
         category = Categoria(usuario_id=user.id, nombre='Comida')
         session.add(category)
