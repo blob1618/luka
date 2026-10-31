@@ -446,13 +446,7 @@ class Billetera(Base):
     __table_args__ = (
         CheckConstraint("trim(nombre) <> ''", name="billetera_nombre_no_vacio_check"),
         UniqueConstraint("id", "usuario_id", "moneda", name="billetera_id_usuario_moneda_key"),
-        Index(
-            "billetera_usuario_moneda_nombre_uidx",
-            "usuario_id",
-            "moneda",
-            func.lower(func.trim(nombre)),
-            unique=True,
-        ),
+        Index("billetera_usuario_moneda_uidx", "usuario_id", "moneda", unique=True),
         Index("billetera_usuario_id_idx", "usuario_id"),
     )
 

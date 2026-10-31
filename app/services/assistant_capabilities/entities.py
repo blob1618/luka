@@ -2,10 +2,10 @@
 import asyncio
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from sqlalchemy import func
 
-from app.models.database import Categoria, MovimientoFinanciero
+from app.models.database import Billetera, Categoria, MovimientoFinanciero
 from app.services import finance
 from app.services.assistant_contracts import EntityReference, FrozenModel, OperationReference, ReferenceToken, amount_text
 from app.services.assistant_capabilities.common import committed, data, missing, operation_tool, prepared, read_tool, require_status
@@ -53,8 +53,27 @@ class WalletDraft(FrozenModel):
     name: str | None = Field(title='el nombre', default=None, min_length=1, max_length=100)
     currency: str | None = Field(title='la moneda', default=None, pattern=r'^[A-Z]{3}$')
 
+    @field_validator('currency')
+    @classmethod
+    def _supported_currency(cls, value):
+        if value is not None and value not in {'ARS', 'USD'}:
+            raise ValueError('La moneda debe ser ARS o USD')
+        return value
+
 
 class WalletPrepared(FrozenModel):
+    name: str | None = None
+    currency: str
+
+
+class WalletRenameDraft(FrozenModel):
+    wallet_ref: ReferenceToken = Field(title='la billetera que querés renombrar')
+    name: str = Field(title='el nuevo nombre', min_length=1, max_length=100)
+
+
+class WalletRenamePrepared(FrozenModel):
+    wallet_id: str
+    original_name: str
     name: str
     currency: str
 
@@ -163,20 +182,58 @@ def category_operation(action):
 
 async def prepare_wallet(context, operation):
     draft = WalletDraft.model_validate(operation.draft_payload)
-    absent = missing(draft, ('name', 'currency'))
-    return absent or prepared(WalletPrepared(**draft.model_dump()), f'Crear billetera {draft.name}, moneda {draft.currency}.')
+    absent = missing(draft, ('currency',))
+    if absent:
+        return absent
+    label = f'«{draft.name}»' if draft.name else f'en {draft.currency}'
+    return prepared(WalletPrepared(**draft.model_dump()), f'Crear billetera {label}.')
 
 
 async def commit_wallet(context, operation, confirmation):
     payload = WalletPrepared.model_validate(operation.prepared_payload)
     result = require_status(await asyncio.to_thread(WalletService.create_wallet, context.turn.owner_id,
-        payload.name, payload.currency), {'created', 'already_exists'})
-    label = {'created': 'creada', 'already_exists': 'ya existía'}.get(result.status, result.status)
-    return committed(context, f'Billetera {result.name or payload.name}: {label}.')
+        payload.name, payload.currency), {'created', 'wallet_already_exists'})
+    if result.status == 'wallet_already_exists':
+        return committed(context, f'Ya tenés una billetera en {payload.currency}: «{result.name}». Usala o renombrala.')
+    return committed(context, f'Billetera «{result.name}» creada.')
+
+
+async def prepare_wallet_rename(context, operation):
+    draft = WalletRenameDraft.model_validate(operation.draft_payload)
+    absent = missing(draft, ('wallet_ref', 'name'))
+    if absent:
+        return absent
+    wallet = await context.references.resolve(context.turn, draft.wallet_ref, kind='wallet',
+                                               payload_model=EntityReference)
+
+    def check():
+        with finance.SessionLocal() as session:
+            row = session.query(Billetera).filter(
+                Billetera.id == UUID(wallet.id),
+                Billetera.usuario_id == context.turn.owner_id,
+            ).first()
+            if row is None or row.nombre != wallet.label:
+                raise ValueError('stale_context: la billetera cambió')
+            return row
+
+    row = await asyncio.to_thread(check)
+    payload = WalletRenamePrepared(wallet_id=str(row.id), original_name=row.nombre,
+                                   name=draft.name, currency=row.moneda)
+    return prepared(payload, f'Renombrar billetera «{row.nombre}» a «{draft.name}».')
+
+
+async def commit_wallet_rename(context, operation, confirmation):
+    payload = WalletRenamePrepared.model_validate(operation.prepared_payload)
+    result = require_status(await asyncio.to_thread(WalletService.rename_wallet,
+        context.turn.owner_id, payload.wallet_id, payload.name), {'renamed'})
+    await context.reference('wallet', EntityReference(id=result.wallet_id, label=result.name))
+    return committed(context, f'Billetera renombrada a «{result.name}».')
 
 
 def entity_contracts():
     return (read_tool('list_categories', 'Lista categorías propias activas con referencias seleccionables. Si se piden totales, especificar currency: jamás sumar monedas diferentes.', CategoryQuery, list_categories),
         *(category_operation(action) for action in ('create', 'rename', 'delete')),
-        operation_tool('create_wallet', 'Prepara crear una billetera propia con nombre y moneda explícitos.',
-            WalletDraft, WalletPrepared, prepare_wallet, commit_wallet))
+        operation_tool('create_wallet', 'Prepara crear una billetera propia. Si no se indica nombre, usa «Pesos» para ARS y «Dólares» para USD.',
+            WalletDraft, WalletPrepared, prepare_wallet, commit_wallet),
+        operation_tool('rename_wallet', 'Prepara renombrar la billetera propia indicada.',
+            WalletRenameDraft, WalletRenamePrepared, prepare_wallet_rename, commit_wallet_rename))

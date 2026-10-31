@@ -62,21 +62,25 @@ def test_create_wallet_ars_and_usd(test_db, curr):
     assert res.currency == curr
 
 
-@pytest.mark.parametrize("invalid_name", ["", "   ", None])
-def test_create_wallet_name_empty_rejected(test_db, invalid_name):
+@pytest.mark.parametrize("curr,expected", [("ARS", "Pesos"), ("USD", "Dólares")])
+def test_create_wallet_empty_name_uses_currency_default(test_db, curr, expected):
     session = test_db["session"]
     user = make_user(session)
-    res = WalletService.create_wallet(user.id, invalid_name, "ARS")
-    assert res.status == "invalid_data"
+    res = WalletService.create_wallet(user.id, "", curr)
+    assert res.status == "created"
+    assert res.name == expected
 
 
-def test_create_wallet_normalized_duplicate_rejected(test_db):
+def test_create_wallet_duplicate_currency_rejected(test_db):
     session = test_db["session"]
     user = make_user(session)
     res1 = WalletService.create_wallet(user.id, "Ahorros", "ARS")
     assert res1.status == "created"
     res2 = WalletService.create_wallet(user.id, "  ahorros  ", "ARS")
-    assert res2.status == "name_already_exists"
+    assert res2.status == "wallet_already_exists"
+    assert res2.wallet_id == res1.wallet_id
+    assert res2.name == "Ahorros"
+    assert session.query(Billetera).count() == 1
 
 
 def test_create_wallet_same_name_different_currency(test_db):
@@ -86,6 +90,19 @@ def test_create_wallet_same_name_different_currency(test_db):
     assert res1.status == "created"
     res2 = WalletService.create_wallet(user.id, "Ahorros", "USD")
     assert res2.status == "created"
+
+
+def test_rename_wallet_own_and_foreign(test_db):
+    session = test_db["session"]
+    user = make_user(session)
+    other = make_user(session, "Other", "5491100000099")
+    created = WalletService.create_wallet(user.id, "Efectivo", "ARS")
+    WalletService.create_wallet(other.id, "Ajena", "ARS")
+
+    renamed = WalletService.rename_wallet(user.id, created.wallet_id, "  Principal  ")
+    assert renamed.status == "renamed" and renamed.name == "Principal"
+    assert WalletService.rename_wallet(other.id, created.wallet_id, "X").status == "wallet_not_found"
+    assert WalletService.rename_wallet(user.id, created.wallet_id, "  ").status == "invalid_data"
 
 
 def test_create_wallet_with_caller_session_does_not_commit(test_db):
@@ -160,7 +177,7 @@ def test_wallet_privacy_and_list(test_db):
     assert len(WalletService.list_wallets(u2.id)) == 1
 
 
-def test_resolve_selection_auto_and_ambiguous_and_missing(test_db):
+def test_resolve_selection_auto_and_missing(test_db):
     session = test_db["session"]
     user = make_user(session)
     # 0 wallets -> missing
@@ -170,11 +187,9 @@ def test_resolve_selection_auto_and_ambiguous_and_missing(test_db):
     sel = WalletService.resolve_selection(session, user.id, currency="ARS")
     assert sel.status == "selected"
     assert sel.wallet_id == w1.wallet_id
-    # 2 wallets -> ambiguous
-    WalletService.create_wallet(user.id, "W2", "ARS")
-    ambiguous = WalletService.resolve_selection(session, user.id, currency="ARS")
-    assert ambiguous.status == "needs_wallet_selection"
-    assert {wallet.name for wallet in ambiguous.options} == {"W1", "W2"}
+    # Una segunda billetera de la misma moneda no se crea.
+    assert WalletService.create_wallet(user.id, "W2", "ARS").status == "wallet_already_exists"
+    assert WalletService.resolve_selection(session, user.id, currency="ARS").status == "selected"
 
 
 def test_resolve_selection_explicit_valid_and_mismatch_and_foreign(test_db):
@@ -198,7 +213,7 @@ def test_balances_income_expense_and_annulled_and_empty(test_db):
     session = test_db["session"]
     user = make_user(session)
     w = WalletService.create_wallet(user.id, "Billetera", "ARS")
-    w_empty = WalletService.create_wallet(user.id, "Vacia", "ARS")
+    w_empty = WalletService.create_wallet(user.id, "Vacia", "USD")
     wid = uuid.UUID(w.wallet_id)
 
     session.add_all([
@@ -218,12 +233,11 @@ def test_balances_negative_more_than_five_and_arithmetic(test_db):
     session = test_db["session"]
     user = make_user(session)
     w_neg = WalletService.create_wallet(user.id, "Neg", "USD")
+    WalletService.create_wallet(user.id, "Pesos", "ARS")
     session.add(MovimientoFinanciero(usuario_id=user.id, billetera_id=uuid.UUID(w_neg.wallet_id), tipo="egreso", cantidad=Decimal("150.00"), moneda="USD", descripcion="Gasto"))
-    for i in range(5):
-        WalletService.create_wallet(user.id, f"W{i}", "ARS")
     session.commit()
     balances = WalletService.get_balances_own_user(user.id, session=session)
-    assert len(balances) == 6
+    assert len(balances) == 2
     neg = next(b for b in balances if b.name == "Neg")
     assert neg.balance == Decimal("-150.00")
 
@@ -233,15 +247,14 @@ def test_balances_negative_more_than_five_and_arithmetic(test_db):
     assert WalletService.calculate_balance_arithmetic(inc, exp) == Decimal("2345678901234567890.02345678901234567890")
 
 
-def test_balances_with_multiwallet_usd_foreign_and_multiple_movements(test_db):
+def test_balances_multiwallet_usd_foreign_and_multiple_movements(test_db):
     session = test_db["session"]
     u1 = make_user(session, "MultiU1", "5498888888888")
     u2 = make_user(session, "MultiU2", "5499999999999")
     w1_ars = WalletService.create_wallet(u1.id, "Efectivo ARS", "ARS")
-    w2_ars = WalletService.create_wallet(u1.id, "Banco ARS", "ARS")
     w_usd = WalletService.create_wallet(u1.id, "Ahorro USD", "USD")
     w_foreign = WalletService.create_wallet(u2.id, "Foreign ARS", "ARS")
-    assert session.query(Billetera).count() == 4
+    assert session.query(Billetera).count() == 3
 
     wid1 = uuid.UUID(w1_ars.wallet_id)
     # 7 active movements in w1_ars
@@ -263,10 +276,8 @@ def test_balances_with_multiwallet_usd_foreign_and_multiple_movements(test_db):
     session.commit()
 
     balances = WalletService.get_balances_own_user(u1.id, session=session)
-    assert len(balances) == 3
+    assert len(balances) == 2
     b_map = {b.name: b for b in balances}
     assert b_map["Efectivo ARS"].income == Decimal("700.875")
     assert b_map["Efectivo ARS"].balance == Decimal("700.875")
-    assert b_map["Banco ARS"].balance == Decimal("0")
-    assert b_map["Banco ARS"].wallet_id == w2_ars.wallet_id
     assert b_map["Ahorro USD"].balance == Decimal("-50.25")

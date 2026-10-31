@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.api.whatsapp import WhatsAppReplyButtons, WhatsAppImage
-from app.models.database import AssistantWriteReceipt, Categoria, LimiteCategoria, MovimientoFinanciero, Recordatorio
+from app.models.database import AssistantWriteReceipt, Billetera, Categoria, LimiteCategoria, MovimientoFinanciero, Recordatorio
 from app.services import assistant_state
 from app.services.currency import QuoteType, QuoteUnavailableError, UsdQuote
 from app.services.llm import LLMService
@@ -21,60 +21,34 @@ ingress = ingress_cases.ingress
 
 
 @pytest.mark.asyncio
-async def test_category_choice_then_wallet_choice_remain_distinct_within_one_draft(ingress, accounts):
-    from app.models.database import Billetera
-    wallet_id = uuid4()
-    with accounts[0]() as session:
-        session.add(Billetera(id=wallet_id, usuario_id=accounts[1], nombre='Otra ARS', moneda='ARS'))
-        session.commit()
+async def test_category_choice_then_registration_uses_single_wallet(ingress, accounts):
     await ingress.tool('register_movement', register_now(amount=None))
     await ingress.tool('ask_clarification', {'target_field':'category','reason_code':'ambiguous_reference'})
     state = await assistant_state.read(accounts[1])
     number, choice = next((n, x) for n, x in state['selection_options'].items() if x['label']=='Comida')
     category_ref = choice['ref']
     await ingress.send(number, steps=[amend_active({'category_ref':category_ref})])
-    incomplete = await ingress.send('El importe es 106', steps=[amend_active({'amount':'106'})])
-    state = await assistant_state.read(accounts[1])
-    operation = state['workspace']['operations'][state['workspace']['active_operation_id']]
-    assert not incomplete.assistant_preview_delivery
-    assert operation['draft_payload']['category_ref']==category_ref and operation['draft_payload']['wallet_ref'] is None
-    # The chosen category was consumed by this preparation; only fresh options remain.
-    assert not state.get('selected_ref')
-    assert all(state['references'][x['ref']]['kind']=='wallet' for x in state['selection_options'].values())
-    number, wallet = next((n, x) for n, x in state['selection_options'].items() if x['label']=='Otra ARS')
-    preview = await ingress.send(number, steps=[amend_active({'wallet_ref':wallet['ref']})])
-    assert preview.assistant_preview_delivery and 'Otra ARS' in preview.reply_text
+    preview = await ingress.send('El importe es 106', steps=[amend_active({'amount':'106'})])
+    assert preview.assistant_preview_delivery and 'Caja A' in preview.reply_text
     await ingress.confirm(preview)
-    state = await assistant_state.read(accounts[1])
-    assert not state.get('selected_ref') and not state.get('selection_options')
     with accounts[0]() as session:
         row = session.query(MovimientoFinanciero).filter_by(whatsapp_message_id='stage5-1').one()
-        assert row.billetera_id==wallet_id and row.categoria_id==accounts[4] and row.cantidad==106
+        assert row.billetera_id==accounts[3] and row.categoria_id==accounts[4] and row.cantidad==106
 
 
 @pytest.mark.asyncio
-async def test_category_child_preserves_parent_wallet_choice_without_inheriting_selection(ingress, accounts):
-    from app.models.database import Billetera
-    wallet_id = uuid4()
-    with accounts[0]() as session:
-        session.add(Billetera(id=wallet_id, usuario_id=accounts[1], nombre='Viajes ARS', moneda='ARS'))
-        session.commit()
+async def test_category_child_preserves_single_wallet(ingress, accounts):
     await ingress.tool('register_movement', register_now(requested_category='Viajes nueva'))
-    await ingress.tool('ask_clarification', {'target_field':'wallet','reason_code':'ambiguous_reference'})
-    state = await assistant_state.read(accounts[1])
-    number, choice = next((n, x) for n, x in state['selection_options'].items() if x['label']=='Viajes ARS')
-    await ingress.send(number, steps=[amend_active({'wallet_ref':choice['ref']})])
     def child(kwargs):
         parent=next(op for op in initial(kwargs)['operations'] if op['operation_key']=='register_movement')
         return [('create_category',{'name':'Viajes nueva','parent_ref':parent['ref'],
             'parent_revision':parent['revision'],'parent_field':'category_ref'})]
     child_preview = await ingress.send('Crear esa categoría', steps=[child])
     parent_preview = await ingress.confirm(child_preview)
-    assert parent_preview.assistant_preview_delivery and 'Viajes ARS' in parent_preview.reply_text
+    assert parent_preview.assistant_preview_delivery and 'Caja A' in parent_preview.reply_text
     state = await assistant_state.read(accounts[1])
     parent=state['workspace']['operations'][state['workspace']['active_operation_id']]
-    assert parent['operation_key']=='register_movement' and parent['draft_payload']['wallet_ref']==choice['ref']
-    assert parent['prepared_payload']['wallet_id']==str(wallet_id) and not state.get('selected_ref')
+    assert parent['operation_key']=='register_movement' and parent['prepared_payload']['wallet_id']==str(accounts[3])
     with accounts[0]() as session:
         assert session.query(AssistantWriteReceipt).count()==0
         category=session.query(Categoria).filter_by(usuario_id=accounts[1],nombre='Viajes nueva').one()
@@ -82,7 +56,7 @@ async def test_category_child_preserves_parent_wallet_choice_without_inheriting_
     await ingress.confirm(parent_preview)
     with accounts[0]() as session:
         row=session.query(MovimientoFinanciero).filter_by(whatsapp_message_id='stage5-1').one()
-        assert row.billetera_id==wallet_id and row.categoria_id==category_id and row.cantidad==106
+        assert row.billetera_id==accounts[3] and row.categoria_id==category_id and row.cantidad==106
 
 
 @pytest.mark.asyncio
@@ -355,37 +329,21 @@ async def test_budget_feedback_and_recurring_offer_keep_amounts_and_both_actions
 
 
 @pytest.mark.asyncio
-async def test_explicit_wallet_change_after_number_selection_is_not_stale(ingress, accounts):
-    """The numeric choice is consumed by its own preparation; a later explicit change is valid."""
-    from app.models.database import Billetera
-    factory, owner = accounts[0], accounts[1]
-    with factory() as session:
-        session.add(Billetera(id=uuid4(), usuario_id=owner, nombre='Otra ARS', moneda='ARS'))
-        session.commit()
-    await ingress.tool('register_movement', register_now())
-    state = await assistant_state.read(owner)
-    number, chosen = next((n, x) for n, x in state['selection_options'].items() if x['label'] == 'Otra ARS')
-    home = next(x['ref'] for x in state['selection_options'].values() if x['label'] == 'Caja A')
-    preview = await ingress.send(number, steps=[amend_active({'wallet_ref': chosen['ref']})])
-    assert preview.assistant_preview_delivery and 'Otra ARS' in preview.reply_text
-    changed = await ingress.send('Mejor usá Caja A', steps=[amend_active({'wallet_ref': home})])
-    assert changed.assistant_preview_delivery and 'Caja A' in changed.reply_text
-    assert 'revisión' not in changed.reply_text
-    await ingress.confirm(changed)
-    with factory() as session:
-        wallet = session.query(Billetera).filter_by(usuario_id=owner, nombre='Caja A').one()
-        assert session.query(MovimientoFinanciero).filter_by(whatsapp_message_id='stage5-1').one().billetera_id == wallet.id
+async def test_explicit_wallet_ref_uses_single_wallet(ingress, accounts):
+    def plan(kwargs):
+        wallet = next(w['ref'] for w in initial(kwargs)['wallets'] if w['name'] == 'Caja A')
+        return [('register_movement', {**register_now(), 'wallet_ref': wallet})]
+    preview = await ingress.send('Gasté 106 en taxi', steps=[plan])
+    assert preview.assistant_preview_delivery and 'Caja A' in preview.reply_text
+    await ingress.confirm(preview)
+    with accounts[0]() as session:
+        row = session.query(MovimientoFinanciero).filter_by(whatsapp_message_id='stage5-1').one()
+        assert row.billetera_id == accounts[3]
 
 
 @pytest.mark.asyncio
-async def test_update_repeating_current_currency_stays_ready_with_two_wallets(ingress, accounts):
+async def test_update_repeating_current_currency_with_single_wallet(ingress, accounts):
     """Re-sending the current currency must not turn into a wallet failure at confirmation."""
-    from app.models.database import Billetera
-    factory, owner = accounts[0], accounts[1]
-    with factory() as session:
-        session.add(Billetera(id=uuid4(), usuario_id=owner, nombre='Otra ARS', moneda='ARS'))
-        session.commit()
-
     def registration(kwargs):
         wallet = next(w for w in initial(kwargs)['wallets'] if w['name'] == 'Caja A')
         return [('register_movement', {**register_now(), 'wallet_ref': wallet['ref']})]
@@ -399,31 +357,26 @@ async def test_update_repeating_current_currency_stays_ready_with_two_wallets(in
     assert '1200.0000000000' not in preview.reply_text and 'amount:' not in preview.reply_text
     result = await ingress.confirm(preview)
     assert 'No se actualizó' not in result.reply_text
-    with factory() as session:
+    with accounts[0]() as session:
         taxi = session.query(MovimientoFinanciero).filter_by(descripcion='taxi').one()
         assert Decimal(taxi.cantidad) == Decimal('1200')
 
 
 @pytest.mark.asyncio
-async def test_update_currency_change_with_two_usd_wallets_asks_before_confirming(ingress, accounts):
-    """An ambiguous wallet is resolved while preparing, not after the user confirms."""
-    from app.models.database import Billetera
-    factory, owner = accounts[0], accounts[1]
-    with factory() as session:
-        session.add_all([Billetera(id=uuid4(), usuario_id=owner, nombre='USD B', moneda='USD'),
-                         Billetera(id=uuid4(), usuario_id=owner, nombre='USD C', moneda='USD')])
-        session.commit()
+async def test_update_currency_change_uses_existing_usd_wallet(ingress, accounts):
     await ingress.confirm(await ingress.tool('register_movement', register_now()))
     await ingress.send('Mostrá mis gastos', steps=[[('find_movements', {'selector': {'kind': 'all'}, 'sort_by': 'date_desc', 'currency': 'ARS'})]])
 
     def update(kwargs):
         return [('update_movement', {'movement_ref': visible_ref(kwargs, 'movement'), 'changes': {'currency': 'USD'}})]
-    response = await ingress.send('Pasalo a dólares', steps=[update])
-    assert not response.assistant_preview_delivery
-    assert 'billetera' in response.reply_text.casefold()
-    state = await assistant_state.read(owner)
-    # The fixture already owns 'USD A'; the two added wallets make the choice ambiguous.
-    assert {'USD A', 'USD B', 'USD C'} == {item['label'] for item in state['selection_options'].values()}
+    preview = await ingress.send('Pasalo a dólares', steps=[update])
+    assert preview.assistant_preview_delivery and 'USD A' in preview.reply_text
+    result = await ingress.confirm(preview)
+    assert 'No se actualizó' not in result.reply_text
+    with accounts[0]() as session:
+        usd = session.query(Billetera).filter_by(usuario_id=accounts[1], nombre='USD A').one()
+        row = session.query(MovimientoFinanciero).filter_by(whatsapp_message_id='stage5-1').one()
+        assert row.moneda == 'USD' and row.billetera_id == usd.id
 
 
 @pytest.mark.asyncio

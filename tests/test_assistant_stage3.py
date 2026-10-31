@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from app.models.database import AssistantWriteReceipt, Billetera, MovimientoFinanciero, Recordatorio
+from app.models.database import AssistantWriteReceipt, MovimientoFinanciero, Recordatorio
 from app.services import assistant_runtime, assistant_state
 from app.services.assistant_capabilities.insights import compare
 from app.services.assistant_capabilities.movements import find_movements
@@ -268,24 +268,11 @@ async def test_failed_state_save_after_commit_keeps_successful_receipt(accounts,
 
 
 @pytest.mark.asyncio
-async def test_selection_does_not_leak_to_another_operation(accounts):
-    factory, owner, *_ = accounts
-    second = uuid4()
-    with factory() as db:
-        db.add(Billetera(id=second, usuario_id=owner, nombre='Otra ARS', moneda='ARS'))
-        db.commit()
+async def test_read_does_not_leak_state_to_another_operation(accounts):
     await proposal('first')
-    state = await assistant_state.read(owner)
-    number = next(n for n, item in state['selection_options'].items() if item['label'] == 'Otra ARS')
-    selected_ref = state['selection_options'][number]['ref']
-    first = await run_for_phone(PHONE, 'choose', number, provider=NativeScript([amend_active({'wallet_ref': selected_ref})]), now=NOW)
-    assert first.confirmation_action
     await run_for_phone(PHONE, 'read', 'saldos', provider=NativeScript([[('wallet_balances', {})], present_all]), now=NOW)
-    def other(kwargs):
-        data = json.loads(next(m.content for m in kwargs['messages'] if m.role == 'user'))
-        ref = next(wallet['ref'] for wallet in data['context']['wallets'] if wallet['name'] == 'Caja A')
-        return [('register_movement', {**register_args(), 'wallet_ref': ref})]
-    second_reply = await run_for_phone(PHONE, 'second', 'Gasté 106 el 16/09/2026', provider=NativeScript([other]), now=NOW)
+    second_reply = await run_for_phone(PHONE, 'second', 'Gasté 106 en taxi el 16/09/2026',
+                                       provider=NativeScript([[('register_movement', register_args())]]), now=NOW)
     assert second_reply.confirmation_action and 'Caja A' in second_reply.text
 
 

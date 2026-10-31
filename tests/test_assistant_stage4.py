@@ -163,10 +163,10 @@ async def test_categories_create_rename_delete_and_wallet_create(accounts):
     preview = await run_for_phone(PHONE, 'delete', 'borrar', provider=NativeScript([delete]), now=NOW)
     assert (await confirm(preview, 'delete-confirm')).committed
     wallet = await confirm(await request('create_wallet', {'name': 'Banco', 'currency': 'ARS'}, 'wallet-source'), 'wallet-confirm')
-    assert wallet.committed
+    assert 'Caja A' in wallet.text
     with accounts[0]() as db:
         assert db.query(Categoria).filter_by(usuario_id=accounts[1], nombre='Renombrada').one().esta_eliminado
-        assert db.query(Billetera).filter_by(usuario_id=accounts[1], nombre='Banco').count() == 1
+        assert db.query(Billetera).filter_by(usuario_id=accounts[1], nombre='Banco').count() == 0
 
 
 @pytest.mark.asyncio

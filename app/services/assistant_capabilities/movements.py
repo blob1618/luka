@@ -160,14 +160,12 @@ class MovementOperation:
                 if record and record['kind'] in {'wallet', 'category'} and getattr(args, record['kind'] + '_ref') != selected_ref:
                     raise ValueError('La propuesta no usa la opción que seleccionaste')
             selection, category_name = await asyncio.to_thread(_register_dependencies, context.turn.owner_id, args, wallet_id, category_id)
+            if selection.status == 'needs_wallet_creation':
+                return IncompleteOperation(missing_fields=(FieldRequest(
+                    field='wallet_ref', reason='missing',
+                    question=f"No tenés una billetera en {selection.currency}. ¿La creo?"),))
             if selection.status != 'selected':
-                candidates, options = [], {}
-                for wallet in selection.options:
-                    ref = await context.reference('wallet', EntityReference(id=wallet.wallet_id, label=wallet.name))
-                    candidates.append(ref)
-                    options[str(len(options) + 1)] = {'ref': ref, 'label': wallet.name}
-                context.state['selection_options'] = options
-                return IncompleteOperation(missing_fields=(FieldRequest(field='wallet_ref', reason='ambiguous', candidate_refs=tuple(candidates), question='¿Qué billetera querés usar? Elegí una de las opciones.'),))
+                raise ValueError('No pude usar esa billetera; revisá la moneda y la billetera indicadas')
             payload = RegisterPrepared(economic_effect=args.economic_effect, movement_type=args.movement_type, amount=args.amount, currency=selection.currency,
                 description=args.description, wallet_id=selection.wallet_id, category_id=category_id, date=target)
             preview = f'Registrar {args.movement_type}: {args.description}, {selection.currency} {amount_text(args.amount)}, fecha {target:%d/%m/%Y}, billetera {selection.wallet_name}. Categoría: {category_name}.'

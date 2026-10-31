@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal, localcontext
 from typing import Any
 from uuid import UUID
@@ -38,11 +38,19 @@ class WalletSelectionResult:
     wallet_id: str | None = None
     wallet_name: str | None = None
     currency: str | None = None
-    options: list[WalletItem] = field(default_factory=list)
 
     @property
     def name(self) -> str | None:
         return self.wallet_name
+
+
+@dataclass
+class WalletRenameResult:
+    status: str
+    message: str = ""
+    wallet_id: str | None = None
+    name: str | None = None
+    currency: str | None = None
 
 
 @dataclass
@@ -61,22 +69,23 @@ class WalletBalanceItem:
 
 class WalletService:
     SUPPORTED_CURRENCIES = {"ARS", "USD"}
+    DEFAULT_NAMES = {"ARS": "Pesos", "USD": "Dólares"}
 
     @classmethod
     def create_wallet(
         cls,
         user_id: UUID | str,
-        name: str,
-        currency: str,
+        name: str | None = None,
+        currency: str | None = None,
         session=None,
     ) -> WalletCreationResult:
-        clean_name = name.strip() if isinstance(name, str) else ""
-        if not clean_name:
-            return WalletCreationResult(status="invalid_data", message="Wallet name cannot be empty")
-
         clean_currency = str(currency).strip().upper() if currency is not None else ""
         if clean_currency not in cls.SUPPORTED_CURRENCIES:
             return WalletCreationResult(status="invalid_data", message="Currency must be ARS or USD")
+
+        clean_name = (name.strip() if isinstance(name, str) else "") or cls.DEFAULT_NAMES[clean_currency]
+        if len(clean_name) > 100:
+            return WalletCreationResult(status="invalid_data", message="Wallet name is too long")
 
         try:
             parsed_user_id = UUID(str(user_id)) if not isinstance(user_id, UUID) else user_id
@@ -95,14 +104,16 @@ class WalletService:
                 .filter(
                     Billetera.usuario_id == user.id,
                     Billetera.moneda == clean_currency,
-                    func.lower(func.trim(Billetera.nombre)) == clean_name.lower(),
                 )
                 .first()
             )
             if existing is not None:
                 return WalletCreationResult(
-                    status="name_already_exists",
-                    message="Wallet with this name already exists for this currency",
+                    status="wallet_already_exists",
+                    message="User already has a wallet for this currency",
+                    wallet_id=str(existing.id),
+                    name=existing.nombre,
+                    currency=existing.moneda,
                 )
 
             wallet = Billetera(
@@ -136,20 +147,74 @@ class WalletService:
                 .filter(
                     Billetera.usuario_id == parsed_user_id,
                     Billetera.moneda == clean_currency,
-                    func.lower(func.trim(Billetera.nombre)) == clean_name.lower(),
                 )
                 .first()
             )
             if duplicate is not None:
                 return WalletCreationResult(
-                    status="name_already_exists",
-                    message="Wallet with this name already exists for this currency",
+                    status="wallet_already_exists",
+                    message="User already has a wallet for this currency",
+                    wallet_id=str(duplicate.id),
+                    name=duplicate.nombre,
+                    currency=duplicate.moneda,
                 )
             return WalletCreationResult(status="persistence_error", message="Could not create wallet")
         except Exception:
             if owns_session:
                 db_session.rollback()
             return WalletCreationResult(status="persistence_error", message="Could not create wallet")
+        finally:
+            if owns_session:
+                db_session.close()
+
+    @classmethod
+    def rename_wallet(
+        cls,
+        user_id: UUID | str,
+        wallet_id: UUID | str,
+        name: str,
+        session=None,
+    ) -> WalletRenameResult:
+        clean_name = name.strip() if isinstance(name, str) else ""
+        if not clean_name:
+            return WalletRenameResult(status="invalid_data", message="Wallet name cannot be empty")
+        if len(clean_name) > 100:
+            return WalletRenameResult(status="invalid_data", message="Wallet name is too long")
+
+        try:
+            parsed_user_id = UUID(str(user_id)) if not isinstance(user_id, UUID) else user_id
+            parsed_wallet_id = UUID(str(wallet_id)) if not isinstance(wallet_id, UUID) else wallet_id
+        except (ValueError, TypeError):
+            return WalletRenameResult(status="invalid_selection", message="Invalid wallet id")
+
+        owns_session = session is None
+        db_session = SessionLocal() if owns_session else session
+        try:
+            wallet = (
+                db_session.query(Billetera)
+                .filter(Billetera.id == parsed_wallet_id, Billetera.usuario_id == parsed_user_id)
+                .first()
+            )
+            if wallet is None:
+                return WalletRenameResult(
+                    status="wallet_not_found",
+                    message="Wallet not found or not owned by user",
+                )
+            wallet.nombre = clean_name
+            db_session.flush()
+            if owns_session:
+                db_session.commit()
+            return WalletRenameResult(
+                status="renamed",
+                message="Wallet renamed",
+                wallet_id=str(wallet.id),
+                name=wallet.nombre,
+                currency=wallet.moneda,
+            )
+        except Exception:
+            if owns_session:
+                db_session.rollback()
+            return WalletRenameResult(status="persistence_error", message="Could not rename wallet")
         finally:
             if owns_session:
                 db_session.close()
@@ -251,47 +316,28 @@ class WalletService:
             )
 
         target_currency = clean_currency if clean_currency is not None else "ARS"
-        matching_wallets = (
+        wallet = (
             session.query(Billetera)
             .filter(
                 Billetera.usuario_id == user.id,
                 Billetera.moneda == target_currency,
             )
-            .order_by(Billetera.creado_en.asc(), Billetera.id.asc())
-            .all()
+            .first()
         )
 
-        if len(matching_wallets) == 0:
+        if wallet is None:
             return WalletSelectionResult(
                 status="needs_wallet_creation",
                 message=f"No wallet found for currency {target_currency}",
                 currency=target_currency,
             )
-        elif len(matching_wallets) == 1:
-            chosen = matching_wallets[0]
-            return WalletSelectionResult(
-                status="selected",
-                message="Wallet auto-selected",
-                wallet_id=str(chosen.id),
-                wallet_name=chosen.nombre,
-                currency=chosen.moneda,
-            )
-        else:
-            options = [
-                WalletItem(
-                    wallet_id=str(wallet.id),
-                    name=wallet.nombre,
-                    currency=wallet.moneda,
-                    created_at=wallet.creado_en,
-                )
-                for wallet in matching_wallets
-            ]
-            return WalletSelectionResult(
-                status="needs_wallet_selection",
-                message=f"Multiple wallets found for currency {target_currency}",
-                currency=target_currency,
-                options=options,
-            )
+        return WalletSelectionResult(
+            status="selected",
+            message="Wallet selected",
+            wallet_id=str(wallet.id),
+            wallet_name=wallet.nombre,
+            currency=wallet.moneda,
+        )
 
     @classmethod
     def get_balances_own_user(

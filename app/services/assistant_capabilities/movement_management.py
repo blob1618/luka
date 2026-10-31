@@ -84,19 +84,6 @@ def _update_wallet_selection(owner, currency, wallet_id):
         return WalletService.resolve_selection(session, owner, currency=currency, wallet_id=wallet_id)
 
 
-async def _ask_update_wallet(context, selection):
-    from app.services.assistant_contracts import FieldRequest, IncompleteOperation
-    candidates, options = [], {}
-    for wallet in selection.options:
-        ref = await context.reference('wallet', EntityReference(id=wallet.wallet_id, label=wallet.name))
-        candidates.append(ref)
-        options[str(len(options) + 1)] = {'ref': ref, 'label': wallet.name}
-    context.state['selection_options'] = options
-    return IncompleteOperation(missing_fields=(FieldRequest(field='changes.wallet_ref', reason='ambiguous',
-        candidate_refs=tuple(candidates),
-        question='¿A qué billetera querés mover ese movimiento? Elegí una de las opciones.'),))
-
-
 async def prepare_update(context, operation):
     args = UpdateDraft.model_validate(operation.draft_payload)
     absent = missing(args, ('movement_ref', 'changes'))
@@ -121,8 +108,6 @@ async def prepare_update(context, operation):
         # Resolve the wallet while preparing so ambiguity is asked here, not after confirming.
         selection = await asyncio.to_thread(_update_wallet_selection, context.turn.owner_id,
             wanted_currency, wallet_id)
-        if selection.status == 'needs_wallet_selection':
-            return await _ask_update_wallet(context, selection)
         if selection.status == 'needs_wallet_creation':
             from app.services.assistant_contracts import FieldRequest, IncompleteOperation
             return IncompleteOperation(missing_fields=(FieldRequest(field='changes.wallet_ref', reason='missing',

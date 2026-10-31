@@ -391,20 +391,15 @@ async def test_ambiguous_movement_visible_choice_to_date_confirmation(accounts):
 
 
 @pytest.mark.asyncio
-async def test_wallet_visible_choice_preserves_date_and_source(accounts):
+async def test_single_wallet_is_used_without_choice(accounts):
     factory, owner, *_ = accounts
-    second = uuid4()
-    with factory() as db:
-        db.add(Billetera(id=second, usuario_id=owner, nombre='Otra ARS', moneda='ARS'))
-        db.commit()
-    question = await proposal('wallet-source')
-    assert 'Caja A' in question.text and 'Otra ARS' in question.text
+    preview = await proposal('wallet-source')
+    assert 'Caja A' in preview.text and preview.confirmation_action
     state = await assistant_state.read(owner)
-    number = next(n for n, item in state['selection_options'].items() if item['label'] == 'Otra ARS')
-    ref = state['selection_options'][number]['ref']
-    preview = await run_for_phone(PHONE, 'wallet-choice', number, provider=NativeScript([amend_active({'wallet_ref': ref})]), now=NOW)
+    assert not state.get('selection_options')
     result = await confirm(preview)
-    assert result.committed['movement']['wallet_id'] == str(second) and result.committed['movement']['date'] == '2026-09-16'
+    assert result.committed['movement']['wallet_id'] == str(accounts[3])
+    assert result.committed['movement']['date'] == '2026-09-16'
     assert current_operation(await assistant_state.read(owner))['source_message_id'] == 'wallet-source'
 
 
@@ -493,25 +488,12 @@ async def test_long_preview_keeps_full_text_and_short_confirmation_buttons(accou
 
 
 @pytest.mark.asyncio
-async def test_cancel_after_failed_selection_does_not_bind_next_draft(accounts):
+async def test_cancel_after_preview_clears_state_and_next_draft_uses_single_wallet(accounts):
     factory, owner, *_ = accounts
-    with factory() as db:
-        db.add(Billetera(id=uuid4(), usuario_id=owner, nombre='Otra ARS', moneda='ARS'))
-        db.commit()
-    await proposal('selection-source')
-    state = await assistant_state.read(owner)
-    number = next(n for n, item in state['selection_options'].items() if item['label'] == 'Otra ARS')
-    ref = state['selection_options'][number]['ref']
-    await run_for_phone(PHONE, 'selection-answer', number, provider=NativeScript([amend_active({'wallet_ref': ref, 'date_spec': {'kind': 'literal', 'evidence_span': '31/02/2026'}})]), now=NOW)
-    state = await assistant_state.read(owner)
-    # A failed preparation consumes its selection: nothing binds the next draft.
-    assert not state.get('selected_ref') and not state.get('selection_options')
+    preview = await proposal('selection-source')
+    assert preview.confirmation_action
     await run_for_phone(PHONE, 'selection-cancel', 'cancelar', now=NOW)
     state = await assistant_state.read(owner)
     assert not state.get('selected_ref') and not state.get('selection_options')
-    def other_wallet(kwargs):
-        data = json.loads(next(m.content for m in kwargs['messages'] if m.role == 'user'))
-        ref = next(wallet['ref'] for wallet in data['context']['wallets'] if wallet['name'] == 'Caja A')
-        return [('register_movement', {**register_args(), 'wallet_ref': ref})]
-    preview = await run_for_phone(PHONE, 'new-draft', 'Gasté 106 el 16/09/2026', provider=NativeScript([other_wallet]), now=NOW)
+    preview = await proposal('new-draft')
     assert preview.confirmation_action and 'Caja A' in preview.text
