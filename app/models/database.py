@@ -384,6 +384,8 @@ class Recordatorio(Base):
     dias_anticipacion = Column(Integer, nullable=False, default=1)
     origen = Column(String, nullable=False, default="manual")
     ultimo_aviso_enviado = Column(Date)
+    google_calendar_event_id = Column(String, nullable=True)
+    google_calendar_synced_fingerprint = Column(String, nullable=True)
     creado_en = Column(DateTime, default=datetime.utcnow)
 
     candidato = relationship("CandidatoGastoRecurrente", back_populates="recordatorio")
@@ -402,6 +404,24 @@ class Recordatorio(Base):
             sqlite_where=(estado == "activo"),
         ),
     )
+
+class GoogleCalendarConnection(Base):
+    __tablename__ = "google_calendar_connection"
+
+    usuario_id = Column(Uuid(as_uuid=True), ForeignKey("usuario.id", ondelete="CASCADE"), primary_key=True)
+    refresh_token_ciphertext = Column(String, nullable=False)
+    conectado_en = Column(DateTime(timezone=True), nullable=False, default=func.now())
+
+
+class GoogleCalendarOAuthState(Base):
+    __tablename__ = "google_calendar_oauth_state"
+
+    state_hash = Column(String(64), primary_key=True)
+    usuario_id = Column(Uuid(as_uuid=True), ForeignKey("usuario.id", ondelete="CASCADE"), nullable=False)
+    expira_en = Column(DateTime(timezone=True), nullable=False)
+    consumido_en = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (Index("google_calendar_oauth_state_usuario_idx", "usuario_id"),)
 
 class Evento(Base):
     __tablename__ = "evento"

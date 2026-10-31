@@ -13,7 +13,7 @@ from uuid import UUID
 import redis.asyncio as redis
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,12 @@ from app.services.webhook_idempotency import (  # noqa: E402
     IdempotencyUnavailable,
     process_interactive_message_once,
     process_text_message_once,
+)
+from app.services.google_calendar import (  # noqa: E402
+    CalendarAuthorizationError,
+    CalendarConfigurationError,
+    complete_authorization,
+    sync_user,
 )
 
 # Cliente Redis global
@@ -154,6 +160,33 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Luka WhatsApp FinBot", lifespan=lifespan)
+
+
+@app.get("/integrations/google-calendar/callback")
+async def google_calendar_callback(
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    query = request.query_params
+    if query.get("error"):
+        message = "No se autorizó Google Calendar. Podés volver a intentarlo desde WhatsApp."
+        status = 400
+    else:
+        try:
+            user_id = await complete_authorization(query.get("code", ""), query.get("state", ""))
+        except (CalendarAuthorizationError, CalendarConfigurationError) as exc:
+            logger.warning("[CALENDAR_AUTH] callback_error=%s", type(exc).__name__)
+            message = "No pude completar la conexión. Pedí un enlace nuevo por WhatsApp."
+            status = 400
+        else:
+            background_tasks.add_task(sync_user, user_id)
+            message = "Google Calendar está conectado. Tus recordatorios se sincronizarán automáticamente."
+            status = 200
+    return HTMLResponse(
+        f"<!doctype html><html lang='es'><meta charset='utf-8'><title>Luka</title><p>{message}</p></html>",
+        status_code=status,
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
 
 # En produccion, cargar esto de forma segura desde el entorno
 VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "fallback_token")
