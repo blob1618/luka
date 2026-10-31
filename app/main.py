@@ -350,7 +350,14 @@ async def seed_test_user(request: Request):
     if phone not in staging_ingress.capture_phones():
         raise HTTPException(status_code=403, detail="Phone is not in TEST_CAPTURE_PHONES")
     name = str(payload.get("name") or "Staging").strip()[:80]
-    return await asyncio.to_thread(staging_seed.reset_test_user, phone, name)
+    try:
+        return await asyncio.to_thread(staging_seed.reset_test_user, phone, name)
+    except Exception as exc:
+        logger.exception("staging_seed_failed phone=%s", phone)
+        raise HTTPException(
+            status_code=500,
+            detail=f"seed_failed:{type(exc).__name__}:{str(exc)[:200]}",
+        ) from exc
 
 
 # Valores válidos de `tipos`; el endpoint comparte el vocabulario de QuoteType.
