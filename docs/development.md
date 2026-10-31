@@ -180,16 +180,22 @@ teléfono).
 #### Captura por teléfono en producción
 
 Mientras el proyecto no tenga usuarios reales, no hace falta un segundo entorno: con
-`TEST_CAPTURE_PHONES=54911...` (y `TEST_INGRESS_TOKEN`) la app captura **solo ese teléfono** y
-sigue enviando el resto por Meta. `staging_tests` se puede apuntar a la URL de producción con
-`STAGING_PHONE` igual al teléfono listado: los webhooks se inyectan firmados, las respuestas
-quedan en el outbox y **no se envía nada por Meta**, así que no hay riesgo de baneo ni
-automatización de WhatsApp Web. Los datos de prueba quedan en la base de producción, algo
-aceptable mientras sea un entorno académico sin usuarios reales; conviene limpiarlos cuando
-exista el primer usuario.
+`TEST_CAPTURE_PHONES=5491100000001` (y `TEST_INGRESS_TOKEN`) la app captura **solo ese
+teléfono** y sigue enviando el resto por Meta. Es un **número sintético**: no necesita un
+teléfono real, porque los webhooks se inyectan firmados y las respuestas se leen del outbox;
+Meta nunca lo ve y el número personal del desarrollador queda libre.
 
-Sin `TEST_INGRESS_TOKEN` la captura y el outbox quedan deshabilitados (404), aunque el
-teléfono esté listado.
+Antes de la conversación, `staging_tests` llama a `POST /__test__/users` con el teléfono para
+crear o resetear un usuario limpio (una billetera ARS, sin movimientos, límites ni
+recordatorios). El endpoint exige `x-test-token` y que el teléfono esté en
+`TEST_CAPTURE_PHONES`; fuera de staging responde 404 y con un teléfono no listado, 403. Así la
+prueba es repetible y no depende del estado de una cuenta real.
+
+Los datos de prueba quedan en la base de producción, algo aceptable mientras sea un entorno
+académico sin usuarios reales; conviene limpiarlos cuando exista el primer usuario.
+
+Sin `TEST_INGRESS_TOKEN` la captura, el outbox y el seed quedan deshabilitados (404), aunque
+el teléfono esté listado.
 
 ## Flujo de trabajo del equipo
 

@@ -10,8 +10,9 @@ on:
         description: Commit esperado (opcional)
         required: false
       phone:
-        description: Teléfono de prueba (debe estar en TEST_CAPTURE_PHONES si es producción)
+        description: Teléfono sintético (debe estar en TEST_CAPTURE_PHONES)
         required: false
+        default: '5491100000001'
 
 jobs:
   staging:
