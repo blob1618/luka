@@ -1,12 +1,13 @@
-"""Fase 3: evalúa elección de herramientas con un modelo real sobre un corpus.
+"""Fase 3: evalúa elección de herramientas con modelos reales sobre un corpus.
 
 Uso:
     .codex/venv/Scripts/python.exe evals/runner.py
-    ... --only register_expense
-    ... --limit 3
+    ... --runs 3 --providers deepseek
+    ... --providers deepseek,gemini --runs 2
+    ... --only register_expense --runs 5
 
-No corre en CI ni en la suite: hace llamadas reales al proveedor y escribe
-`evals/eval.db` y un reporte JSON en `evals/results/`.
+No corre en CI ni en la suite: hace llamadas reales y escribe `evals/eval.db`
+y un reporte JSON en `evals/results/`.
 """
 import argparse
 import asyncio
@@ -17,6 +18,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from statistics import mean
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -27,7 +29,6 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(ROOT / '.env')
 os.environ['DATABASE_URL'] = 'sqlite:///./evals/eval.db'
-os.environ['LLM_PROVIDER'] = os.getenv('EVAL_PROVIDER', 'deepseek')
 
 from app.models.database import (  # noqa: E402
     Base,
@@ -42,9 +43,11 @@ from app.models.database import (  # noqa: E402
 )
 from app.services import assistant_runtime  # noqa: E402
 from app.services.conversation import ConversationService  # noqa: E402
+from app.services.llm import LLMService  # noqa: E402
 from evals.fake_redis import FakeRedis  # noqa: E402
 
 CORPUS = json.loads((Path(__file__).parent / 'corpus.json').read_text(encoding='utf-8'))['scenarios']
+PROVIDER_KEYS = {'deepseek': 'DEEPSEEK_API_KEY', 'gemini': 'GEMINI_API_KEY', 'mistral': 'MISTRAL_API_KEY'}
 
 
 def seed(scenario, index):
@@ -52,20 +55,44 @@ def seed(scenario, index):
     phone = f'54911{index:08d}'
     with SessionLocal() as session:
         session.add(Usuario(id=owner, nombre='Eval', email=f'eval{index}@example.invalid',
-                            whatsapp_id=phone, auth_user_id=uuid4()))
-        wallet = Billetera(usuario_id=owner, nombre='Pesos', moneda='ARS')
-        session.add_all([
-            wallet,
-            Billetera(usuario_id=owner, nombre='Dólares', moneda='USD'),
-            Categoria(usuario_id=owner, nombre='Comida'),
-        ])
+                            whatsapp_id=phone))
+        wallets = {}
+        for currency in scenario.get('seed_wallets', ['ARS']):
+            wallet = Billetera(
+                usuario_id=owner,
+                nombre='Pesos' if currency == 'ARS' else 'Dólares',
+                moneda=currency,
+            )
+            session.add(wallet)
+            wallets[currency] = wallet
+        category = Categoria(usuario_id=owner, nombre='Comida')
+        session.add(category)
         session.flush()
-        seed_movement = scenario.get('seed_movement')
-        if seed_movement:
+
+        movements = scenario.get('seed_movements') or (
+            [scenario['seed_movement']] if scenario.get('seed_movement') else [])
+        for item in movements:
+            currency = item.get('currency', 'ARS')
             session.add(MovimientoFinanciero(
-                usuario_id=owner, billetera_id=wallet.id, tipo=seed_movement['type'],
-                cantidad=Decimal(seed_movement['amount']), moneda='ARS',
-                descripcion=seed_movement['description'], fecha_movimiento=date.today()))
+                usuario_id=owner, billetera_id=wallets[currency].id,
+                tipo=item.get('type', 'egreso'), cantidad=Decimal(item['amount']),
+                moneda=currency, descripcion=item['description'],
+                fecha_movimiento=date.today() + timedelta(days=item.get('date_offset', 0))))
+
+        limit = scenario.get('seed_limit')
+        if limit:
+            session.add(LimiteCategoria(
+                usuario_id=owner, categoria_id=category.id,
+                cantidad_max=Decimal(limit['amount']), moneda='ARS',
+                inicio_periodo=date.today().replace(day=1),
+                fin_periodo=date.today() + timedelta(days=30)))
+
+        reminder = scenario.get('seed_reminder')
+        if reminder:
+            session.add(Recordatorio(
+                usuario_id=owner, titulo=reminder['title'], dia_del_mes=10,
+                monto=Decimal('1000'), moneda='ARS', estado='activo'))
+
         session.commit()
     return owner, phone
 
@@ -99,6 +126,23 @@ def verify(scenario, owner, reply):
                         return False, f'fecha {movement.fecha_movimiento}'
                 if expected.get('annulled') and movement.anulado_en is None:
                     return False, 'no anulado'
+            elif key == 'movements':
+                rows = (session.query(MovimientoFinanciero)
+                        .filter(MovimientoFinanciero.usuario_id == owner).all())
+                if 'count' in expected and len(rows) != expected['count']:
+                    return False, f'cantidad {len(rows)}'
+                if 'amounts' in expected:
+                    amounts = {str(Decimal(row.cantidad).normalize()) for row in rows}
+                    wanted = {str(Decimal(amount).normalize()) for amount in expected['amounts']}
+                    if amounts != wanted:
+                        return False, f'importes {sorted(amounts)}'
+            elif key == 'wallet':
+                wallet = (session.query(Billetera)
+                          .filter_by(usuario_id=owner, moneda=expected['currency']).first())
+                if expected.get('exists') and wallet is None:
+                    return False, f'sin billetera {expected["currency"]}'
+                if 'name' in expected and (wallet is None or wallet.nombre != expected['name']):
+                    return False, f'nombre {wallet.nombre if wallet else None}'
             elif key == 'limit':
                 limit = session.query(LimiteCategoria).filter_by(usuario_id=owner).first()
                 if limit is None:
@@ -114,16 +158,19 @@ def verify(scenario, owner, reply):
                     return False, 'sin recordatorio'
                 if 'title_contains' in expected and expected['title_contains'].lower() not in reminder.titulo.lower():
                     return False, f'título {reminder.titulo}'
+            elif key == 'no_movement':
+                if session.query(MovimientoFinanciero).filter_by(usuario_id=owner).count():
+                    return False, 'movimiento inesperado'
             elif key == 'reply_contains':
                 if expected.lower() not in reply.text.lower():
                     return False, 'texto sin el dato esperado'
-            elif key == 'event_key':
-                if reply.event_key != expected:
-                    return False, f'event_key {reply.event_key}'
+            elif key == 'reply_nonempty':
+                if not reply.text.strip():
+                    return False, 'respuesta vacía'
     return True, 'ok'
 
 
-async def run_scenario(scenario, index, fake):
+async def run_once(scenario, index, fake):
     ConversationService._get_client = AsyncMock(return_value=fake)
     ConversationService._client = None
     ConversationService._loop_id = None
@@ -163,14 +210,51 @@ async def run_scenario(scenario, index, fake):
     }
 
 
+def aggregate(rows):
+    total = len(rows) or 1
+    writes = [row for row in rows if row['kind'] == 'write']
+    return {
+        'runs': len(rows),
+        'tool_accuracy': round(sum(row['tool_hit'] for row in rows) / total, 3),
+        'verify_rate': round(sum(row['verify'] for row in rows) / total, 3),
+        'preview_rate': round(sum(row['preview'] for row in writes) / len(writes), 3) if writes else None,
+        'commit_rate': round(sum(row['committed'] for row in writes) / len(writes), 3) if writes else None,
+        'avg_latency_ms': round(mean(row['latency_ms'] for row in rows), 1),
+    }
+
+
+async def run_provider(provider, scenarios, runs, fake, counter):
+    os.environ['LLM_PROVIDER'] = provider
+    LLMService._provider = None
+    report = {}
+    all_rows = []
+    for scenario in scenarios:
+        rows = []
+        for _ in range(runs):
+            counter += 1
+            try:
+                rows.append(await run_once(scenario, counter, fake))
+            except Exception as exc:  # noqa: BLE001 - el eval reporta y sigue
+                rows.append({'id': scenario['id'], 'kind': scenario['kind'], 'tools': [],
+                             'expected_tools': scenario['expect_tools'], 'tool_hit': False,
+                             'preview': False, 'committed': False, 'verify': False,
+                             'detail': f'{type(exc).__name__}: {exc}', 'latency_ms': 0, 'text': ''})
+        all_rows.extend(rows)
+        report[scenario['id']] = {'runs': rows, 'aggregate': aggregate(rows)}
+        item = report[scenario['id']]['aggregate']
+        print(f"{provider:<8} {scenario['id']:<20} acc={item['tool_accuracy']:.2f} "
+              f"verify={item['verify_rate']:.2f} preview={item['preview_rate']} "
+              f"commit={item['commit_rate']} {item['avg_latency_ms']}ms")
+    return report, all_rows
+
+
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--only', action='append', default=[])
     parser.add_argument('--limit', type=int, default=0)
+    parser.add_argument('--runs', type=int, default=3)
+    parser.add_argument('--providers', default='deepseek')
     args = parser.parse_args()
-
-    if os.getenv('LLM_PROVIDER') == 'deepseek' and not os.getenv('DEEPSEEK_API_KEY'):
-        sys.exit('Falta DEEPSEEK_API_KEY (o usá EVAL_PROVIDER con otro proveedor configurado).')
 
     (ROOT / 'evals' / 'results').mkdir(exist_ok=True)
     (ROOT / 'evals' / 'eval.db').unlink(missing_ok=True)
@@ -181,34 +265,27 @@ async def main():
         scenarios = scenarios[:args.limit]
 
     fake = FakeRedis()
-    rows = []
-    for index, scenario in enumerate(scenarios, start=1):
-        try:
-            row = await run_scenario(scenario, index, fake)
-        except Exception as exc:  # noqa: BLE001 - el eval reporta el fallo y sigue
-            row = {'id': scenario['id'], 'kind': scenario['kind'], 'tools': [],
-                   'expected_tools': scenario['expect_tools'],
-                   'tool_hit': False, 'preview': False, 'committed': False, 'verify': False,
-                   'detail': f'{type(exc).__name__}: {exc}', 'latency_ms': 0, 'text': ''}
-        rows.append(row)
-        print(f"{'OK ' if row['tool_hit'] and row['verify'] else 'FAIL'} {row['id']:<20} "
-              f"tools={row['tools']} preview={row['preview']} verify={row['detail']} {row['latency_ms']}ms")
+    counter = 0
+    providers_report = {}
+    for provider in [item.strip() for item in args.providers.split(',') if item.strip()]:
+        key = PROVIDER_KEYS.get(provider)
+        if key and not os.getenv(key):
+            print(f'skip {provider}: falta {key}')
+            continue
+        report, rows = await run_provider(provider, scenarios, args.runs, fake, counter)
+        counter += len(rows)
+        summary = aggregate(rows)
+        providers_report[provider] = {'summary': summary, 'scenarios': report}
+        print(f"{provider} SUMMARY {json.dumps(summary, ensure_ascii=False)}")
 
-    total = len(rows) or 1
-    writes = [row for row in rows if row['kind'] == 'write']
-    summary = {
-        'scenarios': len(rows),
-        'tool_accuracy': round(sum(row['tool_hit'] for row in rows) / total, 3),
-        'verify_rate': round(sum(row['verify'] for row in rows) / total, 3),
-        'preview_rate': round(sum(row['preview'] for row in writes) / len(writes), 3) if writes else None,
-        'commit_rate': round(sum(row['committed'] for row in writes) / len(writes), 3) if writes else None,
-        'avg_latency_ms': round(sum(row['latency_ms'] for row in rows) / total, 1),
-    }
+    if not providers_report:
+        sys.exit('No se ejecutó ningún proveedor; faltan API keys.')
+
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-    report = {'summary': summary, 'rows': rows, 'provider': os.getenv('LLM_PROVIDER')}
-    (ROOT / 'evals' / 'results' / f'eval-{stamp}.json').write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
-    print(json.dumps(summary, ensure_ascii=False))
+    payload = {'generated_at': stamp, 'runs_per_scenario': args.runs, 'providers': providers_report}
+    target = ROOT / 'evals' / 'results' / f'eval-{stamp}.json'
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    print(f'report={target}')
     return 0
 
 

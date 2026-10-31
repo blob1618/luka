@@ -1,11 +1,14 @@
 # Eval de herramientas con modelo real (Fase 3)
 
-Corpus mínimo para medir la elección de herramientas del agente con el proveedor real. **No
-corre en CI ni en la suite**: hace llamadas de red y escribe una base SQLite descartable.
+Corpus de 20 escenarios para medir la elección de herramientas del agente con el proveedor
+real. **No corre en CI ni en la suite**: hace llamadas de red y escribe una base SQLite
+descartable.
 
 ## Requisitos
 
-- `DEEPSEEK_API_KEY` en `.env` (o `EVAL_PROVIDER` apuntando a otro proveedor configurado).
+- `DEEPSEEK_API_KEY` en `.env` para el proveedor por defecto.
+- Para comparar, `GEMINI_API_KEY` y/o `MISTRAL_API_KEY` válidas (el runner omite el proveedor
+  si falta la key; si la key es inválida, las corridas fallan y quedan registradas como error).
 - No necesita Redis real: usa un `FakeRedis` en memoria (`evals/fake_redis.py`).
 - No toca producción: fuerza `DATABASE_URL=sqlite:///./evals/eval.db`.
 
@@ -13,13 +16,16 @@ corre en CI ni en la suite**: hace llamadas de red y escribe una base SQLite des
 
 ```powershell
 .\.codex\venv\Scripts\python.exe evals\runner.py
-.\.codex\venv\Scripts\python.exe evals\runner.py --only register_expense
-.\.codex\venv\Scripts\python.exe evals\runner.py --limit 3
+.\.codex\venv\Scripts\python.exe evals\runner.py --runs 3
+.\.codex\venv\Scripts\python.exe evals\runner.py --providers deepseek,gemini --runs 2
+.\.codex\venv\Scripts\python.exe evals\runner.py --only register_expense --runs 5
+.\.codex\venv\Scripts\python.exe evals\runner.py --limit 3 --runs 1
 ```
 
-Cada corrida imprime una fila por escenario y un resumen; además escribe
-`evals/results/eval-<UTC>.json` con el detalle (herramientas elegidas, latencia, texto y
-resultado de la verificación).
+Cada corrida imprime una fila **agregada por escenario** y un resumen por proveedor; además
+escribe `evals/results/eval-<UTC>.json` con cada repetición, las herramientas elegidas, la
+latencia y el resultado de la verificación. Los resultados de la última corrida están
+resumidos en [RESULTS.md](RESULTS.md).
 
 ## Métricas
 
@@ -50,11 +56,13 @@ Editar `evals/corpus.json`:
 ```
 
 `kind`: `write` (preview + confirmación), `read` (sin confirmación) o `clarify` (el agente
-debe pedir datos faltantes y no escribir). `verify` admite `movement`, `limit`, `no_limit`,
-`reminder`, `reply_contains` y `event_key`.
+debe pedir datos faltantes y no escribir). `verify` admite `movement`, `movements`, `wallet`,
+`limit`, `no_limit`, `reminder`, `no_movement`, `reply_contains` y `reply_nonempty`.
 
 ## Límites
 
-- Una corrida por escenario: mide el comportamiento de una muestra, no una tasa estable.
+- Tres repeticiones por escenario siguen siendo una muestra acotada, no una tasa estable.
 - El proveedor es no determinista; un fallo aislado no es una regresión.
+- La comparación entre proveedores depende de keys válidas; Gemini y Mistral respondieron 401
+  en la última prueba local.
 - No reemplaza la suite hermética ni la aceptación manual; es evidencia para la tesis.
