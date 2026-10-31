@@ -8,12 +8,9 @@ from uuid import uuid4
 from app.models import database
 from app.models.database import (
     AssistantWriteReceipt,
-    AvisoRecordatorio,
     Billetera,
-    CandidatoGastoRecurrente,
     LimiteCategoria,
     MovimientoFinanciero,
-    Recordatorio,
     Usuario,
 )
 
@@ -35,10 +32,7 @@ def reset_test_user(phone: str, name: str = 'Staging') -> dict:
 
         session.query(AssistantWriteReceipt).filter_by(owner_id=user.id).delete()
         session.query(MovimientoFinanciero).filter_by(usuario_id=user.id).delete()
-        session.query(AvisoRecordatorio).filter_by(usuario_id=user.id).delete()
-        session.query(Recordatorio).filter_by(usuario_id=user.id).delete()
         session.query(LimiteCategoria).filter_by(usuario_id=user.id).delete()
-        session.query(CandidatoGastoRecurrente).filter_by(usuario_id=user.id).delete()
 
         wallet = (
             session.query(Billetera)
