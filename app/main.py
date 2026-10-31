@@ -35,7 +35,7 @@ from app.api.whatsapp import (  # noqa: E402
     send_whatsapp_typing_indicator,
 )
 from app.scheduler import start_scheduler  # noqa: E402
-from app.services import deployment_status, staging_ingress  # noqa: E402
+from app.services import deployment_status, staging_ingress, staging_seed  # noqa: E402
 from app.services.telemetry import (  # noqa: E402
     finish_message_telemetry,
     start_message_telemetry,
@@ -335,6 +335,22 @@ async def clear_test_outbox(request: Request, phone: str):
         raise HTTPException(status_code=503, detail="Redis unavailable")
     removed = await staging_ingress.clear_outbox(redis_client, phone)
     return {"phone": phone, "removed": removed}
+
+
+@app.post("/__test__/users")
+async def seed_test_user(request: Request):
+    _require_test_ingress(request)
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid payload") from None
+    phone = str(payload.get("phone", "")).strip()
+    if not phone.isdigit() or len(phone) < 6:
+        raise HTTPException(status_code=400, detail="Invalid phone")
+    if phone not in staging_ingress.capture_phones():
+        raise HTTPException(status_code=403, detail="Phone is not in TEST_CAPTURE_PHONES")
+    name = str(payload.get("name") or "Staging").strip()[:80]
+    return await asyncio.to_thread(staging_seed.reset_test_user, phone, name)
 
 
 # Valores válidos de `tipos`; el endpoint comparte el vocabulario de QuoteType.

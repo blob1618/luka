@@ -21,7 +21,8 @@ BASE_URL = os.getenv('STAGING_BASE_URL', '').rstrip('/')
 APP_SECRET = os.getenv('STAGING_APP_SECRET', '')
 TEST_TOKEN = os.getenv('STAGING_TEST_TOKEN', '')
 EXPECTED_COMMIT = os.getenv('STAGING_EXPECTED_COMMIT', '').strip()
-FIXED_PHONE = os.getenv('STAGING_PHONE', '').strip()
+DEFAULT_PHONE = '5491100000001'
+FIXED_PHONE = os.getenv('STAGING_PHONE', '').strip() or DEFAULT_PHONE
 
 pytestmark = pytest.mark.skipif(
     not (BASE_URL and APP_SECRET and TEST_TOKEN),
@@ -145,6 +146,14 @@ def _cancel_id(messages):
     return None
 
 
+def _seed(phone):
+    """Crea o resetea el usuario sintético: una billetera ARS, sin límites ni movimientos."""
+    response = httpx.post(f'{BASE_URL}/__test__/users', json={'phone': phone},
+                          headers=_headers(), timeout=60)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def _unique_phone():
     return FIXED_PHONE or '54911' + str(int(time.time()))[-8:]
 
@@ -160,9 +169,10 @@ def test_version_and_ready():
 
 def test_register_then_confirm_conversation():
     phone = _unique_phone()
+    _seed(phone)
     _clear(phone)
 
-    # Cancela cualquier borrador que haya quedado de una corrida anterior.
+    # Cancela cualquier borrador que haya quedado en Redis.
     _send_text(phone, 'cancelar')
     time.sleep(4)
     _clear(phone)
