@@ -291,6 +291,8 @@ def read_version():
         "service": deployment_status.service_name(),
         "commit": deployment_status.commit_sha(),
         "migrations_local": len(deployment_status.local_migration_versions()),
+        "llm_provider": deployment_status.llm_provider(),
+        "llm_model": deployment_status.llm_model(),
     }
 
 

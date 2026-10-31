@@ -8,6 +8,22 @@ MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "supabase" / "migrations"
 APPLIED_MIGRATIONS_QUERY = (
     "select version from supabase_migrations.schema_migrations order by version"
 )
+LLM_MODELS = {
+    "gemini": ("GEMINI_MODEL", "gemini-3.1-flash-lite"),
+    "mistral": ("MISTRAL_MODEL", "mistral-small-latest"),
+    "deepseek": ("DEEPSEEK_MODEL", "deepseek-flash"),
+}
+
+
+def llm_provider() -> str:
+    return (os.getenv("LLM_PROVIDER", "gemini").strip().lower() or "gemini")
+
+
+def llm_model() -> str:
+    variable, default = LLM_MODELS.get(llm_provider(), ("", "unknown"))
+    if not variable:
+        return "unknown"
+    return os.getenv(variable, default).strip() or default
 
 
 def service_name() -> str:

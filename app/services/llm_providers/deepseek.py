@@ -1,9 +1,12 @@
+import logging
 import os
 from typing import Any, Dict
 
 import httpx
 
 from .base import LLMProvider
+
+logger = logging.getLogger(__name__)
 
 
 class DeepSeekProvider(LLMProvider):
@@ -51,7 +54,15 @@ class DeepSeekProvider(LLMProvider):
             )
             response.raise_for_status()
 
-        choices = response.json().get("choices", [])
+        payload = response.json()
+        usage = payload.get("usage") or {}
+        logger.info(
+            "deepseek_usage model=%s prompt_tokens=%s completion_tokens=%s",
+            payload.get("model") or model_name,
+            usage.get("prompt_tokens"),
+            usage.get("completion_tokens"),
+        )
+        choices = payload.get("choices", [])
         if not choices:
             raise ValueError("DeepSeek returned no choices")
         raw_text = choices[0].get("message", {}).get("content")
