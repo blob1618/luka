@@ -169,6 +169,10 @@ En staging se puede activar `WHATSAPP_TRANSPORT=capture` (con `APP_ENV=staging` 
 en `GET /__test__/outbox` para que el runner de `staging_tests/` verifique botones y textos
 sin depender de Meta. Fuera de staging esos endpoints responden 404.
 
+Como alternativa sin segundo entorno, `TEST_CAPTURE_PHONES` permite capturar solo los
+teléfonos listados aun en producción: el resto de los envíos sigue saliendo por Meta. Exige
+`TEST_INGRESS_TOKEN`; sin él la captura y el outbox quedan deshabilitados.
+
 ## Scheduler
 
 `app/scheduler.py` usa un `AsyncIOScheduler` que arranca en el `lifespan` de la app.

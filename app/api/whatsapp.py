@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import httpx
 
-from app.services.staging_ingress import capture_enabled, record_outbound
+from app.services.staging_ingress import capture_enabled, capture_for_phone, record_outbound
 
 
 DEFAULT_WHATSAPP_GRAPH_API_VERSION = "v26.0"
@@ -408,7 +408,7 @@ async def send_whatsapp_message_detailed(
     template_parameters: list[str] | None = None,
 ) -> WhatsAppSendResult:
     """Send a supported message through Meta returning a detailed result."""
-    capture = capture_enabled()
+    capture = capture_for_phone(to_number)
     api_token = os.getenv("WHATSAPP_API_TOKEN")
     phone_id = os.getenv("WHATSAPP_PHONE_ID")
     api_version = whatsapp_graph_api_version()
@@ -691,7 +691,7 @@ async def send_whatsapp_reaction(
     emoji: str = "⏳",
 ) -> bool:
     """Send an immediate reaction emoji for an inbound WhatsApp message."""
-    if capture_enabled():
+    if capture_for_phone(to_number):
         return True
     api_token = os.getenv("WHATSAPP_API_TOKEN")
     phone_id = os.getenv("WHATSAPP_PHONE_ID")

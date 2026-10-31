@@ -4,10 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       base_url:
-        description: URL del servicio de staging
+        description: URL del servicio (staging o producción con captura por teléfono)
         required: true
       expected_commit:
         description: Commit esperado (opcional)
+        required: false
+      phone:
+        description: Teléfono de prueba (debe estar en TEST_CAPTURE_PHONES si es producción)
         required: false
 
 jobs:
@@ -26,6 +29,7 @@ jobs:
         env:
           STAGING_BASE_URL: ${{ inputs.base_url }}
           STAGING_EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          STAGING_PHONE: ${{ inputs.phone }}
           STAGING_APP_SECRET: ${{ secrets.STAGING_APP_SECRET }}
           STAGING_TEST_TOKEN: ${{ secrets.STAGING_TEST_TOKEN }}
         run: pytest staging_tests -q

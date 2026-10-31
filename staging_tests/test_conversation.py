@@ -18,6 +18,7 @@ BASE_URL = os.getenv('STAGING_BASE_URL', '').rstrip('/')
 APP_SECRET = os.getenv('STAGING_APP_SECRET', '')
 TEST_TOKEN = os.getenv('STAGING_TEST_TOKEN', '')
 EXPECTED_COMMIT = os.getenv('STAGING_EXPECTED_COMMIT', '').strip()
+FIXED_PHONE = os.getenv('STAGING_PHONE', '').strip()
 
 pytestmark = pytest.mark.skipif(
     not (BASE_URL and APP_SECRET and TEST_TOKEN),
@@ -74,7 +75,7 @@ def _confirm_id(messages):
 
 
 def _unique_phone():
-    return '54911' + str(int(time.time()))[-8:]
+    return FIXED_PHONE or '54911' + str(int(time.time()))[-8:]
 
 
 def test_version_and_ready():

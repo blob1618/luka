@@ -174,7 +174,22 @@ de staging, así que no son una superficie de producción.
 `staging_tests/` contiene la conversación de humo (registro, preview y confirmación) que corre
 contra `STAGING_BASE_URL` con `STAGING_APP_SECRET` y `STAGING_TEST_TOKEN`. No se recolecta en
 la suite normal porque vive fuera de `tests/`; se ejecuta con `pytest staging_tests` o desde
-el workflow `Staging E2E` (`workflow_dispatch`, recibe la URL y el commit esperado).
+el workflow `Staging E2E` (`workflow_dispatch`, recibe la URL, el commit esperado y el
+teléfono).
+
+#### Captura por teléfono en producción
+
+Mientras el proyecto no tenga usuarios reales, no hace falta un segundo entorno: con
+`TEST_CAPTURE_PHONES=54911...` (y `TEST_INGRESS_TOKEN`) la app captura **solo ese teléfono** y
+sigue enviando el resto por Meta. `staging_tests` se puede apuntar a la URL de producción con
+`STAGING_PHONE` igual al teléfono listado: los webhooks se inyectan firmados, las respuestas
+quedan en el outbox y **no se envía nada por Meta**, así que no hay riesgo de baneo ni
+automatización de WhatsApp Web. Los datos de prueba quedan en la base de producción, algo
+aceptable mientras sea un entorno académico sin usuarios reales; conviene limpiarlos cuando
+exista el primer usuario.
+
+Sin `TEST_INGRESS_TOKEN` la captura y el outbox quedan deshabilitados (404), aunque el
+teléfono esté listado.
 
 ## Flujo de trabajo del equipo
 

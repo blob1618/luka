@@ -26,13 +26,27 @@ def ingress_token() -> str:
     return os.getenv("TEST_INGRESS_TOKEN", "").strip()
 
 
+def capture_phones() -> set[str]:
+    raw = os.getenv("TEST_CAPTURE_PHONES", "")
+    return {phone.strip() for phone in raw.split(",") if phone.strip()}
+
+
 def ingress_enabled() -> bool:
-    return bool(ingress_token()) and _staging_enabled()
+    return bool(ingress_token()) and (_staging_enabled() or bool(capture_phones()))
 
 
 def capture_enabled() -> bool:
     transport = os.getenv("WHATSAPP_TRANSPORT", "").strip().lower()
     return transport == "capture" and ingress_enabled()
+
+
+def capture_for_phone(phone: str | None) -> bool:
+    """Captura global en staging o solo los teléfonos listados en producción."""
+    if capture_enabled():
+        return True
+    if not phone or not ingress_enabled():
+        return False
+    return phone.strip() in capture_phones()
 
 
 def token_valid(supplied: str | None) -> bool:

@@ -72,3 +72,50 @@ def test_capture_is_disabled_outside_staging(monkeypatch, fake_redis):
 
     assert result.is_permanent and result.error_code == 'missing_credentials'
     assert asyncio.run(staging_ingress.read_outbox(fake_redis, PHONE)) == []
+
+
+def test_production_captures_only_the_listed_phone(monkeypatch, fake_redis):
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.delenv('WHATSAPP_TRANSPORT', raising=False)
+    monkeypatch.setenv('TEST_CAPTURE_PHONES', PHONE)
+
+    def fail():
+        raise AssertionError('no debe llamar a Graph')
+
+    monkeypatch.setattr('app.api.whatsapp.get_whatsapp_client', fail)
+
+    listed = asyncio.run(send_whatsapp_message_detailed(PHONE, WhatsAppText('hola')))
+    other_phone = '5491100000002'
+    other = asyncio.run(send_whatsapp_message_detailed(other_phone, WhatsAppText('hola')))
+
+    assert listed.is_success
+    assert other.is_permanent and other.error_code == 'missing_credentials'
+    assert len(asyncio.run(staging_ingress.read_outbox(fake_redis, PHONE))) == 1
+    assert asyncio.run(staging_ingress.read_outbox(fake_redis, other_phone)) == []
+
+
+def test_production_outbox_requires_token_with_allowlist(monkeypatch, fake_redis):
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.delenv('WHATSAPP_TRANSPORT', raising=False)
+    monkeypatch.setenv('TEST_CAPTURE_PHONES', PHONE)
+    asyncio.run(staging_ingress.record_outbound(PHONE, {'type': 'text'}))
+
+    allowed = client.get('/__test__/outbox', params={'phone': PHONE},
+                         headers={'x-test-token': 'staging-token'})
+    denied = client.get('/__test__/outbox', params={'phone': PHONE})
+
+    assert allowed.status_code == 200 and len(allowed.json()['messages']) == 1
+    assert denied.status_code == 401
+
+
+def test_allowlist_without_token_stays_fail_closed(monkeypatch, fake_redis):
+    monkeypatch.setenv('APP_ENV', 'production')
+    monkeypatch.delenv('WHATSAPP_TRANSPORT', raising=False)
+    monkeypatch.setenv('TEST_CAPTURE_PHONES', PHONE)
+    monkeypatch.delenv('TEST_INGRESS_TOKEN', raising=False)
+
+    result = asyncio.run(send_whatsapp_message_detailed(PHONE, WhatsAppText('hola')))
+
+    assert result.is_permanent and result.error_code == 'missing_credentials'
+    assert client.get('/__test__/outbox', params={'phone': PHONE},
+                      headers={'x-test-token': 'staging-token'}).status_code == 404
