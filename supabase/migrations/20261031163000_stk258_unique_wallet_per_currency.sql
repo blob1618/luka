@@ -55,7 +55,7 @@ WHERE rn = 1;
 
 UPDATE public.movimientos_financieros m
 SET billetera_id = s.survivor_id
-FROM public.billetera_superviviente s
+FROM billetera_superviviente s
 WHERE m.usuario_id = s.usuario_id
   AND m.moneda = s.moneda
   AND m.billetera_id <> s.survivor_id
@@ -65,7 +65,7 @@ WHERE m.usuario_id = s.usuario_id
   );
 
 DELETE FROM public.billetera b
-USING public.billetera_superviviente s
+USING billetera_superviviente s
 WHERE b.usuario_id = s.usuario_id
   AND b.moneda = s.moneda
   AND b.id <> s.survivor_id;
