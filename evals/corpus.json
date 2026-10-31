@@ -22,12 +22,35 @@
       "verify": {"movement": {"amount": "2500", "currency": "ARS", "type": "egreso", "date_offset": -1}}
     },
     {
+      "id": "register_usd",
+      "text": "gasté 20 dólares en café",
+      "expect_tools": ["register_movement"],
+      "kind": "write",
+      "seed_wallets": ["ARS", "USD"],
+      "verify": {"movement": {"amount": "20", "currency": "USD", "type": "egreso"}}
+    },
+    {
+      "id": "register_batch",
+      "text": "gasté 1000 en taxi y 2000 en comida",
+      "expect_tools": ["register_movement_batch", "register_movement"],
+      "kind": "write",
+      "verify": {"movements": {"count": 2, "amounts": ["1000", "2000"]}}
+    },
+    {
       "id": "update_amount",
       "text": "cambiá el gasto de taxi a 1200",
       "expect_tools": ["update_movement"],
       "kind": "write",
       "seed_movement": {"description": "taxi", "amount": "1000", "type": "egreso"},
       "verify": {"movement": {"amount": "1200", "description_contains": "taxi"}}
+    },
+    {
+      "id": "correct_date",
+      "text": "corregí la fecha del gasto de taxi a ayer",
+      "expect_tools": ["correct_movement_date"],
+      "kind": "write",
+      "seed_movement": {"description": "taxi", "amount": "1000", "type": "egreso"},
+      "verify": {"movement": {"description_contains": "taxi", "date_offset": -1}}
     },
     {
       "id": "annul_taxi",
@@ -50,6 +73,14 @@
       "expect_tools": ["find_movements"],
       "kind": "read",
       "seed_movement": {"description": "taxi", "amount": "1000", "type": "egreso"},
+      "verify": {"reply_contains": "taxi"}
+    },
+    {
+      "id": "find_yesterday",
+      "text": "mostrame los gastos de ayer",
+      "expect_tools": ["find_movements"],
+      "kind": "read",
+      "seed_movement": {"description": "taxi", "amount": "1000", "type": "egreso", "date_offset": -1},
       "verify": {"reply_contains": "taxi"}
     },
     {
@@ -78,6 +109,42 @@
       "text": "mandame el dashboard",
       "expect_tools": ["dashboard_link"],
       "kind": "read",
+      "verify": {}
+    },
+    {
+      "id": "create_wallet_usd",
+      "text": "creá una billetera en dólares",
+      "expect_tools": ["create_wallet"],
+      "kind": "write",
+      "verify": {"wallet": {"currency": "USD", "exists": true}}
+    },
+    {
+      "id": "rename_wallet",
+      "text": "renombrá mi billetera a Principal",
+      "expect_tools": ["rename_wallet"],
+      "kind": "write",
+      "verify": {"wallet": {"currency": "ARS", "name": "Principal"}}
+    },
+    {
+      "id": "financial_education",
+      "text": "¿qué es el interés compuesto?",
+      "expect_tools": ["financial_education"],
+      "kind": "read",
+      "verify": {"reply_nonempty": true}
+    },
+    {
+      "id": "out_of_scope",
+      "text": "¿quién ganó el partido de ayer?",
+      "expect_tools": ["conversation_reply"],
+      "kind": "read",
+      "verify": {"no_movement": true, "reply_nonempty": true}
+    },
+    {
+      "id": "chart_categories",
+      "text": "graficá mis gastos por categoría",
+      "expect_tools": ["movement_chart"],
+      "kind": "read",
+      "seed_movement": {"description": "taxi", "amount": "1000", "type": "egreso"},
       "verify": {}
     }
   ]
