@@ -46,7 +46,6 @@ from app.services.conversation import ConversationService  # noqa: E402
 from app.services.llm import LLMService  # noqa: E402
 from evals.fake_redis import FakeRedis  # noqa: E402
 
-CORPUS = json.loads((Path(__file__).parent / 'corpus.json').read_text(encoding='utf-8'))['scenarios']
 PROVIDER_KEYS = {'deepseek': 'DEEPSEEK_API_KEY', 'gemini': 'GEMINI_API_KEY', 'mistral': 'MISTRAL_API_KEY'}
 
 
@@ -68,6 +67,14 @@ def seed(scenario, index):
         category = Categoria(usuario_id=owner, nombre='Comida')
         session.add(category)
         session.flush()
+        categories = {'Comida': category}
+        for name in scenario.get('seed_categories', []):
+            if name in categories:
+                continue
+            extra = Categoria(usuario_id=owner, nombre=name)
+            session.add(extra)
+            session.flush()
+            categories[name] = extra
 
         movements = scenario.get('seed_movements') or (
             [scenario['seed_movement']] if scenario.get('seed_movement') else [])
@@ -81,8 +88,9 @@ def seed(scenario, index):
 
         limit = scenario.get('seed_limit')
         if limit:
+            limit_category = categories.get(limit.get('category', 'Comida'), category)
             session.add(LimiteCategoria(
-                usuario_id=owner, categoria_id=category.id,
+                usuario_id=owner, categoria_id=limit_category.id,
                 cantidad_max=Decimal(limit['amount']), moneda='ARS',
                 inicio_periodo=date.today().replace(day=1),
                 fin_periodo=date.today() + timedelta(days=30)))
@@ -254,13 +262,15 @@ async def main():
     parser.add_argument('--limit', type=int, default=0)
     parser.add_argument('--runs', type=int, default=3)
     parser.add_argument('--providers', default='deepseek')
+    parser.add_argument('--corpus', default=str(Path(__file__).parent / 'corpus.json'))
     args = parser.parse_args()
 
     (ROOT / 'evals' / 'results').mkdir(exist_ok=True)
     (ROOT / 'evals' / 'eval.db').unlink(missing_ok=True)
     Base.metadata.create_all(engine)
 
-    scenarios = [item for item in CORPUS if not args.only or item['id'] in args.only]
+    corpus = json.loads(Path(args.corpus).read_text(encoding='utf-8'))['scenarios']
+    scenarios = [item for item in corpus if not args.only or item['id'] in args.only]
     if args.limit:
         scenarios = scenarios[:args.limit]
 
