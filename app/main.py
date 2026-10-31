@@ -139,6 +139,10 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "WHATSAPP_APP_SECRET no configurado: el webhook acepta payloads sin firma")
 
+    ingress_warning = staging_ingress.startup_warning()
+    if ingress_warning:
+        logger.warning(ingress_warning)
+
     try:
         start_scheduler()
         yield

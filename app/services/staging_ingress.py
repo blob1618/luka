@@ -49,6 +49,19 @@ def capture_for_phone(phone: str | None) -> bool:
     return phone.strip() in capture_phones()
 
 
+def startup_warning() -> str | None:
+    """Mensaje para el arranque: deja visible si la captura o el ingreso están activos."""
+    if not ingress_enabled():
+        return None
+    if capture_enabled():
+        return "staging_capture_global_activo: las respuestas no se envian por Meta"
+    phones = sorted(capture_phones())
+    if phones:
+        masked = ", ".join(f"***{phone[-4:]}" for phone in phones)
+        return f"staging_capture_activo phones={len(phones)} ({masked})"
+    return "staging_ingress_activo: endpoints de prueba habilitados sin captura"
+
+
 def token_valid(supplied: str | None) -> bool:
     token = ingress_token()
     return bool(token) and supplied is not None and secrets.compare_digest(supplied, token)
