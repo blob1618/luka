@@ -7,7 +7,7 @@ from uuid import UUID
 
 from pydantic import Field, field_validator
 
-from app.api.whatsapp import WhatsAppText
+from app.api.whatsapp import WhatsAppReplyButton, WhatsAppReplyButtons
 from app.models.database import Billetera, Categoria, LimiteCategoria
 from app.services import finance
 from app.services.assistant_contracts import (
@@ -231,7 +231,7 @@ def compensation_text(proposal: CompensationProposal, *, confirmation: bool = Fa
         lines.append(f'{donor.category_name}: límite {amount_text(donor.before_limit)} → '
                      f'{amount_text(donor.after_limit)} (aporta {proposal.currency} {amount_text(contributed)}).')
     if not confirmation:
-        lines.append('Si querés, decime «ajustá el presupuesto» y te preparo la propuesta.')
+        lines.append('Si querés, tocá «Ajustar presupuesto» o decime «ajustá el presupuesto».')
     return '\n'.join(lines)
 
 
@@ -264,7 +264,7 @@ async def prepare_compensation(context, operation):
 
 async def suggest_compensation(context, source_operation, result):
     """Preserve the post-expense offer as a new, separately confirmed proposal."""
-    if result.get('replayed') or result.get('command_kind') not in {'register', 'register_batch'}:
+    if result.get('replayed') or result.get('command_kind') not in {'register', 'register_batch', 'update'}:
         return
     workspace = context.operations.workspace(context)
     if any(op.operation_id != source_operation.operation_id and op.status not in {'committed', 'cancelled', 'expired'}
@@ -280,7 +280,11 @@ async def suggest_compensation(context, source_operation, result):
             target_category=budget.category_name, currency=budget.currency, reference_date=context.turn.reference_day)
         if available.status != 'ok':
             return
-        context.outbound.append(WhatsAppText(compensation_text(available.proposal)))
+        context.outbound.append(WhatsAppReplyButtons(
+            body=compensation_text(available.proposal),
+            buttons=(WhatsAppReplyButton(
+                id=f'budget:compensate:{budget.currency}',
+                title='Ajustar presupuesto'),)))
         context.action_binding = None
         context.trace.append({'source': 'backend', 'tool': 'propose_compensation', 'outcome': 'suggested'})
     except ValueError:

@@ -97,7 +97,14 @@ async def process_interaction(phone, message_id, option_id, reply_type):
         async with assistant_state.claim(owner):
             state = await assistant_state.read(owner)
             context = make_context(owner, phone, message_id, '', None, state)
-            if option_id.startswith('movement:change_category:'):
+            if option_id.startswith('budget:compensate:'):
+                from app.services.assistant_capabilities.budgets import CompensationDraft
+                from app.services.assistant_runtime import context_reply
+                currency = option_id.split(':', 2)[2] or None
+                await context.operations.open(context, operation_key='propose_compensation',
+                    draft=CompensationDraft(currency=currency, reference_day=context.turn.reference_day))
+                answer = context_reply(context, context.terminal)
+            elif option_id.startswith('movement:change_category:'):
                 from app.services.assistant_capabilities.movement_management import UpdateDraft, MovementChanges
                 from app.services.assistant_runtime import context_reply
                 ref = option_id.removeprefix('movement:change_category:')
