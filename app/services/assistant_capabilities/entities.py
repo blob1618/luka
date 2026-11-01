@@ -246,7 +246,7 @@ async def commit_wallet_rename(context, operation, confirmation):
 def entity_contracts():
     return (read_tool('list_categories', 'Lista categorías propias activas con referencias seleccionables. Si se piden totales, especificar currency: jamás sumar monedas diferentes.', CategoryQuery, list_categories),
         *(category_operation(action) for action in ('create', 'rename', 'delete')),
-        operation_tool('create_wallet', 'Prepara crear una billetera propia. Si no se indica nombre, usa «Pesos» para ARS, «Dólares» para USD, «Reales» para BRL y «Euros» para EUR.',
+        operation_tool('create_wallet', 'Prepara crear una billetera propia. Si no se indica nombre, usa «Pesos» para ARS, «Dólares» para USD, «Reales» para BRL y «Euros» para EUR. Si piden una moneda fuera de ARS/USD/BRL/EUR, abrí igual la operación con esa moneda; el backend responde con la lista.',
             WalletDraft, WalletPrepared, prepare_wallet, commit_wallet),
         operation_tool('rename_wallet', 'Prepara renombrar la billetera propia indicada.',
             WalletRenameDraft, WalletRenamePrepared, prepare_wallet_rename, commit_wallet_rename))
