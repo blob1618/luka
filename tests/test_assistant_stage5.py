@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.api.whatsapp import InboundInteractiveReply, WhatsAppReplyButtons, WhatsAppText
+from app.api.whatsapp import InboundInteractiveReply, WhatsAppReplyButtons
 from app.models.database import AssistantWriteReceipt, Categoria, LimiteCategoria, MovimientoFinanciero, Recordatorio, Usuario
 from app.services import assistant_runtime, assistant_state, dispatcher
 from app.services import compensation, chart_query, conversation_flow, monthly_balance
@@ -269,16 +269,16 @@ async def test_excess_suggests_new_compensation_without_applying_it(ingress, acc
     preview = await ingress.send('Gasté300encomida', steps=[registration])
     result = await ingress.confirm(preview)
     assert not result.assistant_preview_delivery
-    messages = [message.body for message in result.followup_messages
-                if isinstance(message, WhatsAppText)]
-    assert any('superó su límite' in body and 'Donante' in body
-               and 'ajustá el presupuesto' in body for body in messages)
+    messages = [message for message in result.followup_messages
+                if isinstance(message, WhatsAppReplyButtons)
+                and 'superó su límite' in message.body]
+    assert messages and 'Donante' in messages[0].body and 'Ajustar presupuesto' in messages[0].buttons[0].title
     state = await assistant_state.read(owner)
     assert state['workspace']['active_operation_id'] is None
     with factory() as session:
         assert {Decimal(row.cantidad_max) for row in session.query(LimiteCategoria)} == {Decimal(1000), Decimal(2000)}
 
-    proposal = await ingress.tool('propose_compensation', {'currency': 'ARS'})
+    proposal = await ingress.send('Ajustar presupuesto', option_id=messages[0].buttons[0].id)
     assert proposal.assistant_preview_delivery
     assert 'Ajustar presupuesto' in proposal.reply_text and 'Donante' in proposal.reply_text
     await ingress.confirm(proposal)
@@ -286,6 +286,38 @@ async def test_excess_suggests_new_compensation_without_applying_it(ingress, acc
         rows = list(session.query(LimiteCategoria))
         assert sum(row.cantidad_max for row in rows) == 3000
         assert next(row.cantidad_max for row in rows if row.categoria_id==category) > 1000
+
+
+@pytest.mark.asyncio
+async def test_category_update_also_suggests_compensation(ingress, accounts):
+    factory, owner, _, _, category = accounts
+    donor = uuid4()
+    with factory() as session:
+        session.add(Categoria(id=donor, usuario_id=owner, nombre='Donante'))
+        session.add_all([
+            LimiteCategoria(usuario_id=owner, categoria_id=category, cantidad_max=1000, moneda='ARS',
+                            inicio_periodo=date(2026, 10, 1), fin_periodo=date(2026, 10, 31)),
+            LimiteCategoria(usuario_id=owner, categoria_id=donor, cantidad_max=2000, moneda='ARS',
+                            inicio_periodo=date(2026, 10, 1), fin_periodo=date(2026, 10, 31)),
+        ])
+        session.commit()
+    preview = await ingress.send('Gasté 1300 sin categoría', steps=[
+        [('register_movement', register_now(amount='1300'))]])
+    await ingress.confirm(preview)
+    await ingress.tool('find_movements', {'selector': {'kind': 'all'}, 'sort_by': 'date_desc'})
+
+    def categorize(kwargs):
+        category_ref = next(c['ref'] for c in initial(kwargs)['categories'] if c['name'] == 'Comida')
+        return [('update_movement', {'movement_ref': visible_ref(kwargs, 'movement'),
+                                     'changes': {'category_ref': category_ref}})]
+    update = await ingress.send('Categoría movilidad', steps=[categorize])
+    result = await ingress.confirm(update)
+    assert not result.assistant_preview_delivery
+    messages = [message for message in result.followup_messages
+                if isinstance(message, WhatsAppReplyButtons) and 'superó su límite' in message.body]
+    assert messages and 'Donante' in messages[0].body
+    state = await assistant_state.read(owner)
+    assert state['workspace']['active_operation_id'] is None
 
 
 @pytest.mark.asyncio
