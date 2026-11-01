@@ -7,15 +7,19 @@ from uuid import UUID
 
 from pydantic import Field, field_validator
 
-from app.models.database import Categoria, LimiteCategoria
+from app.models.database import Billetera, Categoria, LimiteCategoria
 from app.services import finance
-from app.services.assistant_contracts import EntityReference, FrozenModel, ReferenceToken, ResourceReference, amount_text
+from app.services.assistant_contracts import (
+    EntityReference, FieldRequest, FrozenModel, IncompleteOperation, ReferenceToken,
+    ResourceReference, amount_text,
+)
 from app.services.assistant_capabilities.common import (
     check_resource, committed, data, issue_resource, missing, operation_tool,
     positive, prepared, read_tool, refresh_resource, require_status, snapshot_row,
 )
 from app.services.assistant_capabilities.entities import category_reference
 from app.services.budget import BudgetService
+from app.services.currencies import is_supported, supported_text
 from app.services.compensation import BudgetCompensationService, CompensationProposal
 from app.services.limit import LimitService
 
@@ -37,6 +41,13 @@ class LimitDraft(FrozenModel):
     year: int | None = Field(title='el año', default=None, ge=1, le=9999)
     currency: str | None = Field(title='la moneda', default=None, pattern=r'^[A-Z]{3}$')
     _positive = field_validator('amount')(positive)
+
+    @field_validator('currency')
+    @classmethod
+    def _supported_currency(cls, value):
+        if value is not None and not is_supported(value):
+            raise ValueError(f'Moneda no soportada. Usá {supported_text()}.')
+        return value
 
 
 class LimitPrepared(FrozenModel):
@@ -129,6 +140,20 @@ async def prepare_limit(context, operation):
         context.event_key = 'limit.year_confirmation' if field == 'year' else 'limit.missing_data'
         context.event_variables = {'year': str(context.turn.reference_day.year + (1 if updated.month and updated.month < context.turn.reference_day.month else 0))} if field == 'year' else {'missing_field': field}
         return absent
+
+    def has_wallet():
+        with finance.SessionLocal() as session:
+            return session.query(Billetera.id).filter(
+                Billetera.usuario_id == context.turn.owner_id,
+                Billetera.moneda == updated.currency,
+            ).first() is not None
+
+    if not await asyncio.to_thread(has_wallet):
+        return IncompleteOperation(missing_fields=(FieldRequest(
+            field='currency', reason='missing',
+            question=f'No tenés una billetera en {updated.currency}. Creá una antes de definir un límite en esa moneda.',
+        ),))
+
     start = date(updated.year, updated.month, 1)
     existing = [dict(id=identifier, **snap) for identifier, _, snap in await asyncio.to_thread(_limit_rows, context.turn.owner_id)
         if snap['categoria_id'] == category_id and snap['inicio_periodo'] == str(start) and snap['moneda'] == updated.currency]

@@ -77,6 +77,22 @@ async def test_default_quote_types_requests_all_three(isolated_db):
     assert_no_metadata(facts)
     assert RENDERED_REPLY in result.reply_text
 
+
+@pytest.mark.asyncio
+async def test_brl_balance_is_reported_separately(isolated_db):
+    with isolated_db() as session:
+        seed_user(session, '5491100000204', [
+            ('Efectivo', 'ARS', [('ingreso', '80000')]),
+            ('Reales', 'BRL', [('ingreso', '150')]),
+        ])
+    result, render = await ask('5491100000204', {})
+    facts, tipos = facts_and_types(render)
+    assert facts['ARS_TOTAL'] == '80.000,00'
+    assert facts['USD_TOTAL'] == '0,00'
+    assert facts['BRL_TOTAL'] == '150,00'
+    assert tipos == []
+    assert RENDERED_REPLY in result.reply_text
+
 @pytest.mark.asyncio
 async def test_single_blue_quote_type_only_values_blue(isolated_db):
     with isolated_db() as session:

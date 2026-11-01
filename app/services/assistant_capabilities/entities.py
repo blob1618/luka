@@ -11,6 +11,7 @@ from app.services.assistant_contracts import EntityReference, FrozenModel, Opera
 from app.services.assistant_capabilities.common import committed, data, missing, operation_tool, prepared, read_tool, require_status
 from app.services.finance import FinanceService
 from app.services.category_creation import CategoryCreationService
+from app.services.currencies import is_supported, supported_text
 from app.services.wallet import WalletService
 from app.services.assistant_operations import merge_payload
 
@@ -56,8 +57,8 @@ class WalletDraft(FrozenModel):
     @field_validator('currency')
     @classmethod
     def _supported_currency(cls, value):
-        if value is not None and value not in {'ARS', 'USD'}:
-            raise ValueError('La moneda debe ser ARS o USD')
+        if value is not None and not is_supported(value):
+            raise ValueError(f'Moneda no soportada. Usá {supported_text()}.')
         return value
 
 
@@ -244,7 +245,7 @@ async def commit_wallet_rename(context, operation, confirmation):
 def entity_contracts():
     return (read_tool('list_categories', 'Lista categorías propias activas con referencias seleccionables. Si se piden totales, especificar currency: jamás sumar monedas diferentes.', CategoryQuery, list_categories),
         *(category_operation(action) for action in ('create', 'rename', 'delete')),
-        operation_tool('create_wallet', 'Prepara crear una billetera propia. Si no se indica nombre, usa «Pesos» para ARS y «Dólares» para USD.',
+        operation_tool('create_wallet', 'Prepara crear una billetera propia. Si no se indica nombre, usa «Pesos» para ARS, «Dólares» para USD, «Reales» para BRL y «Euros» para EUR.',
             WalletDraft, WalletPrepared, prepare_wallet, commit_wallet),
         operation_tool('rename_wallet', 'Prepara renombrar la billetera propia indicada.',
             WalletRenameDraft, WalletRenamePrepared, prepare_wallet_rename, commit_wallet_rename))

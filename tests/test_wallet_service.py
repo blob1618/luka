@@ -52,8 +52,8 @@ def make_user(session, name="User1", phone="5491111111111"):
     return u
 
 
-@pytest.mark.parametrize("curr", ["ARS", "USD"])
-def test_create_wallet_ars_and_usd(test_db, curr):
+@pytest.mark.parametrize("curr", ["ARS", "USD", "BRL", "EUR"])
+def test_create_wallet_supported_currencies(test_db, curr):
     session = test_db["session"]
     user = make_user(session)
     res = WalletService.create_wallet(user.id, f"Efectivo {curr}", curr)
@@ -62,7 +62,8 @@ def test_create_wallet_ars_and_usd(test_db, curr):
     assert res.currency == curr
 
 
-@pytest.mark.parametrize("curr,expected", [("ARS", "Pesos"), ("USD", "Dólares")])
+@pytest.mark.parametrize("curr,expected", [
+    ("ARS", "Pesos"), ("USD", "Dólares"), ("BRL", "Reales"), ("EUR", "Euros")])
 def test_create_wallet_empty_name_uses_currency_default(test_db, curr, expected):
     session = test_db["session"]
     user = make_user(session)
@@ -161,9 +162,10 @@ def test_create_wallet_rejects_unsupported_currency(test_db):
     session = test_db["session"]
     user = make_user(session)
 
-    result = WalletService.create_wallet(user.id, "Euros", "EUR")
+    result = WalletService.create_wallet(user.id, "Yenes", "JPY")
 
     assert result.status == "invalid_data"
+    assert "Moneda no soportada" in result.message
     assert session.query(Billetera).count() == 0
 
 

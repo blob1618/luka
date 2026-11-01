@@ -4,7 +4,7 @@ Solo agrega los saldos all-time de las billeteras del usuario y aplica las
 cotizaciones que el caller ya obtuvo: no hace I/O de red ni escribe en la DB.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
 from uuid import UUID
@@ -28,6 +28,7 @@ class NetWorthResult:
     quotes: dict[QuoteType, UsdQuote]
     missing: tuple[QuoteType, ...]
     stale: tuple[QuoteType, ...]
+    other_totals: dict[str, Decimal] = field(default_factory=dict)
 
 
 def calculate_net_worth(
@@ -56,6 +57,10 @@ def calculate_net_worth(
 
     ars_total = by_currency.get("ARS", Decimal("0"))
     usd_total = by_currency.get("USD", Decimal("0"))
+    other_totals = {
+        code: total for code, total in by_currency.items()
+        if code not in {"ARS", "USD"}
+    }
 
     if usd_total == 0:
         return NetWorthResult(
@@ -66,6 +71,7 @@ def calculate_net_worth(
             quotes=available,
             missing=(),
             stale=(),
+            other_totals=other_totals,
         )
 
     totals: dict[QuoteType, Decimal | None] = {}
@@ -94,4 +100,5 @@ def calculate_net_worth(
         quotes=available,
         missing=tuple(missing),
         stale=tuple(stale),
+        other_totals=other_totals,
     )

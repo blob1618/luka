@@ -112,6 +112,8 @@ async def prepare_update(context, operation):
             from app.services.assistant_contracts import FieldRequest, IncompleteOperation
             return IncompleteOperation(missing_fields=(FieldRequest(field='changes.wallet_ref', reason='missing',
                 question=f"No tenés una billetera en {selection.currency or wanted_currency}. Creá una en esa moneda antes de cambiar el movimiento."),))
+        if selection.status == 'invalid_data':
+            raise ValueError(selection.message)
         if selection.status != 'selected':
             raise ValueError('No pude usar esa billetera; revisá la moneda y la billetera indicadas')
         patch['wallet_id'] = selection.wallet_id

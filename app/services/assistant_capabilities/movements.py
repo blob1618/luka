@@ -14,6 +14,7 @@ from app.services.assistant_contracts import (
 )
 from app.services.assistant_registry import OperationContract, ToolContract, ToolPolicy
 from app.services.assistant_capabilities.common import request_field
+from app.services.currencies import is_supported, supported_text
 from app.services.movement_commands import commit_command, digest, snapshot, validate_dependencies
 from app.services.movement_policy import registration_policy_reply
 from app.services.wallet import WalletService
@@ -66,6 +67,8 @@ def _query(owner_id, args, scope, shown_ids, category_id, category_filter):
 
 
 async def find_movements(context, args):
+    if args.currency and not is_supported(args.currency):
+        raise ValueError(f'Moneda no soportada. Usá {supported_text()}.')
     selector, scope, shown_ids, category_id = args.selector, None, None, None
     if selector.kind == 'scope':
         scope = await context.references.resolve(context.turn, selector.ref, kind='query_scope', payload_model=ScopePayload)
@@ -174,6 +177,8 @@ class MovementOperation:
                 return IncompleteOperation(missing_fields=(FieldRequest(
                     field='wallet_ref', reason='missing',
                     question=f"No tenés una billetera en {selection.currency}. ¿La creo?"),))
+            if selection.status == 'invalid_data':
+                raise ValueError(selection.message)
             if selection.status != 'selected':
                 raise ValueError('No pude usar esa billetera; revisá la moneda y la billetera indicadas')
             payload = RegisterPrepared(economic_effect=args.economic_effect, movement_type=args.movement_type, amount=args.amount, currency=selection.currency,

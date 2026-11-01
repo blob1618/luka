@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.models.database import Categoria, LimiteCategoria, SessionLocal, Usuario
 from app.services.categories_taxonomy import resolve_category_for_user
+from app.services.currencies import is_supported
 
 ARGENTINA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 MAX_LIMIT_AMOUNT = Decimal("9999999999.99")
@@ -100,7 +101,7 @@ class LimitService:
         if value is None:
             return "ARS"
         currency = str(value).strip().upper()
-        if len(currency) != 3 or not currency.isalpha():
+        if len(currency) != 3 or not currency.isalpha() or not is_supported(currency):
             return None
         return currency
 
