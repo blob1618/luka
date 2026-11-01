@@ -7,10 +7,11 @@ from uuid import UUID
 
 from pydantic import Field, field_validator
 
+from app.api.whatsapp import WhatsAppText
 from app.models.database import Billetera, Categoria, LimiteCategoria
 from app.services import finance
 from app.services.assistant_contracts import (
-    EntityReference, FieldRequest, FrozenModel, IncompleteOperation, ReferenceToken,
+    FieldRequest, FrozenModel, IncompleteOperation, ReferenceToken,
     ResourceReference, amount_text,
 )
 from app.services.assistant_capabilities.common import (
@@ -219,6 +220,21 @@ async def query_budget(context, args):
     return data(context, [], lines or ['No hay presupuestos para ese período.'])
 
 
+def compensation_text(proposal: CompensationProposal, *, confirmation: bool = False) -> str:
+    target = proposal.target
+    prefix = ('Ajustar presupuesto' if confirmation else
+              f'{target.category_name} superó su límite en {proposal.currency} {amount_text(proposal.amount)}. Podés ajustar el presupuesto así')
+    lines = [prefix + ':', f'{target.category_name}: límite {proposal.currency} {amount_text(target.before_limit)} → '
+             f'{amount_text(target.after_limit)}; gastado {amount_text(target.spent_amount)}.']
+    for donor in proposal.donors:
+        contributed = donor.before_limit - donor.after_limit
+        lines.append(f'{donor.category_name}: límite {amount_text(donor.before_limit)} → '
+                     f'{amount_text(donor.after_limit)} (aporta {proposal.currency} {amount_text(contributed)}).')
+    if not confirmation:
+        lines.append('Si querés, decime «ajustá el presupuesto» y te preparo la propuesta.')
+    return '\n'.join(lines)
+
+
 async def prepare_compensation(context, operation):
     args = CompensationDraft.model_validate(operation.draft_payload)
     target = await category_reference(context, args.target_category_ref) if args.target_category_ref else None
@@ -241,7 +257,7 @@ async def prepare_compensation(context, operation):
             return IncompleteOperation(missing_fields=(FieldRequest(field='dependencies', reason='invalid',
                 question=questions.get(result.status, 'Revisá el importe, la moneda y las categorías para calcular la compensación.')),))
         proposal = result.proposal
-    summary = f'Compensar {proposal.target.category_name}: {proposal.currency} {amount_text(proposal.amount)}.'
+    summary = compensation_text(proposal, confirmation=True)
     context.event_key, context.event_variables = 'budget.compensation_proposed', {'summary': summary}
     return prepared(CompensationPrepared(proposal=proposal.to_dict()), summary)
 
@@ -264,9 +280,7 @@ async def suggest_compensation(context, source_operation, result):
             target_category=budget.category_name, currency=budget.currency, reference_date=context.turn.reference_day)
         if available.status != 'ok':
             return
-        ref = await context.reference('category', EntityReference(id=budget.category_id, label=budget.category_name))
-        await context.operations.open(context, operation_key='propose_compensation', draft=CompensationDraft(
-            target_category_ref=ref, currency=budget.currency, reference_day=context.turn.reference_day))
+        context.outbound.append(WhatsAppText(compensation_text(available.proposal)))
         context.action_binding = None
         context.trace.append({'source': 'backend', 'tool': 'propose_compensation', 'outcome': 'suggested'})
     except ValueError:

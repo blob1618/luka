@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.api.whatsapp import InboundInteractiveReply, WhatsAppReplyButtons
+from app.api.whatsapp import InboundInteractiveReply, WhatsAppReplyButtons, WhatsAppText
 from app.models.database import AssistantWriteReceipt, Categoria, LimiteCategoria, MovimientoFinanciero, Recordatorio, Usuario
 from app.services import assistant_runtime, assistant_state, dispatcher
 from app.services import compensation, chart_query, conversation_flow, monthly_balance
@@ -268,10 +268,20 @@ async def test_excess_suggests_new_compensation_without_applying_it(ingress, acc
         return [('register_movement', register_now(amount='300',category_ref=category))]
     preview = await ingress.send('Gasté300encomida', steps=[registration])
     result = await ingress.confirm(preview)
-    assert result.assistant_preview_delivery and 'Compensar' in result.reply_text
+    assert not result.assistant_preview_delivery
+    messages = [message.body for message in result.followup_messages
+                if isinstance(message, WhatsAppText)]
+    assert any('superó su límite' in body and 'Donante' in body
+               and 'ajustá el presupuesto' in body for body in messages)
+    state = await assistant_state.read(owner)
+    assert state['workspace']['active_operation_id'] is None
     with factory() as session:
-        assert {Decimal(row.cantidad_max) for row in session.query(LimiteCategoria)} == {Decimal(1000),Decimal(2000)}
-    await ingress.confirm(result)
+        assert {Decimal(row.cantidad_max) for row in session.query(LimiteCategoria)} == {Decimal(1000), Decimal(2000)}
+
+    proposal = await ingress.tool('propose_compensation', {'currency': 'ARS'})
+    assert proposal.assistant_preview_delivery
+    assert 'Ajustar presupuesto' in proposal.reply_text and 'Donante' in proposal.reply_text
+    await ingress.confirm(proposal)
     with factory() as session:
         rows = list(session.query(LimiteCategoria))
         assert sum(row.cantidad_max for row in rows) == 3000
