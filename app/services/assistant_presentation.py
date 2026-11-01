@@ -14,6 +14,9 @@ class Presenter:
         self.facts.update((fact.ref, fact) for fact in facts)
         return facts
 
+    def has_value(self, value: str) -> bool:
+        return any(fact.value == value for fact in self.facts.values())
+
     def include(self, facts):
         self.facts.update((fact.ref, fact) for fact in facts)
 
