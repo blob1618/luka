@@ -89,12 +89,14 @@ async def find_movements(context, args):
         items.append({**visible_movement(row), 'movement_ref': ref})
         lines.append(f"{row['date']} — {row['description']}: {row['currency']} {amount_text(row['amount'])} ({row['movement_type']}).")
     context.state['last_shown'] = refs
+    no_data_fact = None
     if rows and total > len(rows):
         lines.append(f'Mostré {len(rows)} de {total} movimientos.')
     elif not rows:
         message = 'No encontré movimientos con esos filtros.'
-        if not context.presenter.has_value(message):
-            lines.append(message)
+        no_data_fact = context.presenter.find(message)
+        if no_data_fact is None:
+            no_data_fact = context.presenter.add([message])[0]
     if total > len(rows) and scope is not None:
         from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkService, dashboard_link_message
         link = await asyncio.to_thread(DashboardLinkService.generate_or_reuse, context.turn.phone,
@@ -106,8 +108,11 @@ async def find_movements(context, args):
             context.event_key = 'movements.query_result'
             context.event_variables = {'summary': '\n'.join(lines), 'dashboard_url': link.login_url,
                                        'ttl_minutes': str(link.link_ttl_minutes)}
+    facts = context.presenter.add(lines)
+    if not facts and no_data_fact is not None:
+        facts = (no_data_fact,)
     return DataResult(data=FindOutput(status='ok' if rows else 'no_data', items=items,
-        returned_count=len(rows), total_found=total).model_dump(mode='json'), facts=context.presenter.add(lines))
+        returned_count=len(rows), total_found=total).model_dump(mode='json'), facts=facts)
 
 
 def _register_dependencies(owner, args, wallet_id, category_id):

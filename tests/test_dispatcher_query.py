@@ -37,5 +37,6 @@ async def test_no_data_does_not_invent_a_monetary_total(ingress):
 @pytest.mark.asyncio
 async def test_repeated_no_data_query_presents_message_once(ingress):
     args = {'selector': {'kind': 'all'}, 'description': 'no-existe', 'sort_by': 'date_desc', 'currency': 'ARS'}
-    result = await ingress.send('Buscar', steps=[[('find_movements', args), ('find_movements', args)]])
+    result = await ingress.send('Buscar', steps=[[('find_movements', args), ('find_movements', args)], [('present_result', {})]])
     assert result.reply_text.count('No encontré movimientos con esos filtros.') == 1
+    assert 'Faltan los hechos obligatorios' not in result.reply_text
