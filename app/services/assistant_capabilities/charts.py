@@ -103,6 +103,6 @@ async def render_chart(context, operation, confirmation):
 
 
 def chart_contracts():
-    return (operation_tool('movement_chart', 'Consulta gráficos por categoría, ingresos/gastos, evolución mensual o dos meses. '
-        'Barras/torta, ranking y porcentajes. Si faltan filtros, conserva borrador para operation_amend/resume; al completar genera imágenes sin confirmar escritura.',
+    return (operation_tool('movement_chart', 'Genera imágenes de gráficos (categoría, ingresos/gastos, evolución mensual o dos meses) ante pedidos de gráfico o visualización. '
+        'No reemplazar por dashboard_link. Barras/torta, ranking y porcentajes. Si faltan filtros, conserva borrador para operation_amend/resume; al completar genera imágenes sin confirmar escritura.',
         ChartInput, ChartInput, prepare_chart, render_chart, read=True),)
