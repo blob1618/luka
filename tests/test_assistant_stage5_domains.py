@@ -322,7 +322,7 @@ async def test_budget_feedback_and_recurring_offer_keep_amounts_and_both_actions
     assert 'Noté que solés pagar' in visible
     actions = [b.id for m in [result.reply_message, *result.followup_messages]
                if isinstance(m, WhatsAppReplyButtons) for b in m.buttons]
-    assert any(a.startswith('movement:change_category:') for a in actions)
+    assert not any(a.startswith('movement:change_category:') for a in actions)
     assert any(a.startswith('rec_cand:accept:') for a in actions)
     with factory() as session:
         assert session.query(AssistantWriteReceipt).count() == 1
@@ -494,3 +494,11 @@ async def test_non_date_literal_still_asks_with_a_usable_question(ingress, accou
     assert 'hoy' in response.reply_text and 'ayer' in response.reply_text
     with accounts[0]() as session:
         assert session.query(MovimientoFinanciero).filter_by(descripcion='taxi').count() == 0
+
+
+@pytest.mark.asyncio
+async def test_movements_summary_is_concise(ingress):
+    result = await ingress.tool('find_movements', {
+        'selector': {'kind': 'all'}, 'description': 'no-existe', 'sort_by': 'date_desc', 'currency': 'ARS'})
+    assert 'No encontré movimientos con esos filtros.' in result.reply_text
+    assert 'no es un total monetario' not in result.reply_text

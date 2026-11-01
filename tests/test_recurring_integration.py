@@ -170,10 +170,8 @@ class TestRecurringIntegratedLifecycle:
 
             dispatch_result = await _registered(SessionLocal,phone,description='Internet Fibertel Hogar',amount=12500,economic_effect='cash_flow',now=frozen_webhook_time)
 
-            # El registro conserva el botón de categoría y entrega la propuesta aparte.
+            # El registro conserva la respuesta y entrega la propuesta aparte.
             assert dispatch_result.reply_message is not None
-            assert isinstance(dispatch_result.reply_message, WhatsAppReplyButtons)
-            assert _category_message(dispatch_result) is not None
             assert _proposal_message(dispatch_result) is not None
             buttons = _proposal_message(dispatch_result).buttons
             assert len(buttons) == 2
@@ -299,9 +297,6 @@ class TestRecurringRejectionAndSuppression:
             )
 
             res_exp = await _registered(SessionLocal,phone,description='Gimnasio Megatlon',amount=25000,economic_effect='cash_flow',now=frozen_rejection_time)
-            # Sin propuesta recurrente, pero con la corrección de categoría del registro.
-            assert _category_message(res_exp) is not None
-            assert _category_message(res_exp) is not None
             assert res_exp.proposal_candidate_id is None
             assert _proposal_message(res_exp) is None
 
@@ -743,7 +738,3 @@ async def _interactive(factory,**kwargs):
 
 def _proposal_message(result):
     return next((m for m in [result.reply_message,*result.followup_messages] if isinstance(m,WhatsAppReplyButtons) and any(b.id.startswith('rec_cand:') for b in m.buttons)),None)
-
-
-def _category_message(result):
-    return next((m for m in [result.reply_message,*result.followup_messages] if isinstance(m,WhatsAppReplyButtons) and any(b.title=='Cambiar categoría' for b in m.buttons)),None)
