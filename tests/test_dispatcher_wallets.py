@@ -1,7 +1,10 @@
 """Explicit tool scenarios preserve financial effects after the global cut."""
 import pytest
-from app.models.database import AssistantWriteReceipt, Billetera, MovimientoFinanciero
+from app.models.database import (
+    AssistantWriteReceipt, Billetera, LimiteCategoria, MovimientoFinanciero, Recordatorio,
+)
 from app.services import assistant_state
+from app.services.wallet import WalletService
 from tests import test_assistant_stage5 as scenarios
 from tests.test_assistant_stage5 import register_now
 from tests.test_assistant_stage4 import initial
@@ -94,3 +97,76 @@ async def test_wallet_balances_filters_requested_currency(ingress):
 def test_wallet_selector_labels_include_currency(accounts):
     from app.services.assistant_capabilities.conversation import _wallet_label
     assert _wallet_label(accounts[1], str(accounts[3]), 'Caja A') == 'Caja A (ARS)'
+
+
+@pytest.mark.asyncio
+async def test_brl_wallet_can_be_created_and_queried(ingress, accounts):
+    preview = await ingress.tool('create_wallet', {'name': 'Reales', 'currency': 'BRL'})
+    assert preview.assistant_preview_delivery is not None
+    await ingress.confirm(preview)
+    with accounts[0]() as session:
+        wallet = session.query(Billetera).filter_by(usuario_id=accounts[1], moneda='BRL').one()
+        assert wallet.nombre == 'Reales'
+    result = await ingress.tool('wallet_balances', {'currency': 'BRL'})
+    assert 'Reales' in result.reply_text and 'BRL' in result.reply_text
+
+
+@pytest.mark.asyncio
+async def test_register_brl_movement_uses_brl_wallet(ingress, accounts):
+    WalletService.create_wallet(accounts[1], 'Reales', 'BRL')
+    with accounts[0]() as session:
+        wallet = session.query(Billetera).filter_by(usuario_id=accounts[1], moneda='BRL').one()
+        wallet_id = wallet.id
+    def plan(kwargs):
+        return [('register_movement', {**register_now(), 'currency': 'BRL',
+                                       'amount': '20', 'description': 'caipirinha'})]
+    preview = await ingress.send('Gasté 20 reales', steps=[plan])
+    assert 'BRL' in preview.reply_text
+    await ingress.confirm(preview)
+    with accounts[0]() as session:
+        row = session.query(MovimientoFinanciero).filter_by(descripcion='caipirinha').one()
+        assert row.moneda == 'BRL' and row.billetera_id == wallet_id
+
+
+@pytest.mark.asyncio
+async def test_limit_in_brl_requires_brl_wallet(ingress, accounts):
+    def plan(kwargs):
+        ref = next(item['ref'] for item in initial(kwargs)['categories'] if item['name'] == 'Comida')
+        return [('create_limit', {'category_ref': ref, 'amount': '1000', 'month': 12,
+                                  'year': 2026, 'currency': 'BRL'})]
+    result = await ingress.send('Límite de comida en reales', steps=[plan])
+    assert result.assistant_preview_delivery is None
+    assert 'No tenés una billetera en BRL' in result.reply_text
+
+
+@pytest.mark.asyncio
+async def test_limit_in_brl_with_wallet_is_created(ingress, accounts):
+    WalletService.create_wallet(accounts[1], 'Reales', 'BRL')
+    def plan(kwargs):
+        ref = next(item['ref'] for item in initial(kwargs)['categories'] if item['name'] == 'Comida')
+        return [('create_limit', {'category_ref': ref, 'amount': '1000', 'month': 12,
+                                  'year': 2026, 'currency': 'BRL'})]
+    preview = await ingress.send('Límite de comida en reales', steps=[plan])
+    assert preview.assistant_preview_delivery is not None
+    await ingress.confirm(preview)
+    with accounts[0]() as session:
+        row = session.query(LimiteCategoria).filter_by(usuario_id=accounts[1], moneda='BRL').one()
+        assert row.cantidad_max == 1000
+
+
+@pytest.mark.asyncio
+async def test_reminder_in_brl_does_not_require_wallet(ingress, accounts):
+    preview = await ingress.tool('create_reminder', {'title': 'Alquiler', 'day': 10,
+                                                     'amount': '500', 'currency': 'BRL'})
+    assert preview.assistant_preview_delivery is not None
+    await ingress.confirm(preview)
+    with accounts[0]() as session:
+        reminder = session.query(Recordatorio).filter_by(usuario_id=accounts[1], titulo='Alquiler').one()
+        assert reminder.moneda == 'BRL'
+
+
+@pytest.mark.asyncio
+async def test_wallet_balances_rejects_unsupported_currency(ingress):
+    result = await ingress.tool('wallet_balances', {'currency': 'JPY'})
+    assert 'Moneda no soportada' in result.reply_text
+    assert 'ARS, USD, BRL o EUR' in result.reply_text

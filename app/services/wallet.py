@@ -12,6 +12,7 @@ from app.models.database import (
     SessionLocal,
     Usuario,
 )
+from app.services.currencies import default_wallet_name, is_supported, normalize_currency, supported_text
 
 
 @dataclass
@@ -68,9 +69,6 @@ class WalletBalanceItem:
 
 
 class WalletService:
-    SUPPORTED_CURRENCIES = {"ARS", "USD"}
-    DEFAULT_NAMES = {"ARS": "Pesos", "USD": "Dólares"}
-
     @classmethod
     def create_wallet(
         cls,
@@ -79,11 +77,14 @@ class WalletService:
         currency: str | None = None,
         session=None,
     ) -> WalletCreationResult:
-        clean_currency = str(currency).strip().upper() if currency is not None else ""
-        if clean_currency not in cls.SUPPORTED_CURRENCIES:
-            return WalletCreationResult(status="invalid_data", message="Currency must be ARS or USD")
+        clean_currency = normalize_currency(currency) or ""
+        if not is_supported(clean_currency):
+            return WalletCreationResult(
+                status="invalid_data",
+                message=f"Moneda no soportada. Usá {supported_text()}.",
+            )
 
-        clean_name = (name.strip() if isinstance(name, str) else "") or cls.DEFAULT_NAMES[clean_currency]
+        clean_name = (name.strip() if isinstance(name, str) else "") or default_wallet_name(clean_currency)
         if len(clean_name) > 100:
             return WalletCreationResult(status="invalid_data", message="Wallet name is too long")
 
@@ -274,9 +275,12 @@ class WalletService:
 
         if currency is not None and not str(currency).strip():
             return WalletSelectionResult(status="invalid_data", message="Currency cannot be empty")
-        clean_currency = str(currency).strip().upper() if currency is not None else None
-        if clean_currency is not None and clean_currency not in cls.SUPPORTED_CURRENCIES:
-            return WalletSelectionResult(status="invalid_data", message="Currency must be ARS or USD")
+        clean_currency = normalize_currency(currency)
+        if clean_currency is not None and not is_supported(clean_currency):
+            return WalletSelectionResult(
+                status="invalid_data",
+                message=f"Moneda no soportada. Usá {supported_text()}.",
+            )
 
         if wallet_id is not None:
             val = str(wallet_id).strip()
@@ -295,7 +299,7 @@ class WalletService:
                 )
                 .first()
             )
-            if wallet is None or wallet.moneda not in cls.SUPPORTED_CURRENCIES:
+            if wallet is None or not is_supported(wallet.moneda):
                 return WalletSelectionResult(
                     status="invalid_selection",
                     message="Wallet not found or not owned by user",

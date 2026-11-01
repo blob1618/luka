@@ -95,7 +95,7 @@ def test_update_movement_currency_wallet_and_reject_stale(finance_db):
     assert res.status == 'registered'
     upd_stale = FinanceService.update_movement(sender_phone=user.whatsapp_id, movement_id=res.movement_id, changes={'description': 'Nuevo'}, expected={'wallet_id': str(uuid.uuid4())})
     assert upd_stale.status == 'stale_context'
-    upd_bad = FinanceService.update_movement(sender_phone=user.whatsapp_id, movement_id=res.movement_id, changes={'currency': 'EUR', 'description': 'Mutado'})
+    upd_bad = FinanceService.update_movement(sender_phone=user.whatsapp_id, movement_id=res.movement_id, changes={'currency': 'JPY', 'description': 'Mutado'})
     assert upd_bad.status == 'invalid_data'
     upd_blank_wallet = FinanceService.update_movement(sender_phone=user.whatsapp_id, movement_id=res.movement_id, changes={'wallet_id': None, 'description': 'Mutado'})
     assert upd_blank_wallet.status == 'invalid_selection'

@@ -13,6 +13,7 @@ from app.services.assistant_capabilities.common import (
 )
 from app.services.reminder import ReminderService
 from app.services.recurring_expense import RecurringExpenseService
+from app.services.currencies import is_supported, supported_text
 
 REMINDER_FIELDS = ('titulo', 'dia_del_mes', 'monto', 'moneda', 'estado', 'candidato_id')
 CANDIDATE_FIELDS = ('concepto', 'dia_estimado', 'monto_estimado', 'moneda', 'estado', 'propuesta_en', 'proxima_fecha_estimada')
@@ -30,6 +31,13 @@ class ReminderDraft(FrozenModel):
     currency: str | None = Field(title='la moneda', default=None, pattern=r'^[A-Z]{3}$')
     state: str | None = Field(title='si querés pausar, activar o eliminar el recordatorio', default=None, pattern=r'^(pause|activate|delete)$')
     _positive = field_validator('amount')(positive)
+
+    @field_validator('currency')
+    @classmethod
+    def _supported_currency(cls, value):
+        if value is not None and not is_supported(value):
+            raise ValueError(f'Moneda no soportada. Usá {supported_text()}.')
+        return value
 
 
 class ReminderPrepared(FrozenModel):
@@ -98,6 +106,8 @@ def reminder_operation(action):
         old = resource.snapshot if resource else {}
         title, day = draft.title or old.get('titulo'), draft.day or old.get('dia_del_mes')
         currency = draft.currency or old.get('moneda') or 'ARS'
+        if not is_supported(currency):
+            raise ValueError(f'Moneda no soportada. Usá {supported_text()}.')
         amount = draft.amount if 'amount' in operation.field_evidence else old.get('monto')
         if action == 'change_reminder_state' and draft.state is None:
             return missing(draft, ('state',))

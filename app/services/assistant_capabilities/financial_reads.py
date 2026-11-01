@@ -76,6 +76,8 @@ def net_worth_facts(result, types):
     else:
         facts = [fact('ARS_TOTAL', 'Saldos ARS', amount_text(result.ars_total)),
                  fact('USD_TOTAL', 'Saldos USD', amount_text(result.usd_total))]
+        for code, total in sorted(result.other_totals.items()):
+            facts.append(fact(f'{code}_TOTAL', f'Saldos {code}', amount_text(total)))
         requested = [kind.value for kind in types] if result.usd_total else []
         for kind in types if result.usd_total else ():
             total = result.totals[kind]

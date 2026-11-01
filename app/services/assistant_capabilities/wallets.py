@@ -12,6 +12,7 @@ from app.services.assistant_contracts import (
     amount_text,
 )
 from app.services.assistant_registry import ToolContract, ToolPolicy
+from app.services.currencies import is_supported, supported_text
 from app.services.wallet import WalletService
 
 
@@ -25,6 +26,10 @@ def _balances(owner):
 
 
 async def balances(context, args):
+    if args.currency and not is_supported(args.currency):
+        message = f'Moneda no soportada. Usá {supported_text()}.'
+        return DataResult(data=ToolData(status='ok', items=[]).model_dump(mode='json'),
+                          facts=context.presenter.add([message]))
     wallets = await asyncio.to_thread(_balances, context.turn.owner_id)
     if args.currency:
         wallets = [wallet for wallet in wallets if wallet.currency == args.currency]
@@ -43,5 +48,5 @@ async def balances(context, args):
 
 def wallet_contracts():
     return (ToolContract('wallet_balances', 'Consulta saldos por billetera propia. Si el usuario pide una moneda, '
-                         'pasá currency para no mezclar ARS y USD.',
+                         f'pasá currency (soportadas: {supported_text()}) para no mezclar monedas.',
                          WalletBalanceQuery, ToolData, balances, ToolPolicy('read')),)
