@@ -17,6 +17,9 @@ class Presenter:
     def has_value(self, value: str) -> bool:
         return any(fact.value == value for fact in self.facts.values())
 
+    def find(self, value: str):
+        return next((fact for fact in self.facts.values() if fact.value == value), None)
+
     def include(self, facts):
         self.facts.update((fact.ref, fact) for fact in facts)
 
