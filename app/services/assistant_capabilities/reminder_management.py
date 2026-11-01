@@ -32,13 +32,6 @@ class ReminderDraft(FrozenModel):
     state: str | None = Field(title='si querés pausar, activar o eliminar el recordatorio', default=None, pattern=r'^(pause|activate|delete)$')
     _positive = field_validator('amount')(positive)
 
-    @field_validator('currency')
-    @classmethod
-    def _supported_currency(cls, value):
-        if value is not None and not is_supported(value):
-            raise ValueError(f'Moneda no soportada. Usá {supported_text()}.')
-        return value
-
 
 class ReminderPrepared(FrozenModel):
     title: str

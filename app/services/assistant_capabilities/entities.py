@@ -2,12 +2,15 @@
 import asyncio
 from uuid import UUID
 
-from pydantic import Field, field_validator
+from pydantic import Field
 from sqlalchemy import func
 
 from app.models.database import Billetera, Categoria, MovimientoFinanciero
 from app.services import finance
-from app.services.assistant_contracts import EntityReference, FrozenModel, OperationReference, ReferenceToken, amount_text
+from app.services.assistant_contracts import (
+    EntityReference, FieldRequest, FrozenModel, IncompleteOperation, OperationReference,
+    ReferenceToken, amount_text,
+)
 from app.services.assistant_capabilities.common import committed, data, missing, operation_tool, prepared, read_tool, require_status
 from app.services.finance import FinanceService
 from app.services.category_creation import CategoryCreationService
@@ -53,13 +56,6 @@ class CategoryPrepared(FrozenModel):
 class WalletDraft(FrozenModel):
     name: str | None = Field(title='el nombre', default=None, min_length=1, max_length=100)
     currency: str | None = Field(title='la moneda', default=None, pattern=r'^[A-Z]{3}$')
-
-    @field_validator('currency')
-    @classmethod
-    def _supported_currency(cls, value):
-        if value is not None and not is_supported(value):
-            raise ValueError(f'Moneda no soportada. Usá {supported_text()}.')
-        return value
 
 
 class WalletPrepared(FrozenModel):
@@ -186,6 +182,11 @@ async def prepare_wallet(context, operation):
     absent = missing(draft, ('currency',))
     if absent:
         return absent
+    if not is_supported(draft.currency):
+        return IncompleteOperation(missing_fields=(FieldRequest(
+            field='currency', reason='invalid',
+            question=f'Moneda no soportada. Solo opero con {supported_text()}.',
+        ),))
 
     def existing():
         with finance.SessionLocal() as session:

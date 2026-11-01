@@ -42,13 +42,6 @@ class LimitDraft(FrozenModel):
     currency: str | None = Field(title='la moneda', default=None, pattern=r'^[A-Z]{3}$')
     _positive = field_validator('amount')(positive)
 
-    @field_validator('currency')
-    @classmethod
-    def _supported_currency(cls, value):
-        if value is not None and not is_supported(value):
-            raise ValueError(f'Moneda no soportada. Usá {supported_text()}.')
-        return value
-
 
 class LimitPrepared(FrozenModel):
     category_id: str
@@ -140,6 +133,11 @@ async def prepare_limit(context, operation):
         context.event_key = 'limit.year_confirmation' if field == 'year' else 'limit.missing_data'
         context.event_variables = {'year': str(context.turn.reference_day.year + (1 if updated.month and updated.month < context.turn.reference_day.month else 0))} if field == 'year' else {'missing_field': field}
         return absent
+    if not is_supported(updated.currency):
+        return IncompleteOperation(missing_fields=(FieldRequest(
+            field='currency', reason='invalid',
+            question=f'Moneda no soportada. Solo opero con {supported_text()}.',
+        ),))
 
     def has_wallet():
         with finance.SessionLocal() as session:

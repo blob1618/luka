@@ -170,3 +170,11 @@ async def test_wallet_balances_rejects_unsupported_currency(ingress):
     result = await ingress.tool('wallet_balances', {'currency': 'JPY'})
     assert 'Moneda no soportada' in result.reply_text
     assert 'ARS, USD, BRL o EUR' in result.reply_text
+
+
+@pytest.mark.asyncio
+async def test_create_wallet_unsupported_currency_is_explained(ingress):
+    result = await ingress.tool('create_wallet', {'name': 'Yenes', 'currency': 'JPY'})
+    assert result.assistant_preview_delivery is None
+    assert 'Moneda no soportada' in result.reply_text
+    assert 'ARS, USD, BRL o EUR' in result.reply_text
