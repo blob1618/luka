@@ -164,9 +164,6 @@ class TestCandidateProposalFlow:
                 result = await _registered_expense(session_factory, phone, description='Internet Fibertel', economic_effect='cash_flow')
 
                 assert _proposal_message(result) is not None
-                assert _category_message(result) is not None
-                assert _category_message(result) is not None
-                assert _proposal_message(result) is not None
                 proposal = _proposal_message(result)
                 assert isinstance(proposal, WhatsAppReplyButtons)
                 assert "Noté que solés pagar *Internet Fibertel* alrededor del día 15." in proposal.body
@@ -193,7 +190,7 @@ class TestCandidateProposalFlow:
                     send_message=send_mock,
                 )
                 assert status == "completed"
-                assert send_mock.await_count == 2
+                assert send_mock.await_count == 1
 
                 session.refresh(cand)
                 assert cand.propuesta_en is not None
@@ -222,8 +219,6 @@ class TestCandidateProposalFlow:
                 result = await _registered_expense(session_factory, phone, description='Internet Fibertel', economic_effect='cash_flow')
 
                 assert "Noté que solés pagar" not in result.reply_text
-                assert _category_message(result) is not None
-                assert _category_message(result) is not None
                 assert result.proposal_candidate_id is None
                 session.refresh(cand)
                 assert cand.propuesta_en is None
@@ -333,9 +328,8 @@ class TestCandidateProposalFlow:
             # Texto principal preservado sin propuesta embebida
             assert "Noté que solés pagar" not in result.reply_text
             # Pero entregada vía follow-up message para no violar el límite de 1024 caracteres
-            assert len(result.followup_messages) == 2
-            assert result.followup_messages[0].buttons[0].title == "Cambiar categoría"
-            assert "Noté que solés pagar" in result.followup_messages[1].body
+            assert len(result.followup_messages) == 1
+            assert "Noté que solés pagar" in result.followup_messages[0].body
             assert result.proposal_delivery_mode == "followup"
             session.refresh(cand)
             assert cand.propuesta_conteo == 0
@@ -1556,8 +1550,3 @@ async def _interact(factory, **kwargs):
 def _proposal_message(result):
     return next((m for m in [result.reply_message,*result.followup_messages] if isinstance(m,WhatsAppReplyButtons)
         and any(b.id.startswith('rec_cand:') for b in m.buttons)),None)
-
-
-def _category_message(result):
-    return next((m for m in [result.reply_message,*result.followup_messages] if isinstance(m,WhatsAppReplyButtons)
-        and any(b.title=='Cambiar categoría' for b in m.buttons)),None)

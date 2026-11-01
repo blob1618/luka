@@ -29,4 +29,6 @@ async def test_shown_scope_never_expands_to_unshown_movements(ingress):
 @pytest.mark.asyncio
 async def test_no_data_does_not_invent_a_monetary_total(ingress):
     result=await ingress.tool('find_movements',{'selector':{'kind':'all'},'currency':'USD','sort_by':'date_desc'})
-    assert result.tool_trace[0]['outcome']['data']['total_found']==0 and 'total monetario' in result.reply_text
+    assert result.tool_trace[0]['outcome']['data']['total_found']==0
+    assert 'No encontré movimientos con esos filtros.' in result.reply_text
+    assert 'total monetario' not in result.reply_text

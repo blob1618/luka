@@ -57,10 +57,8 @@ async def test_wallet_deleted_after_preview_prevents_write(ingress,accounts):
 
 @pytest.mark.asyncio
 async def test_create_wallet_reports_existing_wallet(ingress,accounts):
-    preview=await ingress.tool('create_wallet',{'name':'Nueva','currency':'USD'})
-    with accounts[0]() as session:
-        assert session.query(Billetera).filter_by(nombre='Nueva').count()==0
-    result=await ingress.confirm(preview)
+    result = await ingress.tool('create_wallet',{'name':'Nueva','currency':'USD'})
+    assert result.assistant_preview_delivery is None
     assert 'USD A' in result.reply_text
     with accounts[0]() as session:
         assert session.query(Billetera).filter_by(usuario_id=accounts[1],nombre='Nueva',moneda='USD').count()==0
@@ -83,3 +81,16 @@ async def test_list_wallets_intent_and_isolation(ingress):
     result=await ingress.tool('wallet_balances')
     assert 'Caja A' in result.reply_text and 'USD A' in result.reply_text
     assert 'Caja privada B' not in result.reply_text and '999.999' not in result.reply_text
+
+
+@pytest.mark.asyncio
+async def test_wallet_balances_filters_requested_currency(ingress):
+    usd = await ingress.tool('wallet_balances', {'currency': 'USD'})
+    assert 'USD A' in usd.reply_text and 'Caja A' not in usd.reply_text
+    ars = await ingress.tool('wallet_balances', {'currency': 'ARS'})
+    assert 'Caja A' in ars.reply_text and 'USD A' not in ars.reply_text
+
+
+def test_wallet_selector_labels_include_currency(accounts):
+    from app.services.assistant_capabilities.conversation import _wallet_label
+    assert _wallet_label(accounts[1], str(accounts[3]), 'Caja A') == 'Caja A (ARS)'

@@ -89,7 +89,10 @@ async def find_movements(context, args):
         items.append({**visible_movement(row), 'movement_ref': ref})
         lines.append(f"{row['date']} — {row['description']}: {row['currency']} {amount_text(row['amount'])} ({row['movement_type']}).")
     context.state['last_shown'] = refs
-    lines.append(f'Se muestran {len(rows)} de {total} movimientos coincidentes; esta lista no es un total monetario.')
+    if rows and total > len(rows):
+        lines.append(f'Mostré {len(rows)} de {total} movimientos.')
+    elif not rows:
+        lines.append('No encontré movimientos con esos filtros.')
     if total > len(rows) and scope is not None:
         from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkService, dashboard_link_message
         link = await asyncio.to_thread(DashboardLinkService.generate_or_reuse, context.turn.phone,
@@ -197,9 +200,6 @@ class MovementOperation:
         context.action_binding = {'movement_ref': ref, 'operation_id': operation.operation_id,
             'revision': operation.revision + 1, 'prepared_hash': operation.prepared_hash}
         if not result.get('replayed'):
-            from app.api.whatsapp import WhatsAppReplyButton, WhatsAppReplyButtons
-            context.outbound.append(WhatsAppReplyButtons(body='Podés cambiar la categoría de este movimiento.',
-                buttons=(WhatsAppReplyButton(id='movement:change_category:' + ref, title='Cambiar categoría'),)))
             from app.services.assistant_capabilities.budgets import suggest_compensation
             await suggest_compensation(context, operation, result)
         event = 'movement.registered' if self.command_kind == 'register' else 'movement.updated'

@@ -1,4 +1,9 @@
 """Cross-domain presentation and operation controls."""
+import asyncio
+from uuid import UUID
+
+from app.models.database import Billetera
+from app.services import finance
 from app.services.assistant_contracts import (
     AskClarification, DataResult, EntityReference, MovementSnapshot, OperationAmend,
     OperationControl, OperationResult, PresentResult, ToolData, amount_text,
@@ -6,6 +11,19 @@ from app.services.assistant_contracts import (
 from app.services.assistant_registry import ToolContract, ToolPolicy
 from app.services.assistant_contracts import EmptyInput, FrozenModel
 from typing import Literal
+
+
+def _wallet_label(owner, wallet_id: str | None, fallback: str) -> str:
+    if not wallet_id:
+        return fallback
+    try:
+        parsed = UUID(wallet_id)
+    except (ValueError, TypeError):
+        return fallback
+    with finance.SessionLocal() as session:
+        row = session.query(Billetera).filter(
+            Billetera.id == parsed, Billetera.usuario_id == owner).first()
+        return f'{row.nombre} ({row.moneda})' if row else fallback
 
 
 class ConversationReply(FrozenModel):
@@ -55,7 +73,12 @@ async def clarify(context, args):
         if value.id in seen:
             continue
         seen.add(value.id)
-        label = f'{value.date} — {value.description}, {value.currency} {amount_text(value.amount)}' if isinstance(value, MovementSnapshot) else value.label
+        if isinstance(value, MovementSnapshot):
+            label = f'{value.date} — {value.description}, {value.currency} {amount_text(value.amount)}'
+        elif args.target_field == 'wallet':
+            label = await asyncio.to_thread(_wallet_label, context.turn.owner_id, value.id, value.label)
+        else:
+            label = value.label
         options[str(len(options) + 1)] = {'ref': ref, 'label': label}
     if options:
         context.state['selection_options'] = options

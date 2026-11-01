@@ -735,7 +735,7 @@ class LimitService:
                     or row.inicio_periodo.month != candidate.get("month")
                     or row.inicio_periodo.year != candidate.get("year")
                     or row.moneda != candidate.get("currency", "ARS")
-                    or str(row.cantidad_max) != str(Decimal(str(candidate.get("amount"))))
+                    or Decimal(str(row.cantidad_max)) != Decimal(str(candidate.get("amount")))
                     or category_names[str(row.id)].casefold() != str(candidate.get("category", "")).casefold()
                 ):
                     return LimitBatchResult("stale_context")

@@ -162,7 +162,8 @@ async def test_categories_create_rename_delete_and_wallet_create(accounts):
         return [('delete_category', {'category_ref': ref})]
     preview = await run_for_phone(PHONE, 'delete', 'borrar', provider=NativeScript([delete]), now=NOW)
     assert (await confirm(preview, 'delete-confirm')).committed
-    wallet = await confirm(await request('create_wallet', {'name': 'Banco', 'currency': 'ARS'}, 'wallet-source'), 'wallet-confirm')
+    wallet = await request('create_wallet', {'name': 'Banco', 'currency': 'ARS'}, 'wallet-source')
+    assert wallet.confirmation_action is None
     assert 'Caja A' in wallet.text
     with accounts[0]() as db:
         assert db.query(Categoria).filter_by(usuario_id=accounts[1], nombre='Renombrada').one().esta_eliminado
@@ -215,12 +216,12 @@ async def create_limit(amount='1000', *, message='limit-source', month=10):
 
 @pytest.mark.asyncio
 async def test_limits_list_edit_selected_and_delete_with_visible_refs(accounts):
-    await confirm(await create_limit(), 'limit-confirm')
-    await confirm(await create_limit('2000', message='limit-nov', month=11), 'limit-nov-confirm')
+    await confirm(await create_limit(month=11), 'limit-confirm')
+    await confirm(await create_limit('2000', message='limit-dec', month=12), 'limit-dec-confirm')
     await read('list_limits', message='limits-visible')
     def select(kwargs):
         resources = initial(kwargs)['references']
-        ref = next(ref for ref, item in resources.items() if item['kind'] == 'limit' and item['details']['month'] == 11)
+        ref = next(ref for ref, item in resources.items() if item['kind'] == 'limit' and item['details']['month'] == 12)
         assert str(accounts[1]) not in json.dumps(initial(kwargs))
         return [('change_limit', {'limit_ref': ref, 'amount': '2500'})]
     edited = await run_for_phone(PHONE, 'limit-edit', 'El segundo a 2500', provider=NativeScript([select]), now=NOW)
@@ -476,15 +477,9 @@ async def test_editor_navigation_preserves_internal_binding_and_limit_year_is_on
 
 
 @pytest.mark.asyncio
-async def test_movement_category_button_opens_same_typed_workspace(accounts, fixed_pilot_clock):
-    from app.services.assistant_actions import process_interaction
+async def test_movement_commit_does_not_send_category_prompt(accounts, fixed_pilot_clock):
     registered = await confirm(await proposal())
-    assert registered.outbound
-    button = registered.outbound[0].buttons[0].id
-    result = await process_interaction(PHONE, 'category-button', button, 'button_reply')
-    pending = current_operation(await assistant_state.read(accounts[1]))
-    assert 'categoría' in result.reply_text and pending['operation_key'] == 'update_movement'
-    assert pending['status'] == 'collecting'
+    assert not registered.outbound
 
 
 @pytest.mark.asyncio
@@ -659,7 +654,7 @@ async def test_reminder_pause_activate_without_requery_uses_new_resource_snapsho
 
 @pytest.mark.asyncio
 async def test_limit_changed_reference_can_be_deleted_without_requery(accounts):
-    await confirm(await create_limit(), 'refresh-limit-confirm')
+    await confirm(await create_limit(month=12), 'refresh-limit-confirm')
     def change(kwargs):
         ref = next(ref for ref, value in initial(kwargs)['references'].items() if value['kind'] == 'limit')
         return [('change_limit', {'limit_ref': ref, 'amount': '2500'})]

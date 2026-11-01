@@ -185,6 +185,17 @@ async def prepare_wallet(context, operation):
     absent = missing(draft, ('currency',))
     if absent:
         return absent
+
+    def existing():
+        with finance.SessionLocal() as session:
+            return session.query(Billetera).filter(
+                Billetera.usuario_id == context.turn.owner_id,
+                Billetera.moneda == draft.currency,
+            ).first()
+
+    current = await asyncio.to_thread(existing)
+    if current is not None:
+        raise ValueError(f'Ya tenés una billetera en {draft.currency}: «{current.nombre}». Usala o renombrala.')
     label = f'«{draft.name}»' if draft.name else f'en {draft.currency}'
     return prepared(WalletPrepared(**draft.model_dump()), f'Crear billetera {label}.')
 
