@@ -32,3 +32,10 @@ async def test_no_data_does_not_invent_a_monetary_total(ingress):
     assert result.tool_trace[0]['outcome']['data']['total_found']==0
     assert 'No encontré movimientos con esos filtros.' in result.reply_text
     assert 'total monetario' not in result.reply_text
+
+
+@pytest.mark.asyncio
+async def test_repeated_no_data_query_presents_message_once(ingress):
+    args = {'selector': {'kind': 'all'}, 'description': 'no-existe', 'sort_by': 'date_desc', 'currency': 'ARS'}
+    result = await ingress.send('Buscar', steps=[[('find_movements', args), ('find_movements', args)]])
+    assert result.reply_text.count('No encontré movimientos con esos filtros.') == 1

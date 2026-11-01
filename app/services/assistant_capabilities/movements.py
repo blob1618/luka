@@ -92,7 +92,9 @@ async def find_movements(context, args):
     if rows and total > len(rows):
         lines.append(f'Mostré {len(rows)} de {total} movimientos.')
     elif not rows:
-        lines.append('No encontré movimientos con esos filtros.')
+        message = 'No encontré movimientos con esos filtros.'
+        if not context.presenter.has_value(message):
+            lines.append(message)
     if total > len(rows) and scope is not None:
         from app.services.dashboard_link import DashboardLinkDecision, DashboardLinkService, dashboard_link_message
         link = await asyncio.to_thread(DashboardLinkService.generate_or_reuse, context.turn.phone,
