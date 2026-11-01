@@ -16,7 +16,10 @@ def movement_presentation(result):
             f"{row['description']}: {row['currency']} {amount_text(row['amount'])}, fecha {row['date']}." for row in result['movements'])
     row = result['movement']
     if result['command_kind'] == 'annul':
-        return f"Anulé {len(result['movements'])} movimientos confirmados."
+        count = len(result['movements'])
+        noun = 'movimiento' if count == 1 else 'movimientos'
+        adjective = 'confirmado' if count == 1 else 'confirmados'
+        return f"Anulé {count} {noun} {adjective}."
     if result['command_kind'] == 'update':
         return f"Actualicé {row['description']}: {row['currency']} {amount_text(row['amount'])}, fecha {row['date']}."
     action = 'Registré' if result['command_kind'] == 'register' else 'Corregí solo la fecha de'

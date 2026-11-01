@@ -146,5 +146,5 @@ def financial_read_contracts():
         read_tool('previous_month_balance', 'Consulta diferencia registrada por moneda del último mes cerrado. Distingue sin datos de diferencia cero.', EmptyInput, previous_balance),
         read_tool('financial_education', 'Explica un término explícito con el glosario verificado y ejemplo; no da tasas actuales.', EducationInput, education),
         read_tool('investment_guidance', 'Orientación educativa con fuentes, revisión, riesgos y límites. Omitir topic_id lista catálogo; no es recomendación personal.', InvestmentInput, investment),
-        read_tool('dashboard_link', 'Emite/reutiliza enlace backend de acceso personal al dashboard según vinculación, cooldown y expiración. El enlace va en botón seguro.', EmptyInput, dashboard, terminal=True),
+        read_tool('dashboard_link', 'Emite/reutiliza enlace backend de acceso personal al dashboard según vinculación, cooldown y expiración. Usala sólo si piden dashboard, panel web o link; nunca para pedidos de gráfico.', EmptyInput, dashboard, terminal=True),
     )

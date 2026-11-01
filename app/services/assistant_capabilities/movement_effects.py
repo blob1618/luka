@@ -220,7 +220,7 @@ async def apply_movement_feedback(sender_phone, result, committed):
             evaluations = [await asyncio.to_thread(BudgetService.evaluate_movement, movement['id'])]
         for evaluation in evaluations:
             feedback = budget_feedback_reply(evaluation)
-            if feedback:
+            if feedback and not evaluation.crossed_80_percent:
                 result.reply_text += '\n\n' + feedback
         result.budget_threshold_alerts = crossed_budget_thresholds(evaluations)
     except Exception as exc:

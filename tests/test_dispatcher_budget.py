@@ -53,6 +53,7 @@ async def test_batch_of_expenses_warns_once_for_the_same_80_percent_crossing(ing
     confirmed=await ingress.confirm(preview)
     assert len(confirmed.budget_threshold_alerts)==1
     assert confirmed.budget_threshold_alerts[0].spent_amount==(1040 if batch else 934)
+    assert 'Gastaste' not in confirmed.reply_text
     replay=await ingress.confirm(preview)
     assert not replay.budget_threshold_alerts
 
@@ -69,6 +70,10 @@ async def test_budget_alert_is_sent_after_confirmation_once(ingress,accounts,cro
         return [('register_movement',register_now(category_ref=ref))]
     preview=await ingress.send('Gasto',steps=[plan])
     result=await ingress.confirm(preview)
+    if crossed:
+        assert 'Gastaste' not in result.reply_text
+    else:
+        assert 'Gastaste' in result.reply_text
     alerts=[m for m in result.followup_messages if isinstance(m,WhatsAppText) and ('Aviso:' in m.body or 'Alerta de presupuesto' in m.body)]
     assert len(alerts)==int(crossed)
     if configured_alert:
