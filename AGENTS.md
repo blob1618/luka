@@ -16,6 +16,9 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 ## Organización del código
 
 - `app/main.py`: entrypoint y webhook. **Nota: hoy es un archivo grande (~900 líneas) que todavía contiene bastante lógica de reply y de dispatcher; el ideal del repo es mover esa lógica a los services, no agregar más inline.**
+- `app/services/dispatcher.py`: puerta de entrada mínima (onboarding + invocación a `assistant_runtime` + `assistant_transport`); no contiene ruteo por intención ni lógica de dominio.
+- `app/services/assistant_runtime.py`, `assistant_catalog.py`, `assistant_registry.py` y `assistant_transport.py`: motor de ejecución, catálogo único de herramientas y ensamblado de respuestas.
+- `app/services/assistant_capabilities/`: módulos por dominio donde viven todas las lecturas (`ToolContract`) y mutaciones con confirmación (`OperationContract`).
 - `app/api/whatsapp.py`: único cliente saliente de WhatsApp. Normaliza teléfonos argentinos `549...` -> `54...`.
 - `app/services/llm.py` + `app/services/llm_providers/`: fachada LLM y providers. `LLMService` es singleton por clase (usar `reset_provider()` y `set_prompt_path()` en tests). `LLMService.render_financial_reply(kind, facts, quote_types)` redacta respuestas de patrimonio y cotizaciones: el LLM solo ubica placeholders `{{KEY}}` y los valores salen del backend.
 - `app/services/finance.py`: validación y persistencia de movimientos y categorías.
@@ -25,6 +28,13 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 - `app/models/database.py`: engine, sesión y todos los modelos SQLAlchemy (un solo archivo).
 - `app/scheduler.py`: jobs en background cada 5 min: recordatorios de pago y recordatorio proactivo diario (a la hora `PROACTIVE_PROMPT_HOUR`, solo dentro de la ventana de 24h, a usuarios con `proactivo_habilitado` que no registraron movimientos hoy; máximo uno por día).
 - `testing/`: entorno de testing aislado. App Streamlit (`testing/streamlit_app.py`) que usa el mismo dispatcher y wrappers de entrega que el webhook, con IDs únicos y entrega sintética explícita, con sidebar de configuración (provider/modelo LLM, simular usuario registrado, phone, nombre), paneles de debug (tools y resultados, latencia, estado Redis, logs del dispatcher), simulador de usuario y reset de DB. Usa una DB SQLite aislada (`sqlite:///./testing_luka.db`). Solo se levanta con Docker/Podman (`testing/docker-compose.yml` + `testing/Dockerfile`, servicios `streamlit` en `:8501` y `redis` en `:6380`); tiene sus propios tests en `testing/tests/` y sus dependencias en `testing/requirements.txt`. Logos en `testing/public/`.
+
+### Cómo agregar una nueva capacidad al asistente
+
+- **Prohibido** agregar regex, clasificadores o ramas `if/else` de intención en `app/services/dispatcher.py` o `app/main.py`. Todo pedido en lenguaje natural entra por `run_for_phone` en `assistant_runtime.py`.
+- Para una consulta, enlace o acción de lectura: crear un `ToolContract` (o `read_tool`) con su schema `FrozenModel`/`StrictInput` en el módulo correspondiente de `app/services/assistant_capabilities/` y registrarlo en `app/services/assistant_catalog.py`. Si emite un botón CTA (`WhatsAppCTAURL`), usar `context.outbound` igual que `dashboard_link`.
+- Para una operación que crea, modifica o elimina datos: crear un `OperationContract` (`prepare` + `commit`) en `app/services/assistant_capabilities/`, exigir preview entregada y confirmación ligada a operación/revisión/hash, y registrarlo en `app/services/assistant_catalog.py` sin modificar el loop de `assistant_runtime.py`.
+- **Presentación determinista:** los valores y estados provienen siempre de `VerifiedFact`/`Presenter` o de `render_financial_reply` con placeholders `{{KEY}}`, nunca de texto libre del modelo.
 
 ## Guías de ingeniería
 

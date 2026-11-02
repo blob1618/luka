@@ -5,7 +5,7 @@ from app.services.dispatch_contract import DispatchResult
 from app.services.conversation_flow_runtime import ConversationFlowRuntime
 from app.services.assistant_capabilities.movement_effects import apply_movement_feedback
 
-_DASHBOARD_EVENTS = {'dashboard.link.sent', 'movements.query_result'}
+_LINK_EVENTS = {'dashboard.link.sent', 'movements.query_result', 'calendar.link.sent'}
 
 
 async def assemble_reply(sender_phone, answer):
@@ -17,8 +17,10 @@ async def assemble_reply(sender_phone, answer):
 
     outbound = list(answer.outbound)
     primary = None
-    if answer.event_key in _DASHBOARD_EVENTS:
-        url = answer.event_variables.get('login_url') or answer.event_variables.get('dashboard_url')
+    if answer.event_key in _LINK_EVENTS:
+        url = (answer.event_variables.get('login_url')
+               or answer.event_variables.get('dashboard_url')
+               or answer.event_variables.get('auth_url'))
         candidates = ([configured] if configured is not None else []) + outbound
         link = next((item for item in candidates
                      if isinstance(item, WhatsAppCTAURL) and item.url == url), None)
@@ -28,7 +30,7 @@ async def assemble_reply(sender_phone, answer):
                         if not (isinstance(item, WhatsAppCTAURL) and item.url == url)]
             if isinstance(configured, WhatsAppCTAURL) and configured.url == url:
                 configured = None
-            if answer.event_key == 'dashboard.link.sent':
+            if answer.event_key in {'dashboard.link.sent', 'calendar.link.sent'}:
                 # The link message is the whole answer: it becomes the primary message.
                 primary = link
             else:
