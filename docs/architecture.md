@@ -38,7 +38,7 @@ procesar/envíar. Typing y reacciones son señales de mejor esfuerzo.
 
 ## Componentes del agente
 
-- `assistant_catalog.py` compone42 herramientas de `assistant_capabilities/`.
+- `assistant_catalog.py` compone 42 herramientas de `assistant_capabilities/`.
   `ToolContract/ToolPolicy` declaran schema, permisos, efecto, timeout,
   interrupción y fin de turno; `OperationContract` declara borrador/preparado y
   handler. La política guía el loop, sin listas de nombres de dominio.
@@ -64,8 +64,33 @@ procesar/envíar. Typing y reacciones son señales de mejor esfuerzo.
 Los servicios de movimientos, categorías, billeteras, límites, presupuesto,
 compensación, recordatorios, recurrencias, gráficos, balance, patrimonio,
 cotizaciones, educación, inversiones y dashboard siguen siendo dueños del dominio.
-La [matriz de etapa4](assistant-stage4-coverage.md) documenta las42 capacidades;
+La [matriz de etapa4](assistant-stage4-coverage.md) documenta las 42 capacidades;
 el [cierre de etapa5](assistant-stage5-coverage.md) documenta entrada global y puertos.
+
+### Cómo agregar una capacidad sin romper la arquitectura
+
+`dispatcher.py` es una puerta de entrada mínima: onboarding/actividad, `run_for_phone` y
+`assemble_reply`; las respuestas interactivas usan `process_interaction`. No debe contener regex,
+clasificadores ni ramas de intención, y `app/main.py` tampoco debe agregarlos. Un pedido en
+lenguaje natural siempre entra por el runtime de herramientas.
+
+Para una lectura, consulta o enlace (por ejemplo, conectar Google Calendar):
+
+1. Definir un `ToolContract`/`read_tool` con `FrozenModel`/`StrictInput` en el módulo de dominio
+   de `assistant_capabilities/`.
+2. Registrar el contrato en `assistant_catalog.py`.
+3. Si emite un CTA, agregar el `WhatsAppCTAURL` a `context.outbound`, fijar `event_key` y
+   `event_variables`, y devolver `data(context, [], [body])`. El transporte debe tratar el evento
+   como mensaje primario único para no duplicar el texto.
+
+Para una mutación:
+
+1. Crear un `OperationContract` con `prepare` y `commit` en el módulo de dominio.
+2. Exigir preview entregada y confirmación ligada a operación, revisión y hash.
+3. Registrarlo en `assistant_catalog.py`; no modificar el loop de `assistant_runtime.py`.
+
+La presentación es determinista: los valores salen de `VerifiedFact`/`Presenter` o de
+`render_financial_reply` con placeholders `{{KEY}}`; nunca de texto libre del modelo.
 
 ## Estado, tiempo y selección
 

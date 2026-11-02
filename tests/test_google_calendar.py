@@ -7,15 +7,24 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 
+from app.api.whatsapp import WhatsAppCTAURL
 from app.models.database import (
     GoogleCalendarConnection,
     GoogleCalendarOAuthState,
     Recordatorio,
     Usuario,
 )
-from app.services import google_calendar as calendar_sync
+from app.services import dispatcher, google_calendar as calendar_sync
+from app.services.assistant_capabilities import reminder_management
+from app.services.assistant_runtime import AssistantReply, run_for_phone
+from app.services.assistant_transport import assemble_reply
+from app.services.dispatch_contract import DispatchResult
+from tests import test_assistant_pilot
+from tests.test_assistant_pilot import NOW, PHONE, NativeScript
 
 pytestmark = pytest.mark.unit
+
+accounts = test_assistant_pilot.accounts
 
 
 def _config():
@@ -309,20 +318,10 @@ async def test_existing_event_id_is_recovered_after_interrupted_insert(
 
 
 @pytest.mark.asyncio
-async def test_chat_connect_link_is_explicit_and_callback_starts_sync(monkeypatch):
+async def test_calendar_callback_starts_sync(monkeypatch):
     from fastapi.testclient import TestClient
 
     from app.main import app
-    from app.services import dispatcher
-
-    monkeypatch.setattr(
-        dispatcher,
-        "authorization_url_for_phone",
-        lambda phone: "https://accounts.google.com/example",
-    )
-    reply = await dispatcher._handle_calendar_connect("5491112345678")
-    assert reply.intent == "calendar_connect"
-    assert reply.reply_message.url == "https://accounts.google.com/example"
 
     user_id = uuid4()
     authorize = AsyncMock(return_value=user_id)
@@ -345,20 +344,93 @@ async def test_chat_connect_link_is_explicit_and_callback_starts_sync(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_connect_phrase_routes_before_llm(monkeypatch):
-    from app.services import dispatcher
-
-    monkeypatch.setattr(dispatcher, "_enter", AsyncMock(return_value=None))
-    assistant = AsyncMock()
-    monkeypatch.setattr(dispatcher, "run_for_phone", assistant)
+async def test_calendar_connect_tool_sends_single_cta_through_agent(accounts, monkeypatch):
+    _, *_ = accounts
+    url = "https://accounts.google.com/example"
     monkeypatch.setattr(
-        dispatcher,
+        reminder_management,
         "authorization_url_for_phone",
-        lambda phone: "https://accounts.google.com/example",
+        lambda phone: url,
     )
+    script = NativeScript([[('connect_google_calendar', {})]])
+    reply = await run_for_phone(
+        PHONE,
+        "calendar-connect",
+        "Conectá mi calendario de Google",
+        provider=script,
+        now=NOW,
+    )
+    assert script.calls == 1
+    assert reply.event_key == "calendar.link.sent"
+    assert reply.event_variables == {"auth_url": url}
+    body = (
+        "📅 Tocá el botón para autorizar a Luka a gestionar eventos de pagos en "
+        "tu calendario de Google. El enlace vence en 10 minutos y se usa una sola vez."
+    )
+    assert reply.text == body
+    assert len(reply.outbound) == 1
+    message = reply.outbound[0]
+    assert isinstance(message, WhatsAppCTAURL)
+    assert message.url == url
+    assert message.display_text == "Conectar calendario"
+
+
+@pytest.mark.asyncio
+async def test_calendar_connect_tool_reports_configuration_error(accounts, monkeypatch):
+    _, *_ = accounts
+
+    def unavailable(phone):
+        raise calendar_sync.CalendarConfigurationError("missing")
+
+    monkeypatch.setattr(reminder_management, "authorization_url_for_phone", unavailable)
+    script = NativeScript([[('connect_google_calendar', {})]])
+    reply = await run_for_phone(
+        PHONE, "calendar-config-error", "Conectá mi calendario", provider=script, now=NOW
+    )
+    assert reply.text == reminder_management.CALENDAR_CONNECT_ERROR
+    assert reply.event_key is None
+    assert reply.outbound == []
+
+
+@pytest.mark.asyncio
+async def test_calendar_link_is_the_primary_transport_message(monkeypatch):
+    from app.services import assistant_transport
+
+    monkeypatch.setattr(
+        assistant_transport.ConversationFlowRuntime,
+        "render_event",
+        AsyncMock(return_value=None),
+    )
+    link = WhatsAppCTAURL(
+        body="Tocá el botón para conectar tu calendario.",
+        display_text="Conectar calendario",
+        url="https://accounts.google.com/example",
+    )
+    answer = AssistantReply(
+        link.body,
+        outbound=[link],
+        event_key="calendar.link.sent",
+        event_variables={"auth_url": link.url},
+    )
+    result = await assemble_reply(PHONE, answer)
+    assert result.reply_message is link
+    assert result.reply_text == link.body
+    assert result.followup_messages == []
+
+
+@pytest.mark.asyncio
+async def test_calendar_phrase_delegates_to_assistant_without_regex(monkeypatch):
+    monkeypatch.setattr(dispatcher, "_enter", AsyncMock(return_value=None))
+    assistant = AsyncMock(return_value=AssistantReply("respuesta del agente"))
+    monkeypatch.setattr(dispatcher, "run_for_phone", assistant)
+    assembled = DispatchResult("respuesta del agente")
+    monkeypatch.setattr(dispatcher, "assemble_reply", AsyncMock(return_value=assembled))
+
     result = await dispatcher.process_incoming_message(
-        "5491112345678", "Conectá mi calendario de Google"
+        PHONE, "Conectá mi calendario de Google"
     )
-    assert result.intent == "calendar_connect"
-    assert result.reply_message.url == "https://accounts.google.com/example"
-    assistant.assert_not_awaited()
+
+    assert result is assembled
+    assistant.assert_awaited_once()
+    assert not hasattr(dispatcher, "_is_calendar_connect")
+    assert not hasattr(dispatcher, "_handle_calendar_connect")

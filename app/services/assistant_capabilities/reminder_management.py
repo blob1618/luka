@@ -1,9 +1,11 @@
 """Reminder CRUD, preferences and recurring candidates via existing services."""
 import asyncio
+import logging
 from uuid import UUID
 
 from pydantic import Field, field_validator
 
+from app.api.whatsapp import WhatsAppCTAURL
 from app.models.database import CandidatoGastoRecurrente, Recordatorio, Usuario
 from app.services import finance
 from app.services.assistant_contracts import CommitResult, EmptyInput, FrozenModel, ReferenceToken, ResourceReference, amount_text
@@ -11,9 +13,18 @@ from app.services.assistant_capabilities.common import (
     check_resource, committed, data, issue_resource, missing, operation_tool,
     positive, prepared, read_tool, refresh_resource, require_status, snapshot_row,
 )
+from app.services.google_calendar import CalendarConfigurationError, authorization_url_for_phone
 from app.services.reminder import ReminderService
 from app.services.recurring_expense import RecurringExpenseService
 from app.services.currencies import is_supported, supported_text
+
+logger = logging.getLogger(__name__)
+
+CALENDAR_CONNECT_ERROR = 'No pude preparar la conexión con Google Calendar. Intentá más tarde.'
+CALENDAR_CONNECT_BODY = (
+    '📅 Tocá el botón para autorizar a Luka a gestionar eventos de pagos en '
+    'tu calendario de Google. El enlace vence en 10 minutos y se usa una sola vez.'
+)
 
 REMINDER_FIELDS = ('titulo', 'dia_del_mes', 'monto', 'moneda', 'estado', 'candidato_id')
 CANDIDATE_FIELDS = ('concepto', 'dia_estimado', 'monto_estimado', 'moneda', 'estado', 'propuesta_en', 'proxima_fecha_estimada')
@@ -248,8 +259,33 @@ async def apply_candidate(owner, identifier, accept):
     return await asyncio.to_thread(execute)
 
 
+async def connect_google_calendar(context, args):
+    try:
+        url = await asyncio.to_thread(authorization_url_for_phone, context.turn.phone)
+    except CalendarConfigurationError:
+        logger.warning('[CALENDAR_AUTH] integration_not_configured')
+        return _calendar_error(context)
+    except Exception as exc:
+        logger.warning('[CALENDAR_AUTH] link_error=%s', type(exc).__name__)
+        return _calendar_error(context)
+    if not url:
+        return _calendar_error(context)
+    message = WhatsAppCTAURL(body=CALENDAR_CONNECT_BODY, display_text='Conectar calendario', url=url)
+    context.outbound.append(message)
+    context.event_key = 'calendar.link.sent'
+    context.event_variables = {'auth_url': url}
+    context.terminal = message.body
+    return data(context, [], [message.body])
+
+
+def _calendar_error(context):
+    context.terminal = CALENDAR_CONNECT_ERROR
+    return data(context, [], [], status='error')
+
+
 def reminder_management_contracts():
     return (read_tool('list_reminders', 'Lista propios activos; include_paused=true incluye pausados para gestionar. Devuelve refs visibles persistentes.', ReminderQuery, list_reminders),
+        read_tool('connect_google_calendar', 'Genera un enlace de autorización de Google Calendar para que Luka sincronice eventos de recordatorios. Es una lectura terminal: envía un único CTA y no continúa el turno.', EmptyInput, connect_google_calendar, terminal=True),
         *(reminder_operation(action) for action in ('create', 'update', 'change_reminder_state')),
         operation_tool('set_proactive_prompts', 'Prepara activar/desactivar avisos proactivos propios.', ProactiveDraft, ProactivePrepared, prepare_proactive, commit_proactive),
         read_tool('list_recurring_candidates', 'Lista propuestas recurrentes propias vigentes con refs.', EmptyInput, list_candidates),
