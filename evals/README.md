@@ -40,10 +40,14 @@ resumidos en [RESULTS.md](RESULTS.md).
 | `preview_rate` | Sobre escenarios de escritura: hubo preview con confirmación |
 | `commit_rate` | Sobre escrituras: la confirmación persistió el efecto |
 | `verify_rate` | El estado final de la base coincide con lo esperado |
+| `layout_accuracy` | En escenarios con `expect_layout`: el agente envió ese `layout` a `present_result` o `ask_clarification` |
+| `leading_accuracy` | En escenarios con `expect_leading_bullet`: el primer carácter del mensaje coincide |
+| `double_bullets` | Cantidad de respuestas con `• •`, viñeta duplicada |
 | `avg_latency_ms` | Latencia del primer turno |
 
 `preview_rate` y `commit_rate` se calculan solo sobre escenarios `write`; las lecturas y las
-aclaraciones no deben pedir confirmación.
+aclaraciones no deben pedir confirmación. Las métricas de layout solo cuentan escenarios que
+declaran la expectativa.
 
 ## Cómo agregar escenarios
 
@@ -63,6 +67,11 @@ Editar `evals/corpus.json`:
 `kind`: `write` (preview + confirmación), `read` (sin confirmación) o `clarify` (el agente
 debe pedir datos faltantes y no escribir). `verify` admite `movement`, `movements`, `wallet`,
 `limit`, `no_limit`, `reminder`, `no_movement`, `reply_contains` y `reply_nonempty`.
+
+`expect_layout` (`plain` o `bullets`) inspecciona el argumento real de la última llamada a
+`present_result` o `ask_clarification`. `expect_leading_bullet` (`true` o `false`) inspecciona
+el primer carácter de la respuesta. Usar ambas para medir la elección del agente sin inferirla
+del texto.
 
 ## Límites
 

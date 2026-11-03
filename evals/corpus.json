@@ -5,6 +5,7 @@
       "text": "gasté 1000 en taxi",
       "expect_tools": ["register_movement"],
       "kind": "write",
+      "expect_leading_bullet": false,
       "verify": {"movement": {"amount": "1000", "currency": "ARS", "type": "egreso", "description_contains": "taxi"}}
     },
     {
@@ -68,10 +69,21 @@
       "verify": {"reply_contains": "ARS"}
     },
     {
+      "id": "layout_single_balance",
+      "text": "decime el saldo de mi billetera en pesos",
+      "expect_tools": ["wallet_balances"],
+      "kind": "read",
+      "expect_layout": "plain",
+      "expect_leading_bullet": false,
+      "verify": {"reply_nonempty": true}
+    },
+    {
       "id": "list_movements",
       "text": "mostrame mis últimos movimientos",
       "expect_tools": ["find_movements"],
       "kind": "read",
+      "expect_layout": "bullets",
+      "expect_leading_bullet": true,
       "seed_movement": {"description": "taxi", "amount": "1000", "type": "egreso"},
       "verify": {"reply_contains": "taxi"}
     },
@@ -82,6 +94,31 @@
       "kind": "read",
       "seed_movement": {"description": "taxi", "amount": "1000", "type": "egreso", "date_offset": -1},
       "verify": {"reply_contains": "taxi"}
+    },
+    {
+      "id": "layout_greeting",
+      "text": "hola",
+      "expect_tools": ["conversation_reply"],
+      "kind": "read",
+      "expect_leading_bullet": false,
+      "verify": {"reply_contains": "Luka"}
+    },
+    {
+      "id": "layout_single_reminder",
+      "text": "mostrame mis recordatorios",
+      "expect_tools": ["list_reminders"],
+      "kind": "read",
+      "seed_reminder": {"title": "Internet"},
+      "expect_layout": "bullets",
+      "expect_leading_bullet": true,
+      "verify": {"reply_contains": "Internet"}
+    },
+    {
+      "id": "layout_net_worth",
+      "text": "cuál es mi patrimonio",
+      "expect_tools": ["query_net_worth"],
+      "kind": "read",
+      "verify": {"reply_nonempty": true}
     },
     {
       "id": "create_limit",
