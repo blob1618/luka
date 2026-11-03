@@ -252,12 +252,16 @@ class ConfirmedAction(FrozenModel):
     confirmation_message_id: str
 
 
+PresentationLayout = Literal['plain', 'bullets']
+
+
 class VerifiedFact(FrozenModel):
     ref: ReferenceToken
     label: str
     value: str  # representación exacta del backend
     origin: Literal['backend_computed', 'user_provided', 'external_reported']
     required: bool = True
+    list_item: bool = False
 
 
 class DataResult(FrozenModel):
@@ -471,13 +475,17 @@ class EmptyInput(StrictInput):
 
 class PresentResult(StrictInput):
     block_refs: tuple[ReferenceToken, ...] = ()
-    presentation_style: Literal['concise', 'detail'] = 'concise'
+    layout: PresentationLayout = Field(default='plain', description=
+        'bullets: colección de elementos, aunque sea uno. plain: saludo, confirmación, saldo único, error, '
+        'pregunta o hecho con formato interno.')
 
 
 class AskClarification(StrictInput):
     reason_code: Literal['missing_field', 'ambiguous_reference', 'unsupported_capability']
     target_field: Literal['date', 'amount', 'movement', 'wallet', 'category', 'request', 'operation']
     candidate_refs: tuple[ReferenceToken, ...] = ()
+    layout: PresentationLayout = Field(default='plain', description=
+        'bullets: los hechos son una colección de elementos. plain: mensaje conversacional.')
 
 
 class OperationControl(StrictInput):

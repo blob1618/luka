@@ -47,6 +47,23 @@ from app.services.llm import LLMService  # noqa: E402
 from evals.fake_redis import FakeRedis  # noqa: E402
 
 PROVIDER_KEYS = {'deepseek': 'DEEPSEEK_API_KEY', 'gemini': 'GEMINI_API_KEY', 'mistral': 'MISTRAL_API_KEY'}
+PRESENTATION_TOOLS = {'present_result', 'ask_clarification'}
+
+
+class RecordingProvider:
+    """Delegates to the real provider and records the raw tool arguments."""
+
+    def __init__(self, provider):
+        self.provider = provider
+        self.calls = []
+
+    def __getattr__(self, name):
+        return getattr(self.provider, name)
+
+    async def generate_with_tools(self, **kwargs):
+        turn = await self.provider.generate_with_tools(**kwargs)
+        self.calls.extend((call.name, call.arguments) for call in turn.calls)
+        return turn
 
 
 def seed(scenario, index):
@@ -183,10 +200,11 @@ async def run_once(scenario, index, fake):
     ConversationService._client = None
     ConversationService._loop_id = None
     owner, phone = seed(scenario, index)
+    provider = RecordingProvider(assistant_runtime.create_provider())
     started = time.perf_counter()
     reply = await assistant_runtime.run_for_phone(
         phone, f'eval-{scenario["id"]}-{uuid4().hex}', scenario['text'],
-        now=datetime.now(timezone.utc))
+        now=datetime.now(timezone.utc), provider=provider)
     latency_ms = round((time.perf_counter() - started) * 1000, 2)
 
     tools = [entry.get('tool') for entry in reply.trace]
@@ -201,7 +219,15 @@ async def run_once(scenario, index, fake):
         committed = await assistant_runtime.run_for_phone(
             phone, f'eval-confirm-{uuid4().hex}', action=reply.confirmation_action,
             now=datetime.now(timezone.utc))
-    verified, detail = verify(scenario, owner, committed or reply)
+    final = committed or reply
+    verified, detail = verify(scenario, owner, final)
+
+    presentations = [(name, arguments) for name, arguments in provider.calls
+                     if name in PRESENTATION_TOOLS]
+    layout = presentations[-1][1].get('layout', 'plain') if presentations else None
+    expected_layout = scenario.get('expect_layout')
+    leading_bullet = reply.text.lstrip().startswith('• ')
+    expected_leading = scenario.get('expect_leading_bullet')
 
     return {
         'id': scenario['id'],
@@ -215,18 +241,32 @@ async def run_once(scenario, index, fake):
         'detail': detail,
         'latency_ms': latency_ms,
         'text': reply.text[:160],
+        'layout': layout,
+        'expected_layout': expected_layout,
+        'layout_hit': expected_layout is None or layout == expected_layout,
+        'leading_bullet': leading_bullet,
+        'expected_leading': expected_leading,
+        'leading_hit': expected_leading is None or leading_bullet == expected_leading,
+        'double_bullet': '• •' in final.text,
     }
 
 
 def aggregate(rows):
     total = len(rows) or 1
     writes = [row for row in rows if row['kind'] == 'write']
+    layout_rows = [row for row in rows if row.get('expected_layout') is not None]
+    leading_rows = [row for row in rows if row.get('expected_leading') is not None]
     return {
         'runs': len(rows),
         'tool_accuracy': round(sum(row['tool_hit'] for row in rows) / total, 3),
         'verify_rate': round(sum(row['verify'] for row in rows) / total, 3),
         'preview_rate': round(sum(row['preview'] for row in writes) / len(writes), 3) if writes else None,
         'commit_rate': round(sum(row['committed'] for row in writes) / len(writes), 3) if writes else None,
+        'layout_accuracy': round(sum(row.get('layout_hit', False) for row in layout_rows) / len(layout_rows), 3)
+                           if layout_rows else None,
+        'leading_accuracy': round(sum(row.get('leading_hit', False) for row in leading_rows) / len(leading_rows), 3)
+                            if leading_rows else None,
+        'double_bullets': sum(bool(row.get('double_bullet')) for row in rows),
         'avg_latency_ms': round(mean(row['latency_ms'] for row in rows), 1),
     }
 
@@ -251,7 +291,8 @@ async def run_provider(provider, scenarios, runs, fake, counter):
         report[scenario['id']] = {'runs': rows, 'aggregate': aggregate(rows)}
         item = report[scenario['id']]['aggregate']
         print(f"{provider:<8} {scenario['id']:<20} acc={item['tool_accuracy']:.2f} "
-              f"verify={item['verify_rate']:.2f} preview={item['preview_rate']} "
+              f"verify={item['verify_rate']:.2f} layout={item['layout_accuracy']} "
+              f"leading={item['leading_accuracy']} preview={item['preview_rate']} "
               f"commit={item['commit_rate']} {item['avg_latency_ms']}ms")
     return report, all_rows
 

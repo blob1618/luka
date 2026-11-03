@@ -90,9 +90,9 @@ async def refresh_resource(context, kind, model, identifier, fields, visible):
     return await issue_resource(context, kind, identifier, snapshot, visible(snapshot))
 
 
-def data(context, rows, lines, *, status='ok'):
+def data(context, rows, lines, *, status='ok', list_item=False):
     return DataResult(data=ToolData(status=status, items=rows).model_dump(mode='json'),
-                      facts=context.presenter.add(lines))
+                      facts=context.presenter.add(lines, list_item=list_item))
 
 
 def committed(context, line, *, event=None, variables=None, **result):

@@ -297,7 +297,7 @@ async def test_terminal_policy_and_additional_read_require_no_loop_changes(accou
     monkeypatch.setattr(assistant_runtime, 'build_tool_registry', lambda: registry)
     script = NativeScript([[('example_read', {})]])
     result = await run_for_phone(PHONE, 'extension', 'consulta', provider=script, now=NOW)
-    assert script.calls == 1 and result.text == '• Resultado extensible.'
+    assert script.calls == 1 and result.text == 'Resultado extensible.'
 
 
 @pytest.mark.asyncio
@@ -322,7 +322,7 @@ async def test_nonfinancial_operation_uses_domain_contract_for_commit_presentati
     preview = await dispatcher.process_incoming_message(PHONE, 'ejemplo', 'example')
     await assistant_runtime.record_preview_delivered(PHONE, preview.assistant_preview_delivery)
     result = await dispatcher.process_incoming_message(PHONE, 'sí', 'example-confirm')
-    assert result.protected_presentation and result.reply_text == '• Operación de prueba completada.'
+    assert result.protected_presentation and result.reply_text == 'Operación de prueba completada.'
 
 
 @pytest.mark.asyncio

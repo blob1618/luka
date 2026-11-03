@@ -109,7 +109,7 @@ async def list_limits(context, args):
         lines.append(f"{name}, {visible['month']:02}/{visible['year']}: {visible['currency']} {amount_text(visible['amount'])}.")
     summary = '\n'.join(lines or ['No hay límites vigentes.'])
     context.event_key, context.event_variables = 'limit.listed', {'summary': summary}
-    return data(context, rows, lines or ['No hay límites vigentes.'])
+    return data(context, rows, lines or ['No hay límites vigentes.'], list_item=bool(rows))
 
 
 async def prepare_limit(context, operation):
@@ -217,7 +217,7 @@ async def query_budget(context, args):
     lines = [f'{b.category_name}: límite {b.currency} {amount_text(b.limit_amount)}, registrado {amount_text(b.spent_amount)}, '
         f'disponible {amount_text(b.remaining_amount)}, excedido {amount_text(b.exceeded_amount)}, {amount_text(b.percentage)} %, estado {b.state}.' for b in budgets]
     context.event_key, context.event_variables = 'budget.result', {'summary': '\n'.join(lines or ['No hay presupuestos para ese período.'])}
-    return data(context, [], lines or ['No hay presupuestos para ese período.'])
+    return data(context, [], lines or ['No hay presupuestos para ese período.'], list_item=bool(lines))
 
 
 def compensation_text(proposal: CompensationProposal, *, confirmation: bool = False) -> str:
