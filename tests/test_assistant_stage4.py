@@ -409,11 +409,13 @@ def test_catalog_covers_current_domains_and_has_no_model_commit_tool():
 @pytest.fixture
 def fixed_pilot_clock(monkeypatch):
     from datetime import datetime
+    from app.services import recurring_expense
     class Fixed(datetime):
         @classmethod
         def now(cls, tz=None):
             return NOW.astimezone(tz) if tz else NOW.replace(tzinfo=None)
     monkeypatch.setattr(assistant_runtime, 'datetime', Fixed)
+    monkeypatch.setattr(recurring_expense, 'datetime', Fixed)
 
 
 def publish(accounts, event_key, definition):
