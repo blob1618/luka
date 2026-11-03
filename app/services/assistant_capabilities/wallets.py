@@ -38,7 +38,7 @@ async def balances(context, args):
         ref = await context.reference('wallet', EntityReference(id=wallet.wallet_id, label=wallet.name))
         rows.append({'wallet_ref': ref, 'name': wallet.name, 'currency': wallet.currency, 'balance': str(wallet.balance)})
     if wallets:
-        facts = context.presenter.add([f'{wallet.name}: {wallet.currency} {amount_text(wallet.balance)}.' for wallet in wallets])
+        facts = context.presenter.add([f'{wallet.name}: {wallet.currency} {amount_text(wallet.balance)}.' for wallet in wallets], list_item=True)
     else:
         message = (f'No tenés una billetera en {args.currency}.' if args.currency
                    else 'No hay billeteras propias registradas.')

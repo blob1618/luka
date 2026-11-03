@@ -52,7 +52,7 @@ async def reset_context(context, args):
 
 
 async def present(context, args):
-    context.terminal = context.presenter.render(args.block_refs)
+    context.terminal = context.presenter.render(args.block_refs, layout=args.layout)
     return DataResult(data=ToolData(status='presented').model_dump(mode='json'))
 
 
@@ -83,7 +83,7 @@ async def clarify(context, args):
     if options:
         context.state['selection_options'] = options
         question += '\n' + '\n'.join(f"{number}. {item['label']}" for number, item in options.items())
-    context.terminal = '\n'.join(filter(None, [context.presenter.render(), question]))
+    context.terminal = '\n'.join(filter(None, [context.presenter.render(layout=args.layout), question]))
     return DataResult(data=ToolData(status='needs_clarification').model_dump(mode='json'))
 
 
@@ -117,9 +117,16 @@ def conversation_contracts():
         ToolContract('conversation_reply', 'Responde saludo, ayuda o pedido fuera de alcance con información verificada de Luka.', ConversationReply, ToolData, conversation_reply, terminal),
         ToolContract('reset_context', 'Reinicia borradores y contexto efímero propios. El historial visible se limpia después de enviar la respuesta; no borra registros ni recibos.', EmptyInput, ToolData, reset_context, terminal),
         ToolContract('present_result', 'Finaliza con hechos de backend. Los obligatorios se incluyen automáticamente; '
-                     'block_refs opcional sólo selecciona u ordena hechos conocidos. Nunca redactes valores libres.', PresentResult, ToolData, present, terminal),
-        ToolContract('ask_clarification', 'Pide aclarar un campo o seleccionar una referencia propia. Para recopilar '
-                     'campos de una operación, abrí primero el borrador incompleto con su capacidad.', AskClarification, ToolData, clarify, terminal),
+                     'block_refs opcional sólo selecciona u ordena hechos conocidos. layout="bullets" para presentar '
+                     'una colección de elementos (movimientos, recordatorios, categorías, límites, billeteras), aunque '
+                     'tenga un solo elemento. No uses bullets para un único saldo; sí para una lista de saldos de varias '
+                     'billeteras. layout="plain" para saludos, confirmaciones, errores, preguntas o hechos con formato '
+                     'interno (patrimonio, cotizaciones). Nunca redactes valores libres.',
+                     PresentResult, ToolData, present, terminal),
+        ToolContract('ask_clarification', 'Pide aclarar un campo o seleccionar una referencia propia. layout="bullets" '
+                     'si los hechos presentados son una colección de elementos; layout="plain" si el mensaje es '
+                     'conversacional. Para recopilar campos de una operación, abrí primero el borrador incompleto '
+                     'con su capacidad.', AskClarification, ToolData, clarify, terminal),
         ToolContract('operation_amend', 'Modifica campos de un borrador usando su ref y revisión actuales. '
                      'También retoma y completa un borrador suspendido en un paso: si el pedido agrega datos, pasarlos en changes. '
                      'changes se valida con el schema de la operación; fecha nueva usa DateSpec del turno actual.', OperationAmend, None, amend, terminal),

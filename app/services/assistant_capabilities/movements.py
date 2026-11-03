@@ -85,16 +85,18 @@ async def find_movements(context, args):
     if args.category_ref:
         category_id = (await context.references.resolve(context.turn, args.category_ref, kind='category', payload_model=EntityReference)).id
     total, rows = await asyncio.to_thread(_query, context.turn.owner_id, args, scope, shown_ids, category_id, bool(args.category_ref))
-    items, refs, lines = [], [], []
+    items, refs, item_lines, summary_line = [], [], [], None
     for row in rows:
         ref = await context.reference('movement', MovementSnapshot.model_validate(row))
         refs.append(ref)
         items.append({**visible_movement(row), 'movement_ref': ref})
-        lines.append(f"{row['date']} — {row['description']}: {row['currency']} {amount_text(row['amount'])} ({row['movement_type']}).")
+        item_lines.append(f"{row['date']} — {row['description']}: {row['currency']} {amount_text(row['amount'])} ({row['movement_type']}).")
+    lines = list(item_lines)
     context.state['last_shown'] = refs
     no_data_fact = None
     if rows and total > len(rows):
-        lines.append(f'Mostré {len(rows)} de {total} movimientos.')
+        summary_line = f'Mostré {len(rows)} de {total} movimientos.'
+        lines.append(summary_line)
     elif not rows:
         message = 'No encontré movimientos con esos filtros.'
         no_data_fact = context.presenter.find(message)
@@ -111,7 +113,9 @@ async def find_movements(context, args):
             context.event_key = 'movements.query_result'
             context.event_variables = {'summary': '\n'.join(lines), 'dashboard_url': link.login_url,
                                        'ttl_minutes': str(link.link_ttl_minutes)}
-    facts = context.presenter.add(lines)
+    facts = context.presenter.add(item_lines, list_item=True)
+    if summary_line:
+        facts += context.presenter.add([summary_line])
     if not facts and no_data_fact is not None:
         facts = (no_data_fact,)
     return DataResult(data=FindOutput(status='ok' if rows else 'no_data', items=items,

@@ -95,7 +95,7 @@ async def list_reminders(context, args):
         rows.append({'reminder_ref': ref, **visible})
         lines.append(f"{item['titulo']}: día {item['dia_del_mes']}, {item['estado']}." +
             (f" {item['moneda']} {amount_text(item['monto'])}." if item['monto'] is not None else ''))
-    return data(context, rows, lines or ['No hay recordatorios registrados con ese estado.'])
+    return data(context, rows, lines or ['No hay recordatorios registrados con ese estado.'], list_item=bool(rows))
 
 
 def reminder_operation(action):

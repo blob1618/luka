@@ -111,7 +111,7 @@ async def list_categories(context, args):
             lines.append(f'{category.category_name}: {args.currency}, ingresos {amount_text(income)}, egresos {amount_text(expense)}.')
         else:
             lines.append(category.category_name + '.')
-    return data(context, rows, lines or ['No hay categorías activas.'])
+    return data(context, rows, lines or ['No hay categorías activas.'], list_item=bool(rows))
 
 
 def category_operation(action):
