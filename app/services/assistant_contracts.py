@@ -475,14 +475,17 @@ class EmptyInput(StrictInput):
 
 class PresentResult(StrictInput):
     block_refs: tuple[ReferenceToken, ...] = ()
-    layout: PresentationLayout = Field(default='plain')
+    layout: PresentationLayout = Field(default='plain', description=
+        'bullets: colección de elementos, aunque sea uno. plain: saludo, confirmación, saldo único, error, '
+        'pregunta o hecho con formato interno.')
 
 
 class AskClarification(StrictInput):
     reason_code: Literal['missing_field', 'ambiguous_reference', 'unsupported_capability']
     target_field: Literal['date', 'amount', 'movement', 'wallet', 'category', 'request', 'operation']
     candidate_refs: tuple[ReferenceToken, ...] = ()
-    layout: PresentationLayout = Field(default='plain')
+    layout: PresentationLayout = Field(default='plain', description=
+        'bullets: los hechos son una colección de elementos. plain: mensaje conversacional.')
 
 
 class OperationControl(StrictInput):
