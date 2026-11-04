@@ -149,7 +149,7 @@ class TestWebhookAsyncEnqueue:
         assert args[1] == msg
 
     def test_unsupported_message_type_does_not_enqueue_task(self):
-        msg = make_unsupported_message(msg_type="image")
+        msg = make_unsupported_message(msg_type="sticker")
         payload = make_webhook_payload(messages=[msg])
 
         with patch("fastapi.BackgroundTasks.add_task") as mock_add_task:
@@ -181,10 +181,11 @@ class TestWebhookAsyncEnqueue:
 
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
-        assert mock_add_task.call_count == 2
+        assert mock_add_task.call_count == 3
         calls = mock_add_task.call_args_list
         assert calls[0].args[1] == msg1
         assert calls[1].args[1] == msg2
+        assert calls[2].args[1] == msg3
 
     def test_empty_payload_does_not_enqueue_task(self):
         payload = make_webhook_payload()

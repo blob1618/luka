@@ -72,13 +72,13 @@ def _owner(phone):
         return user.id if user else None
 
 
-def make_context(owner_id, phone, message_id, text, now, state, *, writable=True, registry=None):
+def make_context(owner_id, phone, message_id, text, now, state, *, writable=True, registry=None, source_kind='text'):
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None or current.utcoffset() is None:
         raise ValueError('El reloj de entrada necesita zona horaria')
     turn = TrustedTurn(owner_id=owner_id, phone=phone, conversation_id='whatsapp',
         inbound_message_id=message_id, source_text=text, now=current,
-        reference_day=current.astimezone(TZ).date(), locale='es-AR')
+        reference_day=current.astimezone(TZ).date(), locale='es-AR', source_kind=source_kind)
     registry = registry or build_tool_registry()
     return ToolContext(turn, state, ReferenceStore(state), OperationService(registry), writable=writable)
 
@@ -236,3 +236,48 @@ async def record_preview_delivered(phone, delivery, *, now=None):
             expected_revision=delivery.revision, prepared_hash=delivery.prepared_hash,
             preview_source_message_id=delivery.source_message_id)
         await assistant_state.save(owner_id, state)
+
+
+async def run_for_media(phone, message_id, inbound_media, *, load_media=None, extract=None):
+    """Prepare a movement from media using the same owner claim and tool contract."""
+    from app.api.whatsapp_media import MediaError, download_media
+    from app.services.media_extraction import ExtractionError, extract_media
+    from app.services.media_draft import media_source_text, movement_draft
+
+    owner_id = await asyncio.to_thread(_owner, phone)
+    if owner_id is None or not message_id:
+        return AssistantReply('No encuentro una cuenta propia vinculada; no hice cambios.')
+    registry = build_tool_registry()
+    try:
+        async with assistant_state.claim(owner_id):
+            state = await assistant_state.read(owner_id)
+            try:
+                from app.services.assistant_contracts import PendingOperation
+                from app.services.movement_commands import operation_id
+                existing_id = operation_id(owner_id, message_id, 'register_movement')
+                existing = state['workspace']['operations'].get(existing_id)
+                if existing and existing['status'] in {'ready', 'collecting'}:
+                    context = make_context(owner_id, phone, message_id, existing['original_text'], None,
+                                           state, registry=registry, source_kind=inbound_media.kind)
+                    await context.operations.present(context, PendingOperation.model_validate(existing))
+                    return context_reply(context, context.terminal or 'Necesito más datos para completar el registro.')
+                media = await (load_media or download_media)(inbound_media)
+                extraction = await (extract or extract_media)(media)
+                source = media_source_text(media, extraction)
+                context = make_context(owner_id, phone, message_id, source, None, state, registry=registry, source_kind=media.kind)
+                entities = await context.initial_context()
+                draft = movement_draft(media, extraction, entities['categories'])
+                executor = ToolExecutor(registry)
+                await executor.execute(context, name='register_movement',
+                                       arguments=draft.model_dump(mode='json', exclude_none=True), timeout=30)
+                prefix = ''
+                if media.kind == 'document' and extraction.payment_status == 'unknown':
+                    prefix = '¿Ya pagaste esta factura? Decime cuándo la pagaste.\n'
+                answer = context_reply(context, prefix + (context.terminal or 'Necesito más datos para completar el registro.'))
+                answer.trace.append({'source': 'media', 'kind': media.kind, 'outcome': 'prepared' if answer.preview_delivery else 'collecting'})
+                await assistant_state.save(owner_id, state)
+                return answer
+            except (MediaError, ExtractionError, ValueError) as exc:
+                return AssistantReply(str(exc) + ' No hice cambios.')
+    except ConversationStateUnavailable:
+        return AssistantReply('No pude guardar el contexto de conversación. No hice cambios; intentá nuevamente.')

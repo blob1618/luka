@@ -20,6 +20,8 @@ def _normalized(text):
 
 async def handle_user_action(context, action):
     from app.services.assistant_runtime import AssistantReply, committed_text, context_reply
+    if context.turn.source_kind != 'text' and not action:
+        return None
     answer = _normalized(context.turn.source_text)
     if not action and answer not in CONFIRM_WORDS | CANCEL_WORDS | MODIFY_WORDS | SOFT_CONFIRM_WORDS:
         return None

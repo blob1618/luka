@@ -11,11 +11,13 @@ from app.api.whatsapp import (
 from app.services import assistant_state
 from app.services.assistant_runtime import _owner
 from app.services.conversation import ConversationHistoryService, ConversationService, _memory_key
-from app.services.dispatcher import process_incoming_interactive_reply, process_incoming_message
+from app.services.dispatcher import process_incoming_interactive_reply, process_incoming_message, process_incoming_media
 from app.services.llm import LLMService
+from app.services.media_contracts import InboundMedia, ValidatedMedia
+from app.api.whatsapp_media import _validate_content, MIME_TYPES
 from app.services.telemetry import start_message_telemetry, finish_message_telemetry
 from app.services.webhook_idempotency import (
-    _visible_reply_text, process_interactive_message_once, process_text_message_once,
+    _visible_reply_text, process_interactive_message_once, process_text_message_once, process_media_message_once,
 )
 from testing.config.settings import set_model_env
 
@@ -67,7 +69,7 @@ def interaction_options(messages):
 
 class WebhookModeService:
     async def send_message(self, text, phone, provider, prompt_path, model='', *, option_id=None,
-                           reply_type='button_reply', title=None):
+                           reply_type='button_reply', title=None, media=None):
         os.environ['LLM_PROVIDER'] = provider
         set_model_env(provider, model)
         LLMService.reset_provider()
@@ -91,7 +93,22 @@ class WebhookModeService:
             async def deliver_synthetically(sender_phone, message):
                 sent.append(message)
                 return True
-            if option_id:
+            if media is not None:
+                kind, mime, content = media
+                mime = mime.split(';', 1)[0].strip().lower()
+                if mime not in MIME_TYPES.get(kind, set()):
+                    raise ValueError('Formato de adjunto no admitido')
+                _validate_content(kind, mime, content)
+                inbound = InboundMedia(message_id, phone, 'synthetic-media-' + uuid4().hex, kind, mime)
+                async def load_synthetic(_):
+                    return ValidatedMedia(kind, mime, content)
+                async def process_synthetic(**kwargs):
+                    nonlocal captured
+                    captured = await process_incoming_media(**kwargs, load_media=load_synthetic)
+                    return captured
+                status = await process_media_message_once(redis_client=client, inbound_media=inbound,
+                    process_media=process_synthetic, send_message=deliver_synthetically)
+            elif option_id:
                 status = await process_interactive_message_once(redis_client=client,
                     interactive_reply=InboundInteractiveReply(message_id, phone, reply_type, option_id, title),
                     process_reply=process_reply, send_message=deliver_synthetically)

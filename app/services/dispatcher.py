@@ -51,3 +51,13 @@ async def process_incoming_interactive_reply(*, sender_phone: str, option_id: st
     if option_id.startswith('assistant:'):
         return await assemble_reply(sender_phone, await run_for_phone(sender_phone, whatsapp_message_id, action=option_id))
     return await process_interaction(sender_phone, whatsapp_message_id, option_id, reply_type)
+
+
+async def process_incoming_media(sender_phone: str, inbound_media, *, load_media=None, extract=None) -> DispatchResult:
+    gate = await _enter(sender_phone)
+    if gate is not None:
+        return gate
+    from app.services.assistant_runtime import run_for_media
+    answer = await run_for_media(sender_phone, inbound_media.message_id, inbound_media,
+                                 load_media=load_media, extract=extract)
+    return await assemble_reply(sender_phone, answer)

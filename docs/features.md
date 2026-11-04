@@ -318,13 +318,25 @@ La conexión opcional con Google Calendar se solicita por WhatsApp con «conecta
   interactivo y vuelve al dispatcher general. Ver
   [conversation-flows.md](conversation-flows.md).
 
+## Registro por nota de voz de WhatsApp
+
+- La nota de voz llega por el webhook firmado y atraviesa la idempotencia,
+  onboarding, operación pendiente y confirmación del registro por texto.
+- Se admiten OGG/Opus y MP3 hasta 5 MiB. Gemini transcribe y extrae candidatos
+  tipados. La transcripción nunca confirma ni registra directamente.
+- Luka pide datos faltantes y presenta la operación completa. Sólo una propuesta
+  entregada puede confirmarse en un mensaje posterior; el éxito sigue al commit.
+- `GEMINI_MEDIA_MODEL` selecciona el extractor. El archivo se procesa en memoria;
+  el historial visible guarda únicamente el tipo de adjunto y la respuesta.
+- `BackgroundTasks` no es durable: un reinicio después del HTTP 200 puede perder
+  el mensaje pendiente de procesamiento.
+
 ## Fuera de alcance
 
 - Asesoramiento financiero, recomendaciones de inversión o temas ajenos a las finanzas
   personales.
 - Acceso directo del frontend a Supabase: todo el acceso financiero pasa por el backend.
 - Menú principal obligatorio: cualquier operación se puede pedir en lenguaje natural.
-- Notas de voz e imágenes: `LLMService` todavía no las procesa.
 - El dashboard vive en otro repositorio; este backend solo genera enlaces de acceso.
 
 ## Documentación relacionada
