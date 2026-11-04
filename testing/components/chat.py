@@ -252,7 +252,7 @@ def render_chat(config: TestingConfig) -> None:
     send_media = st.button('Analizar adjunto', disabled=uploaded is None,
                            key=f'send-media-{session.id}')
     selected_media = None
-    if send_media and uploaded is not None:
+    if send_media is True and uploaded is not None:
         mime = uploaded.type or ''
         kind = ('audio' if mime.startswith('audio/') else
                 'image' if mime.startswith('image/') else 'document')
