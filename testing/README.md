@@ -13,7 +13,7 @@ El entorno vive dentro de `testing/` y se levanta únicamente con Docker o Podma
   barras. Los bytes de estas imágenes tampoco se incluyen en la exportación JSON.
 
 - Chat que simula WhatsApp: entrada de mensajes, historial de conversación, avatar de Luka y respuesta procesada por el flujo completo del dispatcher (modo webhook). No se envía ningún mensaje real por WhatsApp.
-- El chat permite adjuntar OGG/MP3 con «Analizar adjunto». Usa los mismos contratos, dispatcher y wrapper de idempotencia del webhook, con bytes locales en lugar de descarga de Meta. Necesita `GEMINI_API_KEY` y puede usar `GEMINI_MEDIA_MODEL`. La entrega de la propuesta es sintética y queda identificada como tal.
+- El chat permite adjuntar OGG/MP3 y JPEG/PNG con «Analizar adjunto». Usa los mismos contratos, dispatcher y wrapper de idempotencia del webhook, con bytes locales en lugar de descarga de Meta. Necesita `GEMINI_API_KEY` y puede usar `GEMINI_MEDIA_MODEL`. La entrega de la propuesta es sintética y queda identificada como tal.
 - Configuración desde la sidebar:
   - Provider LLM (Gemini, Mistral o DeepSeek, según los providers registrados en el factory).
   - Archivo de prompt (`prompts/core_prompt.md` por defecto; el selector lista los `.md` del repo en `prompts/` y los de `testing/prompts/`).

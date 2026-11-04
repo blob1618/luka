@@ -247,7 +247,7 @@ def render_chat(config: TestingConfig) -> None:
 
     # Chat input
     uploaded = st.file_uploader('Adjuntar nota de voz, ticket o factura',
-                                type=['ogg', 'mp3'],
+                                type=['ogg', 'mp3', 'jpg', 'jpeg', 'png'],
                                 key=f'media-{session.id}')
     send_media = st.button('Analizar adjunto', disabled=uploaded is None,
                            key=f'send-media-{session.id}')
