@@ -597,7 +597,7 @@ async def _process_inbound_message_background(message: dict, redis_instance) -> 
                 process_message=process_incoming_message,
                 send_message=send_whatsapp_message,
             )
-        elif message_type in {"audio", "image"}:
+        elif message_type in {"audio", "image", "document"}:
             try:
                 inbound_media = InboundMedia.from_webhook(message)
             except ValueError:
@@ -705,7 +705,7 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
 
                 for message in messages:
                     message_type = message.get("type")
-                    if message_type in ("text", "interactive", "audio", "image"):
+                    if message_type in ("text", "interactive", "audio", "image", "document"):
                         background_tasks.add_task(
                             _process_inbound_message_background,
                             message,

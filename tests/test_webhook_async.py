@@ -657,3 +657,13 @@ def test_image_message_is_enqueued_for_ticket_processing():
     assert response.status_code == 200
     mock_add_task.assert_called_once()
     assert mock_add_task.call_args.args[1] == msg
+
+
+def test_pdf_message_is_enqueued_for_invoice_processing():
+    msg = make_unsupported_message(msg_type="document", msg_id="wamid.invoice")
+    payload = make_webhook_payload(messages=[msg])
+    with patch("fastapi.BackgroundTasks.add_task") as mock_add_task:
+        response = client.post("/webhook", json=payload)
+    assert response.status_code == 200
+    mock_add_task.assert_called_once()
+    assert mock_add_task.call_args.args[1] == msg
