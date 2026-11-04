@@ -30,7 +30,8 @@ _PROMPTS = {
                  'de pago realizado; date_text debe ser la fecha del pago, nunca la del vencimiento. '
                  'Si hay varios importes posibles, marcá ambiguous=true.'),
 }
-_SCHEMA = ('Respondé únicamente JSON con estas claves exactas: transcript (texto literal o resumen fiel), '
+_SCHEMA = ('Respondé un único objeto JSON, nunca una lista, con estas claves exactas: '
+           'transcript (texto literal o resumen fiel), '
            'amount (número positivo o null), currency (ARS/USD/BRL/EUR o null), '
            'movement_type (ingreso/egreso o null), economic_effect '
            '(cash_flow/investment_principal/placement/existing_investment o null), '
@@ -67,7 +68,14 @@ async def extract_media(media: ValidatedMedia) -> MediaExtraction:
             response.raise_for_status()
         parts = response.json()['candidates'][0]['content']['parts']
         raw = ''.join(part.get('text', '') for part in parts)
-        extraction = MediaExtraction.model_validate(json.loads(raw))
+        payload = json.loads(raw)
+        if isinstance(payload, list):
+            if len(payload) > 1:
+                raise ExtractionError('Encontré varios movimientos posibles en el adjunto. Aclará cuál querés registrar.')
+            if not payload:
+                raise ExtractionError('No encontré un movimiento en el adjunto.')
+            payload = payload[0]
+        extraction = MediaExtraction.model_validate(payload)
         if extraction.date_text and extraction.date_text not in extraction.transcript:
             raise ExtractionError('La fecha extraída no tiene respaldo textual.')
         return extraction
