@@ -34,6 +34,7 @@ from app.api.whatsapp import (  # noqa: E402
     send_whatsapp_message,
     send_whatsapp_typing_indicator,
 )
+from app.services.media_contracts import InboundMedia  # noqa: E402
 from app.scheduler import start_scheduler  # noqa: E402
 from app.services import deployment_status, staging_ingress, staging_seed  # noqa: E402
 from app.services.telemetry import (  # noqa: E402
@@ -63,11 +64,13 @@ from app.services.conversation_flow_contract import (  # noqa: E402
 from app.services.dispatcher import (  # noqa: E402
     process_incoming_interactive_reply,
     process_incoming_message,
+    process_incoming_media,
 )
 from app.services.webhook_idempotency import (  # noqa: E402
     IdempotencyUnavailable,
     process_interactive_message_once,
     process_text_message_once,
+    process_media_message_once,
 )
 from app.services.google_calendar import (  # noqa: E402
     CalendarAuthorizationError,
@@ -594,6 +597,18 @@ async def _process_inbound_message_background(message: dict, redis_instance) -> 
                 process_message=process_incoming_message,
                 send_message=send_whatsapp_message,
             )
+        elif message_type == "audio":
+            try:
+                inbound_media = InboundMedia.from_webhook(message)
+            except ValueError:
+                logger.warning("[BACKGROUND_MESSAGE] message_id=%s status=invalid_media", whatsapp_message_id)
+                finish_message_telemetry(status="invalid_media")
+                return
+            with track_phase("typing"):
+                _dispatch_whatsapp_typing_indicator(whatsapp_message_id)
+            status = await process_media_message_once(
+                redis_client=redis_instance, inbound_media=inbound_media,
+                process_media=process_incoming_media, send_message=send_whatsapp_message)
         elif message_type == "interactive":
             interactive_reply = parse_interactive_reply(message)
             if interactive_reply is None:
@@ -690,7 +705,7 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
 
                 for message in messages:
                     message_type = message.get("type")
-                    if message_type in ("text", "interactive"):
+                    if message_type in ("text", "interactive", "audio"):
                         background_tasks.add_task(
                             _process_inbound_message_background,
                             message,

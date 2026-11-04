@@ -131,6 +131,7 @@ class FieldEvidence(FrozenModel):
     source_message_id: str
     reference_day: date
     source_text: str  # original del turno que aportó este campo, sellado por backend
+    source_kind: Literal['text', 'audio', 'image', 'document'] = 'text'
     literal_span: str | None = None
 
 
@@ -233,6 +234,7 @@ class TrustedTurn:
     now: datetime
     reference_day: date
     locale: str
+    source_kind: Literal['text', 'audio', 'image', 'document'] = 'text'
 
 
 class ConfirmationRequest(FrozenModel):

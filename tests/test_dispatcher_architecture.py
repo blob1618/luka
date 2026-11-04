@@ -32,5 +32,6 @@ def test_dispatcher_has_no_regex_or_domain_routing():
     assert functions == {
         "_enter",
         "process_incoming_message",
+        "process_incoming_media",
         "process_incoming_interactive_reply",
     }

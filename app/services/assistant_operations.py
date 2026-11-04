@@ -133,7 +133,8 @@ class OperationService:
                 return
             span = value.get('evidence_span') if isinstance(value, dict) else None
             evidence[name] = FieldEvidence(source_message_id=context.turn.inbound_message_id,
-                reference_day=context.turn.reference_day, source_text=context.turn.source_text, literal_span=span)
+                reference_day=context.turn.reference_day, source_text=context.turn.source_text,
+                source_kind=context.turn.source_kind, literal_span=span)
             if isinstance(value, dict):
                 for key, item in value.items():
                     visit(name + '.' + key, item, old.get(key) if isinstance(old, dict) else None)

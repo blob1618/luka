@@ -168,6 +168,7 @@ async def _process_message(
     config: TestingConfig,
     phone: str,
     *, interaction: dict | None = None,
+    media: tuple[str, str, bytes] | None = None,
 ) -> tuple[str, dict, list[bytes], list[tuple[str, str]]]:
     """
     Procesa el mensaje a través del flujo completo del dispatcher (webhook).
@@ -181,6 +182,7 @@ async def _process_message(
         provider=config.provider,
         prompt_path=_get_prompt_path(config),
         model=config.model,
+        media=media,
         **({"option_id": interaction["id"], "title": interaction["title"], "reply_type": interaction["reply_type"]} if interaction else {}),
     )
     debug_data = {
@@ -244,8 +246,22 @@ def render_chat(config: TestingConfig) -> None:
                 st.write(msg["content"])
 
     # Chat input
+    uploaded = st.file_uploader('Adjuntar nota de voz, ticket o factura',
+                                type=['ogg', 'mp3'],
+                                key=f'media-{session.id}')
+    send_media = st.button('Analizar adjunto', disabled=uploaded is None,
+                           key=f'send-media-{session.id}')
+    selected_media = None
+    if send_media and uploaded is not None:
+        mime = uploaded.type or ''
+        kind = ('audio' if mime.startswith('audio/') else
+                'image' if mime.startswith('image/') else 'document')
+        selected_media = (kind, mime, uploaded.getvalue())
     prompt = st.chat_input("Escribí un mensaje...")
+    if selected_media is not None:
+        prompt = f'[Adjunto: {uploaded.name}]'
     if selected_interaction:
+        selected_media = None
         prompt = selected_interaction["title"]
     if prompt:
         # Add user message
@@ -261,7 +277,8 @@ def render_chat(config: TestingConfig) -> None:
         with st.chat_message("assistant", avatar=bot_avatar()):
             with st.spinner("Procesando..."):
                 reply_text, debug_data, image_pngs, cta_urls = asyncio.run(
-                    _process_message(prompt, config, session.phone, interaction=selected_interaction)
+                    _process_message(prompt, config, session.phone, interaction=selected_interaction,
+                                     media=selected_media)
                 )
 
             if debug_data.get("error"):

@@ -354,3 +354,28 @@ async def process_interactive_message_once(
                 message_id=interactive_reply.message_id,
             )
     return status
+
+
+async def process_media_message_once(*, redis_client, inbound_media, process_media, send_message):
+    """Claim the inbound ID before downloading; record visible history after delivery."""
+    processed = None
+
+    async def process():
+        nonlocal processed
+        processed = await process_media(sender_phone=inbound_media.sender_phone, inbound_media=inbound_media)
+        return processed
+
+    status = await process_inbound_message_once(
+        redis_client=redis_client, sender_phone=inbound_media.sender_phone,
+        whatsapp_message_id=inbound_media.message_id, process_message=process,
+        send_message=send_message)
+    if status == 'completed' and processed is not None:
+        if getattr(processed, 'clear_memory', False):
+            await ConversationHistoryService.clear(redis_client, inbound_media.sender_phone)
+        else:
+            await ConversationHistoryService.append_exchange(
+                redis_client, inbound_media.sender_phone,
+                {'audio': '[Nota de voz]', 'image': '[Foto de ticket]',
+                 'document': '[Factura PDF]'}[inbound_media.kind],
+                _visible_reply_text(processed), message_id=inbound_media.message_id)
+    return status
