@@ -327,9 +327,11 @@ La conexión opcional con Google Calendar se solicita por WhatsApp con «conecta
 - La foto de ticket admite JPEG o PNG hasta 5 MiB. El extractor propone el total
   final pagado y un rubro. Luka resuelve una categoría propia o pide elegirla;
   nunca toma el subtotal, el efectivo entregado ni el vuelto como total.
-- La factura PDF admite hasta 5 MiB y 20 páginas, sin cifrado. Luka distingue
-  importe facturado, vencimiento y pago; pregunta si ya se pagó y la fecha real
-  antes de preparar un egreso. Una factura pendiente no registra un movimiento.
+- El PDF admite hasta 5 MiB y 20 páginas, sin cifrado. Luka distingue facturas
+  y recibos de gastos pagados de transferencias, promociones y otros documentos.
+  Para facturas distingue importe facturado, vencimiento y pago; pregunta si ya
+  se pagó y la fecha real antes de preparar un egreso. Una factura pendiente,
+  una transferencia o una promoción no registran un movimiento.
 - Luka pide datos faltantes y presenta la operación completa. Sólo una propuesta
   entregada puede confirmarse en un mensaje posterior; el éxito sigue al commit.
 - `GEMINI_MEDIA_MODEL` selecciona el extractor. El archivo se procesa en memoria;

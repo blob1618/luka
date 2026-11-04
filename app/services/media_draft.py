@@ -24,6 +24,13 @@ def media_source_text(media: ValidatedMedia, extraction: MediaExtraction) -> str
 
 
 def movement_draft(media: ValidatedMedia, extraction: MediaExtraction, categories: list[dict]) -> RegisterMovement:
+    if media.kind == 'document':
+        if extraction.document_type == 'bank_transfer':
+            raise ValueError('Este PDF es un comprobante de transferencia, no una factura o recibo de gasto.')
+        if extraction.document_type == 'promotion':
+            raise ValueError('Este PDF parece una promoción, no un comprobante de pago.')
+        if extraction.document_type not in {'invoice', 'expense_receipt'}:
+            raise ValueError('No identifiqué una factura o recibo de gasto en este PDF.')
     if extraction.ambiguous:
         raise ValueError('Encontré varios importes o movimientos posibles. Aclará cuál querés registrar; no hice cambios.')
     if media.kind == 'document' and extraction.payment_status == 'unpaid':

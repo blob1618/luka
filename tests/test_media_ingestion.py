@@ -83,15 +83,92 @@ async def test_extractor_requires_literal_date_evidence(monkeypatch):
         await media_extraction.extract_media(ValidatedMedia('audio', 'audio/ogg', b'OggSx'))
 
 
+@pytest.mark.asyncio
+async def test_extractor_reports_provider_timeout(monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'test-key')
+
+    def handler(request):
+        raise httpx.ReadTimeout('provider did not answer', request=request)
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(media_extraction.httpx, 'AsyncClient',
+                        lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs))
+    with pytest.raises(media_extraction.ExtractionError, match='tardó demasiado'):
+        await media_extraction.extract_media(ValidatedMedia('document', 'application/pdf', b'%PDF-x'))
+
+
 def test_invoice_requires_payment_and_ticket_requires_category():
     invoice = ValidatedMedia('document', 'application/pdf', b'%PDF-x')
     extracted = MediaExtraction(transcript='Factura luz 25000', amount='25000', currency='ARS',
-                                description='Luz', category='Servicios')
+                                description='Luz', category='Servicios', document_type='invoice')
     draft = movement_draft(invoice, extracted, [])
     assert draft.economic_effect is None and draft.date_spec is None
     ticket = ValidatedMedia('image', 'image/jpeg', b'\xff\xd8\xff\xd9')
     categorized = movement_draft(ticket, extracted, [])
     assert categorized.requested_category == 'Servicios' and categorized.category_ref is None
+
+
+@pytest.mark.parametrize('document_type,ambiguous,expected', [
+    ('bank_transfer', False, 'transferencia'),
+    ('promotion', True, 'promoción'),
+    ('other', False, 'factura o recibo'),
+    (None, False, 'factura o recibo'),
+])
+def test_non_expense_pdf_cannot_prepare_movement(document_type, ambiguous, expected):
+    media = ValidatedMedia('document', 'application/pdf', b'%PDF-x')
+    extracted = MediaExtraction(transcript='Documento con importe', amount='100000', currency='ARS',
+                                payment_status='paid', document_type=document_type, ambiguous=ambiguous)
+    with pytest.raises(ValueError, match=expected):
+        movement_draft(media, extracted, [])
+
+
+def test_paid_expense_receipt_can_prepare_movement():
+    media = ValidatedMedia('document', 'application/pdf', b'%PDF-x')
+    extracted = MediaExtraction(transcript='Pago 30/10/2026, total 2200', amount='2200', currency='ARS',
+                                description='Viaje', category='Transporte', date_text='30/10/2026',
+                                payment_status='paid', document_type='expense_receipt')
+    draft = movement_draft(media, extracted, [])
+    assert draft.amount == '2200' and draft.economic_effect == 'cash_flow'
+    assert draft.date_spec.evidence_span == '30/10/2026'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('document_type,expected', [
+    ('bank_transfer', 'transferencia'),
+    ('promotion', 'promoción'),
+])
+async def test_non_expense_pdf_sends_rejection_without_operation(
+    accounts, fake_redis, document_type, expected,
+):
+    factory, owner, *_ = accounts
+    with factory() as session:
+        session.get(Usuario, owner).auth_user_id = uuid4()
+        session.commit()
+        before = session.query(MovimientoFinanciero).filter_by(usuario_id=owner).count()
+    inbound = InboundMedia(f'wamid.{document_type}', PHONE, 'pdf', 'document', 'application/pdf')
+
+    async def load(_):
+        return ValidatedMedia('document', 'application/pdf', b'fixture')
+
+    async def extract(_):
+        return MediaExtraction(transcript='PDF con importe', amount='100000', currency='ARS',
+                               payment_status='paid', document_type=document_type)
+
+    async def process(**kwargs):
+        return await dispatcher.process_incoming_media(**kwargs, load_media=load, extract=extract)
+
+    sent = []
+    async def deliver(_, message):
+        sent.append(message)
+        return True
+
+    assert await process_media_message_once(redis_client=fake_redis, inbound_media=inbound,
+        process_media=process, send_message=deliver) == 'completed'
+    assert any(expected in str(message) for message in sent)
+    state = await assistant_state.read(owner)
+    assert not state['workspace']['operations']
+    with factory() as session:
+        assert session.query(MovimientoFinanciero).filter_by(usuario_id=owner).count() == before
 
 
 @pytest.mark.asyncio
@@ -110,7 +187,8 @@ async def test_media_needs_delivered_preview_then_commits_once(
     inbound = InboundMedia('wamid.ticket', PHONE, 'test-media', kind, mime)
     extracted = MediaExtraction(transcript=transcript, amount='9000', currency='ARS',
         movement_type='egreso', economic_effect='cash_flow', description='Compra comida', category='Comida',
-        date_text=date_text, payment_status=payment_status)
+        date_text=date_text, payment_status=payment_status,
+        document_type='invoice' if kind == 'document' else None)
 
     async def load(_):
         return ValidatedMedia(kind, mime, b'fixture')
@@ -185,7 +263,8 @@ async def test_unknown_invoice_payment_keeps_collecting_draft(accounts, fake_red
         return ValidatedMedia('document', 'application/pdf', b'fixture')
     async def extract(_):
         return MediaExtraction(transcript='Factura de luz total 25000, vence mañana', amount='25000',
-            currency='ARS', description='Luz', category='Comida', payment_status='unknown')
+            currency='ARS', description='Luz', category='Comida', payment_status='unknown',
+            document_type='invoice')
     sent = []
     async def deliver(_, message):
         sent.append(message)
@@ -272,7 +351,7 @@ async def test_invoice_clarification_prepares_paid_expense(accounts, fake_redis,
     async def extract(_):
         return MediaExtraction(transcript='Factura por comida, total 25000, vence mañana',
             amount='25000', currency='ARS', description='Factura comida', category='Comida',
-            payment_status='unknown')
+            payment_status='unknown', document_type='invoice')
     async def process(**kwargs):
         return await dispatcher.process_incoming_media(**kwargs, load_media=load, extract=extract)
     sent = []

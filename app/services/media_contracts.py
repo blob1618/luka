@@ -54,6 +54,7 @@ class MediaExtraction(BaseModel):
     category: str | None = Field(default=None, max_length=100)
     date_text: str | None = Field(default=None, max_length=60)
     payment_status: Literal['paid', 'unpaid', 'unknown'] = 'unknown'
+    document_type: Literal['invoice', 'expense_receipt', 'bank_transfer', 'promotion', 'other'] | None = None
     ambiguous: bool = False
 
     @field_validator('amount')
