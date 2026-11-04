@@ -647,3 +647,13 @@ class TestProcessInboundMessageBackground:
         # With the fix, redis_ms incorporates the ~40ms duration (>= 35.0ms).
         assert "redis_ms" in metrics
         assert metrics["redis_ms"] >= 35.0
+
+
+def test_image_message_is_enqueued_for_ticket_processing():
+    msg = make_unsupported_message(msg_type="image", msg_id="wamid.ticket")
+    payload = make_webhook_payload(messages=[msg])
+    with patch("fastapi.BackgroundTasks.add_task") as mock_add_task:
+        response = client.post("/webhook", json=payload)
+    assert response.status_code == 200
+    mock_add_task.assert_called_once()
+    assert mock_add_task.call_args.args[1] == msg

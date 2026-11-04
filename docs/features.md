@@ -318,12 +318,15 @@ La conexión opcional con Google Calendar se solicita por WhatsApp con «conecta
   interactivo y vuelve al dispatcher general. Ver
   [conversation-flows.md](conversation-flows.md).
 
-## Registro por nota de voz de WhatsApp
+## Registro por nota de voz y foto de ticket de WhatsApp
 
 - La nota de voz llega por el webhook firmado y atraviesa la idempotencia,
   onboarding, operación pendiente y confirmación del registro por texto.
 - Se admiten OGG/Opus y MP3 hasta 5 MiB. Gemini transcribe y extrae candidatos
   tipados. La transcripción nunca confirma ni registra directamente.
+- La foto de ticket admite JPEG o PNG hasta 5 MiB. El extractor propone el total
+  final pagado y un rubro. Luka resuelve una categoría propia o pide elegirla;
+  nunca toma el subtotal, el efectivo entregado ni el vuelto como total.
 - Luka pide datos faltantes y presenta la operación completa. Sólo una propuesta
   entregada puede confirmarse en un mensaje posterior; el éxito sigue al commit.
 - `GEMINI_MEDIA_MODEL` selecciona el extractor. El archivo se procesa en memoria;
