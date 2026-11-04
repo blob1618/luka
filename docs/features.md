@@ -318,7 +318,7 @@ La conexión opcional con Google Calendar se solicita por WhatsApp con «conecta
   interactivo y vuelve al dispatcher general. Ver
   [conversation-flows.md](conversation-flows.md).
 
-## Registro por nota de voz y foto de ticket de WhatsApp
+## Registro por adjuntos de WhatsApp
 
 - La nota de voz llega por el webhook firmado y atraviesa la idempotencia,
   onboarding, operación pendiente y confirmación del registro por texto.
@@ -327,6 +327,9 @@ La conexión opcional con Google Calendar se solicita por WhatsApp con «conecta
 - La foto de ticket admite JPEG o PNG hasta 5 MiB. El extractor propone el total
   final pagado y un rubro. Luka resuelve una categoría propia o pide elegirla;
   nunca toma el subtotal, el efectivo entregado ni el vuelto como total.
+- La factura PDF admite hasta 5 MiB y 20 páginas, sin cifrado. Luka distingue
+  importe facturado, vencimiento y pago; pregunta si ya se pagó y la fecha real
+  antes de preparar un egreso. Una factura pendiente no registra un movimiento.
 - Luka pide datos faltantes y presenta la operación completa. Sólo una propuesta
   entregada puede confirmarse en un mensaje posterior; el éxito sigue al commit.
 - `GEMINI_MEDIA_MODEL` selecciona el extractor. El archivo se procesa en memoria;
