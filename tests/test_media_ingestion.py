@@ -1,4 +1,5 @@
 """Offline evidence for media validation, proposals and confirmed persistence."""
+import json
 from io import BytesIO
 from decimal import Decimal
 from uuid import uuid4
@@ -95,6 +96,40 @@ async def test_extractor_reports_provider_timeout(monkeypatch):
                         lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs))
     with pytest.raises(media_extraction.ExtractionError, match='tardó demasiado'):
         await media_extraction.extract_media(ValidatedMedia('document', 'application/pdf', b'%PDF-x'))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case,expected_error', [
+    ('single', None),
+    ('multiple', 'varios movimientos'),
+    ('empty', 'No encontré un movimiento'),
+    ('invalid', 'No pude analizar'),
+])
+async def test_extractor_accepts_only_one_valid_candidate_from_json_list(monkeypatch, case, expected_error):
+    monkeypatch.setenv('GEMINI_API_KEY', 'test-key')
+    candidate = {'transcript': 'Compra pagada el 2 Oct, 2025 por 1.44 USD',
+                 'amount': 1.44, 'currency': 'USD', 'movement_type': 'egreso',
+                 'economic_effect': 'cash_flow', 'description': 'Compra digital',
+                 'category': 'Entretenimiento', 'date_text': '2 Oct, 2025',
+                 'payment_status': 'paid', 'document_type': 'invoice', 'ambiguous': False}
+    payload = {'single': [candidate], 'multiple': [candidate, candidate], 'empty': [],
+               'invalid': [{**candidate, 'amount': 'not a number'}]}[case]
+
+    def handler(request):
+        return httpx.Response(200, json={'candidates': [{'content': {'parts': [
+            {'text': json.dumps(payload)}]}}]})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(media_extraction.httpx, 'AsyncClient',
+                        lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs))
+    media = ValidatedMedia('document', 'application/pdf', b'%PDF-x')
+    if expected_error:
+        with pytest.raises(media_extraction.ExtractionError, match=expected_error):
+            await media_extraction.extract_media(media)
+    else:
+        extracted = await media_extraction.extract_media(media)
+        assert extracted.amount == Decimal('1.44')
+        assert movement_draft(media, extracted, []).amount == '1.44'
 
 
 def test_invoice_requires_payment_and_ticket_requires_category():
