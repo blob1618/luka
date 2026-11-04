@@ -196,3 +196,17 @@ class TestSimulatorInteractions:
         assert confirmed.status=='completed' and len(confirmed.memory)==4
         with factory() as check:
             assert check.query(AssistantWriteReceipt).count()==1
+
+
+@pytest.mark.asyncio
+async def test_audio_attachment_uses_synthetic_media_delivery(redis_mocks, monkeypatch):
+    media_dispatch = AsyncMock(return_value=DispatchResult('Necesito confirmar el gasto', service_invoked='assistant'))
+    monkeypatch.setattr(webhook_mode, 'process_incoming_media', media_dispatch)
+    result = await WebhookModeService().send_message('[Nota de voz]', '12345', 'gemini', 'prompt.md',
+                                                     media=('audio', 'audio/ogg', b'OggSx'))
+    assert result.status == 'completed' and result.service_invoked == 'assistant'
+    assert 'synthetic' in result.delivery
+    assert media_dispatch.await_count == 1
+    assert media_dispatch.await_args.kwargs['inbound_media'].kind == 'audio'
+    loaded = await media_dispatch.await_args.kwargs['load_media'](None)
+    assert loaded.content == b'OggSx'
