@@ -84,6 +84,12 @@ Luka es un asistente financiero personal que opera por WhatsApp y ayuda a los us
 
 ## Verificar cambios
 
+### Ficha y evidencias del incremento
+
+- Al empezar un cambio funcional o técnico del sistema, consultá [el flujo de documentación](docs/increments/README.md) y buscá en `docs/increments/` la ficha de la HU o del trabajo técnico. Creala con `python scripts/incremento.py iniciar` si todavía no existe. Usá los datos confirmados de la tarea y marcá «Pendiente» cuando falten.
+- Durante el desarrollo, completá alcance, decisiones, avances, riesgos y pruebas en la ficha. Usá `python scripts/incremento.py prueba <ficha> <control>` para los controles locales aplicables. Guardá las demás comprobaciones en Markdown saneado en `docs/increments/evidencias/<ficha>/` y enlazalas en la ficha.
+- Incluí la ficha actualizada y la evidencia en el mismo PR que el cambio y enlazá la ficha en el cuerpo del PR. Dejá la aceptación humana, el estado de Jira y el despliegue pendientes hasta contar con evidencia explícita. Usá datos de prueba o anonimizados y mantené secretos, datos reales, logs crudos y archivos privados fuera del repositorio.
+
 ### Pull Requests de historias de usuario
 
 - Trabajar cada historia de usuario en una rama asociada a su tarea de Jira y abrir un PR antes de integrarla a `main`.

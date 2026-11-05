@@ -1,0 +1,17 @@
+{
+  "ficha": "sprint-pendiente-tecnico-evidencias",
+  "fecha_utc": "2026-11-05T16:31:59+00:00",
+  "commit_base": "93a644a8e716b76a13206c34fc3a2e6084bc39bd",
+  "cambios_locales": true,
+  "comando": [
+    "python",
+    "-m",
+    "pytest",
+    "-q",
+    "-m",
+    "unit"
+  ],
+  "python": "3.14.7",
+  "codigo_salida": 4,
+  "duracion_segundos": 6.356
+}

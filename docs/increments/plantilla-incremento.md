@@ -1,6 +1,6 @@
 # Ficha de incremento — [HU-XXX-NN / trabajo técnico] · [título]
 
-> Copiá esta ficha en `docs/increments/` como `sprint-NN-hu-xxx-nn.md` al iniciar el trabajo. Para trabajo exclusivamente técnico usá `sprint-NN-<tema>.md`. Agrupá en la misma ficha los PR y correcciones de una HU. Si un PR cubre varias HU, referencialo desde la ficha de cada una.
+> Generá tu ficha con el [flujo de documentación](README.md). Agrupá en la misma ficha los PR y correcciones de una HU. Si un PR cubre varias HU, referencialo desde la ficha de cada una.
 >
 > El autor actualiza la ficha y la [descripción de cada PR](../../.github/pull_request_template.md) conforme aparezcan evidencias, incluso después del merge. Enlazá el registro original en GitHub, Jira o el acta del equipo. Usá fechas `AAAA-MM-DD`, «Pendiente» si falta evidencia y «No aplica» con motivo cuando corresponda. Repetí las filas según sea necesario y usá datos ficticios o anonimizados en logs, capturas y ejemplos.
 

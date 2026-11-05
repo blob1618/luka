@@ -19,7 +19,7 @@ Guia practica del flujo actual del equipo.
 
 El autor del PR mantiene la descripcion actualizada, incluso si la validacion ocurre despues del merge. La persona designada para validar la historia deja su aceptacion o rechazo de los criterios, con fecha y evidencia, en el PR o en Jira; el autor enlaza ese registro. Quien integra a `main` verifica el despliegue de Render y aporta su fecha y evidencia al autor.
 
-Al iniciar un incremento, copiá la [plantilla de documentación del incremento](docs/increments/plantilla-incremento.md) y enlazá la ficha desde los PR relacionados. Completala durante el sprint y usala para trasladar a la planificación el alcance, las pruebas, la aceptación y las decisiones de cierre con sus evidencias.
+Al iniciar un incremento, seguí el [flujo para generar la ficha y registrar evidencias](docs/increments/README.md). Incluí la ficha y sus registros en el mismo PR que el cambio. Usá la ficha para actualizar la planificación al cierre.
 
 ## Importante
 
