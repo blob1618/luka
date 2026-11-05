@@ -1,0 +1,1 @@
+Leé `AGENTS.md` al iniciar una tarea. Para cada incremento del sistema, aplicá su sección «Ficha y evidencias del incremento» y seguí `docs/increments/README.md` desde el inicio hasta la entrega del PR.

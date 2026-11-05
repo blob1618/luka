@@ -4,6 +4,8 @@
 
 ## Historia
 
+- **Ficha del incremento y evidencias:** [enlace a la ficha versionada en este PR o «No aplica», con motivo]
+
 - **Jira / HU:** [clave, nombre y enlace]
 - **Sprint:** [número]
 - **Story Points:** [valor acordado y fuente]
