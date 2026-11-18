@@ -207,6 +207,15 @@ async def process_inbound_message_once(
                                whatsapp_message_id, type(exc).__name__)
                 getattr(result, 'debug_info', {})['assistant_preview_delivery_error'] = type(exc).__name__
 
+        question = getattr(result, 'assistant_question_delivery', None)
+        if question is not None and send_succeeded:
+            from app.services.assistant_questions import record_question_delivered
+            try:
+                await record_question_delivered(sender_phone, question)
+            except Exception as exc:
+                logger.warning('[ASSISTANT_QUESTION_DELIVERY_UNRECORDED] error=%s', type(exc).__name__)
+                getattr(result, 'debug_info', {})['assistant_question_delivery_error'] = type(exc).__name__
+
         # Telemetría de propuesta de candidato recurrente enviada en el mensaje principal
         cand_id = getattr(result, "proposal_candidate_id", None)
         delivery_mode = getattr(result, "proposal_delivery_mode", None)

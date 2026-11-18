@@ -24,4 +24,5 @@ class DispatchResult:
     proposal_followup_message: OutboundWhatsAppMessage | None = None
     protected_presentation: bool = False
     assistant_preview_delivery: Any | None = None
+    assistant_question_delivery: Any | None = None
     tool_trace: list[dict] = field(default_factory=list)

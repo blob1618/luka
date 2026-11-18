@@ -1,0 +1,15 @@
+{
+  "ficha": "sprint-pendiente-hu-reg-04",
+  "fecha_utc": "2026-11-18T00:18:38+00:00",
+  "commit_base": "f2e25ecc58b13fdb64e9e1c6ed65701e47fa62c9",
+  "cambios_locales": true,
+  "comando": [
+    "python",
+    "-m",
+    "pytest",
+    "-v"
+  ],
+  "python": "3.11.16",
+  "codigo_salida": 0,
+  "duracion_segundos": 104.596
+}

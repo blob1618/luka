@@ -39,7 +39,8 @@ async def assemble_reply(sender_phone, answer):
     result = DispatchResult(primary.body if primary is not None else answer.text,
                             service_invoked='assistant',
                             protected_presentation=True,
-                            assistant_preview_delivery=answer.preview_delivery)
+                            assistant_preview_delivery=answer.preview_delivery,
+                            assistant_question_delivery=answer.question_delivery)
     result.tool_trace = answer.trace
     result.clear_memory = answer.clear_memory
     result.event_key, result.event_variables = answer.event_key, answer.event_variables

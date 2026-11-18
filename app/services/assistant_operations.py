@@ -67,6 +67,8 @@ class OperationService:
         except Exception:
             context.state['workspace'] = previous
             raise
+        from app.services.assistant_questions import invalidate_question
+        invalidate_question(context, workspace)
         context.state['operation_summaries'] = {key: summary for key, summary in
             context.state.get('operation_summaries', {}).items() if key in workspace.operations}
         for ref, record in list(context.state['references'].items()):
@@ -110,7 +112,7 @@ class OperationService:
             ref = await context.reference('operation', OperationReference(operation_id=operation.operation_id),
                                           expires_at=operation.expires_at)
         return PendingOperationView(ref=ref, operation_key=operation.operation_key, status=operation.status,
-            revision=operation.revision, summary=context.state.get('operation_summaries', {}).get(operation.operation_id, operation.operation_key),
+            revision=operation.revision, summary=context.state.get('operation_summaries', {}).get(operation.operation_id, self._draft_label(operation)),
             known_fields=operation.draft_payload, missing_fields=operation.missing_fields, expires_at=operation.expires_at)
 
     async def views(self, context):
@@ -177,6 +179,12 @@ class OperationService:
 
     @staticmethod
     def _draft_label(operation):
+        draft = operation.draft_payload
+        description = draft.get('description')
+        if description:
+            origin = operation.source_kind
+            origin = {'document': 'PDF', 'image': 'Foto', 'audio': 'Audio', 'text': 'Movimiento'}[origin]
+            return f"{origin}: {description[:80]} — {draft.get('currency') or '?'} {draft.get('amount') or '?'}"
         text = ' '.join((operation.original_text or '').split())
         if not text:
             return operation.operation_key.replace('_', ' ')
@@ -209,6 +217,7 @@ class OperationService:
         operation = PendingOperation(operation_id=op_id, owner_id=context.turn.owner_id,
             conversation_id=context.turn.conversation_id, operation_key=operation_key, schema_version=contract.schema_version,
             source_message_id=context.turn.inbound_message_id, original_text=context.turn.source_text,
+            source_kind=context.turn.source_kind,
             reference_day=context.turn.reference_day, status='collecting', draft_payload=draft.model_dump(mode='json'),
             field_evidence=self.evidence(context, draft.model_dump(mode='json', exclude_unset=True)),
             created_at=context.turn.now, updated_at=context.turn.now,
@@ -267,9 +276,7 @@ class OperationService:
 
     async def resume(self, context, ref, *, expected_revision):
         operation = await self.resolve(context, ref, expected_revision)
-        if operation.status != 'suspended':
-            raise ValueError('La operación ya está activa')
-        await self.interrupt(context)
+        await self.interrupt(context, except_id=operation.operation_id)
         context.state.pop('selection_options', None)
         context.state.pop('selected_ref', None)
         operation = revised(operation, status='collecting', resume_status=None, missing_fields=(),
@@ -294,6 +301,8 @@ class OperationService:
 
     async def present(self, context, operation):
         view = await self.view(context, operation)
+        context.preview = None
+        context.question_delivery = None
         if operation.status == 'ready':
             contract = self.registry.get_operation(operation.operation_key)
             if not contract.requires_confirmation:
@@ -317,6 +326,9 @@ class OperationService:
             context.terminal = '\n'.join(filter(None, [context.presenter.render(), *questions]))
             if options:
                 context.terminal += '\n' + '\n'.join(f"{n}. {item['label']}" for n, item in options.items())
+            if operation.missing_fields:
+                from app.services.assistant_questions import stage_question
+                await stage_question(context, operation, view)
         return view
 
     async def mark_preview_delivered(self, context, ref, *, expected_revision, preview_source_message_id, prepared_hash):

@@ -19,7 +19,10 @@ def _movement_receipt(owner_id, **selector):
 
 
 def build_tool_registry():
+    from app.services.assistant_questions import question_contracts
     registry = ToolRegistry(receipt_lookup=_movement_receipt)
+    for contract in question_contracts():
+        registry.register(contract)
     for contract in (*movement_contracts(), *insight_contracts(), *wallet_contracts(),
                      *conversation_contracts(), *reminder_management_contracts(),
                      *entity_contracts(), *budget_contracts(), *movement_management_contracts(),

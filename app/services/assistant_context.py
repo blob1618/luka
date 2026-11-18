@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from app.models.database import Billetera, Categoria, Usuario
 from app.services import finance
-from app.services.assistant_contracts import EntityReference, MovementSnapshot, PreviewDelivery, ReferenceRecord, ScopePayload, StaleReference, TrustedTurn
+from app.services.assistant_contracts import EntityReference, MovementSnapshot, PreviewDelivery, QuestionDelivery, ReferenceRecord, ScopePayload, StaleReference, TrustedTurn
 from app.services.assistant_presentation import Presenter
 
 if TYPE_CHECKING:
@@ -106,6 +106,7 @@ class ToolContext:
     fallback_reply: str | None = None
     preview: PreviewDelivery | None = None
     preview_text: str | None = None
+    question_delivery: QuestionDelivery | None = None
     outbound: list = field(default_factory=list)
     event_key: str | None = None
     event_variables: dict = field(default_factory=dict)
@@ -141,7 +142,10 @@ class ToolContext:
                 visible[ref] = {'kind': 'query_scope', 'details': scope.model_dump(mode='json', exclude={'category_id'})}
             elif 'visible' in record.payload:
                 visible[ref] = {'kind': record.kind, 'details': record.payload['visible']}
-        return {'categories': cats, 'wallets': purses, 'operations': [v.model_dump(mode='json') for v in views],
+        from app.services.assistant_questions import current_question
+        pending = await current_question(self)
+        return {'pending_question': pending.model_dump(mode='json') if pending else None,
+                'categories': cats, 'wallets': purses, 'operations': [v.model_dump(mode='json') for v in views],
                 'references': visible,
                 'last_shown': self.state.get('last_shown', []),
                 'selection_options': self.state.get('selection_options', {}),

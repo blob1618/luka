@@ -235,3 +235,20 @@ La rama compartida y de despliegue es `main`. El flujo de ramas, PRs y verificac
 
 - `StarletteDeprecationWarning: Using httpx with starlette.testclient is deprecated; install httpx2 instead.` en `fastapi.testclient`.
 - `DeprecationWarning: Call to deprecated setex. (Use 'set' instead.)` en `app/services/conversation.py`: migrar los `setex(...)` a `set(..., ex=...)`.
+
+
+### Continuidad de categorías desde comprobantes
+
+Los PDFs y fotos conservan un borrador identificado. Una pregunta pendiente se vincula
+con su operación, revisión, campo y opciones; sólo se activa después del envío completo
+acreditado por el wrapper común (también en la entrega sintética del simulador).
+Una categoría existente seleccionada inequívocamente completa ese campo. Un nombre nuevo
+se propone con `answer_category_question`, que deriva el vínculo padre en backend.
+Crear la categoría muestra el siguiente dato o la nueva propuesta del gasto, que requiere
+su propia confirmación posterior. Las sugerencias OCR no son solicitudes de alta.
+Las fotos sin fecha piden la fecha del gasto. Consultas independientes suspenden el borrador;
+retomarlo revalida y presenta una revisión nueva. `operation_status` consulta estados/recibos
+sin confirmar. Reenviar un archivo con otro ID no fusiona sus borradores.
+
+El contrato usa `assistant:v4` en Redis: al desplegar, los borradores efímeros anteriores
+deben reenviarse. Los registros y recibos durables permanecen intactos.

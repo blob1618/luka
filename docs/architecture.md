@@ -94,7 +94,7 @@ La presentación es determinista: los valores salen de `VerifiedFact`/`Presenter
 
 ## Estado, tiempo y selección
 
-Workspace v2 usa namespace Redis `assistant:v3` al corte: una activa, hasta tres
+Workspace v2 usa namespace Redis `assistant:v4`: una activa, hasta tres
 abiertas y hasta tres terminales, treinta minutos sin extender expiración de una
 operación al consultarla/retomarla. Estado v2 incompatible se ignora; no se inventa
 un efecto económico para migrarlo. Receipts SQL permanecen intactos.

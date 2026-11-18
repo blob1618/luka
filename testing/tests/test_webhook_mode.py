@@ -41,15 +41,15 @@ class TestSendMessage:
         owner = uuid4()
         monkeypatch.setattr(webhook_mode, '_owner', Mock(return_value=owner))
         client = redis_mocks.client
-        await client.set(f'assistant:v3:{owner}', 'state')
-        await client.set(f'assistant:v3:{owner}:claim', 'token')
+        await client.set(f'assistant:v4:{owner}', 'state')
+        await client.set(f'assistant:v4:{owner}:claim', 'token')
         await client.rpush('conversation_memory:whatsapp:12345', 'turn')
 
         deleted = await webhook_mode.purge_user_state('12345')
 
-        assert deleted == [f'assistant:v3:{owner}', f'assistant:v3:{owner}:claim',
+        assert deleted == [f'assistant:v4:{owner}', f'assistant:v4:{owner}:claim',
                            'conversation_memory:whatsapp:12345']
-        assert await client.get(f'assistant:v3:{owner}') is None
+        assert await client.get(f'assistant:v4:{owner}') is None
     @pytest.mark.asyncio
     async def test_captures_chart_png_from_dispatch_result(self,redis_mocks):
         redis_mocks.dispatch.return_value=DispatchResult('Gráfico',reply_message=WhatsAppImage(b'PNG1',caption='Parte1'),followup_messages=[WhatsAppImage(b'PNG2',caption='Parte2')])

@@ -19,7 +19,7 @@ conversación, tipo, esquema y vencimiento. El proveedor no recibe UUIDs canóni
 ni decide commits. Períodos civiles son inclusivos, filtros de scopes sólo se
 restringen y fechas conservan evidencia/día del turno que las aporta.
 
-Workspace v2 usa namespace `assistant:v3` al corte, con una activa, hasta tres
+Workspace v2 usa namespace `assistant:v4`, con una activa, hasta tres
 abiertas y tres terminales; vigencia de operación: 30 minutos sin renovarla al retomar.
 Estado previo incompatible no se migra inventando economic_effect. Receipts se
 conservan. Lectura/nuevo pedido suspende el borrador y revoca confirmación anterior.

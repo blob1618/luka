@@ -145,6 +145,7 @@ class PendingOperation(FrozenModel):
     schema_version: int = 1
     source_message_id: str
     original_text: str
+    source_kind: Literal['text', 'audio', 'image', 'document'] = 'text'
     reference_day: date  # congelado al comenzar, no al retomar
     status: OperationStatus
     resume_status: ResumableStatus | None = None
@@ -427,6 +428,8 @@ class RegisterMovement(StrictInput):
     description: str | None = Field(title='el concepto del movimiento', default=None, min_length=1, max_length=500)
     wallet_ref: ReferenceToken | None = Field(default=None, title='la billetera que querés usar')
     category_ref: ReferenceToken | None = Field(default=None, title='la categoría que querés usar')
+    category_required: bool = False
+    category_suggestion: str | None = Field(default=None, max_length=100)
     requested_category: str | None = Field(default=None, min_length=1, max_length=100,
         description='Categoría explícita que aún no existe. Mantiene collecting hasta seleccionar o crear una categoría hija; nunca crearla automáticamente.')
     date_spec: DateSpec | None = Field(default=None, title='la fecha del movimiento')
@@ -520,6 +523,26 @@ class ToolData(FrozenModel):
     """Validated JSON boundary; domain handlers use their own typed inputs."""
     status: str
     items: list[dict[str, JsonValue]] = Field(default_factory=list)
+
+
+class QuestionOption(FrozenModel):
+    ref: ReferenceToken
+    label: str
+
+
+class QuestionDelivery(FrozenModel):
+    operation_ref: ReferenceToken
+    revision: int
+    field: str
+    options: tuple[QuestionOption, ...] = ()
+    source_message_id: str
+    expires_at: datetime
+    text: str
+
+
+class PendingQuestion(FrozenModel):
+    delivery: QuestionDelivery
+    delivered: bool = False
 
 
 class PreviewDelivery(FrozenModel):

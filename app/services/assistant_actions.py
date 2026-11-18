@@ -75,7 +75,7 @@ async def handle_user_action(context, action):
                               'outcome': 'replayed' if result.replayed else 'committed'})
         context.presenter.include(result.facts)
         text = context.presenter.render() or committed_text(result.data)
-        if context.preview:
+        if result.data.get('parent_updated') or context.preview:
             text += '\n' + (context.terminal or context.preview_text or '')
         return context_reply(context, text, replayed=result.replayed, committed=result.data,
             event_key=result.event_key, event_variables=result.event_variables)
@@ -184,8 +184,8 @@ async def _bound_action(context, action, variables, binding):
             short_token=short_token(revision, operation.prepared_hash), confirmation_message_id=context.turn.inbound_message_id)
         result = await context.operations.confirm(context, request)
         text = result.data.get('presentation', 'Operación completada.')
-        if context.preview:
-            text += '\n' + context.terminal
+        if result.data.get('parent_updated') or context.preview:
+            text += '\n' + (context.terminal or '')
         return context_reply(context, text, committed=result.data, replayed=result.replayed,
             event_key=result.event_key, event_variables=result.event_variables)
     raise ValueError('Acción no disponible para esta operación')

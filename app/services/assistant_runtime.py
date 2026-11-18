@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from app.models.database import Usuario
 from app.services import assistant_state, finance
 from app.services.assistant_catalog import build_tool_registry
-from app.services.assistant_contracts import PreviewDelivery, TrustedTurn
+from app.services.assistant_contracts import PreviewDelivery, QuestionDelivery, TrustedTurn
 from app.services.assistant_context import ReferenceStore, ToolContext
 from app.services.assistant_operations import OperationService, short_token
 from app.services.assistant_registry import ToolExecutor
@@ -32,6 +32,7 @@ class AssistantReply:
     replayed: bool = False
     committed: dict | None = None
     preview_delivery: PreviewDelivery | None = None
+    question_delivery: QuestionDelivery | None = None
     outbound: list = field(default_factory=list)
     event_key: str | None = None
     event_variables: dict = field(default_factory=dict)
@@ -60,7 +61,11 @@ def context_reply(context, text, *, committed=None, replayed=False, event_key=No
                        'prepared_hash': operation.prepared_hash}
         else:
             binding = {'interaction_id': secrets.token_hex(16)}
+    question = context.question_delivery
+    if question is not None and question.text not in text:
+        question = None
     return AssistantReply(text, confirmation_action=action_id, preview_delivery=context.preview,
+        question_delivery=question,
         committed=committed, replayed=replayed, outbound=context.outbound,
         event_key=context.event_key or event_key, event_variables=context.event_variables or event_variables or {},
         clear_memory=context.clear_memory, action_binding=binding, trace=context.trace)
@@ -118,6 +123,10 @@ async def _run(context, registry, action, provider, history):
     direct = await handle_user_action(context, action)
     if direct is not None:
         return direct
+    from app.services.assistant_questions import select_answer
+    selected_answer = await select_answer(context)
+    if selected_answer is not None:
+        return context_reply(context, context.terminal)
     options = context.state.get('selection_options', {})
     selected = options.get(context.turn.source_text.strip())
     if selected is None:
@@ -220,6 +229,7 @@ async def _run(context, registry, action, provider, history):
     reply = context.terminal or '\n'.join(filter(None, [context.presenter.render(), context.fallback_reply])) or 'Esa capacidad no está disponible o necesito que aclares el pedido. No hice cambios.'
     if len(reply) > 4000:
         context.preview = None
+        context.question_delivery = None
         reply = 'El resultado es demasiado extenso para un mensaje. Acotá la consulta o enviá la escritura por separado. No hice cambios.'
     return context_reply(context, reply)
 
@@ -252,14 +262,18 @@ async def run_for_media(phone, message_id, inbound_media, *, load_media=None, ex
         async with assistant_state.claim(owner_id):
             state = await assistant_state.read(owner_id)
             try:
-                from app.services.assistant_contracts import PendingOperation
                 from app.services.movement_commands import operation_id
                 existing_id = operation_id(owner_id, message_id, 'register_movement')
                 existing = state['workspace']['operations'].get(existing_id)
                 if existing and existing['status'] in {'ready', 'collecting'}:
                     context = make_context(owner_id, phone, message_id, existing['original_text'], None,
                                            state, registry=registry, source_kind=inbound_media.kind)
-                    await context.operations.present(context, PendingOperation.model_validate(existing))
+                    await context.operations.expire(context)
+                    current = context.operations.workspace(context).operations.get(existing_id)
+                    if current is None or current.status not in {'ready', 'collecting'}:
+                        return AssistantReply('El comprobante venció. Volvé a enviarlo para preparar un nuevo registro.')
+                    await context.operations.present(context, current)
+                    await assistant_state.save(owner_id, state)
                     return context_reply(context, context.terminal or 'Necesito más datos para completar el registro.')
                 media = await (load_media or download_media)(inbound_media)
                 extraction = await (extract or extract_media)(media)

@@ -140,7 +140,9 @@ def test_invoice_requires_payment_and_ticket_requires_category():
     assert draft.economic_effect is None and draft.date_spec is None
     ticket = ValidatedMedia('image', 'image/jpeg', b'\xff\xd8\xff\xd9')
     categorized = movement_draft(ticket, extracted, [])
-    assert categorized.requested_category == 'Servicios' and categorized.category_ref is None
+    assert categorized.category_suggestion == 'Servicios' and categorized.category_ref is None
+    assert categorized.category_required and categorized.requested_category is None
+    assert categorized.date_spec is None
 
 
 @pytest.mark.parametrize('document_type,ambiguous,expected', [
@@ -209,7 +211,7 @@ async def test_non_expense_pdf_sends_rejection_without_operation(
 @pytest.mark.asyncio
 @pytest.mark.parametrize('kind,mime,transcript,date_text,payment_status', [
     ('audio', 'audio/ogg', 'Ayer gasté 9000 en comida', 'Ayer', 'unknown'),
-    ('image', 'image/jpeg', 'Comida total 9000', None, 'unknown'),
+    ('image', 'image/jpeg', 'Comida total 9000 el 04/11/2026', '04/11/2026', 'unknown'),
     ('document', 'application/pdf', 'Factura comida pagada el 04/11/2026, total 9000', '04/11/2026', 'paid'),
 ])
 async def test_media_needs_delivered_preview_then_commits_once(
@@ -332,8 +334,8 @@ async def test_failed_preview_delivery_can_retry_without_reextracting(accounts, 
     async def extract(_):
         nonlocal calls
         calls += 1
-        return MediaExtraction(transcript='Comida total 9000', amount='9000', currency='ARS',
-            description='Compra comida', category='Comida')
+        return MediaExtraction(transcript='Comida total 9000 el 04/11/2026', amount='9000', currency='ARS',
+            description='Compra comida', category='Comida', date_text='04/11/2026')
     async def process(**kwargs):
         return await dispatcher.process_incoming_media(**kwargs, load_media=load, extract=extract)
     async def fail_delivery(_, __):
