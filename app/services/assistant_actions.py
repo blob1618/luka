@@ -121,6 +121,9 @@ async def process_interaction(phone, message_id, option_id, reply_type):
                 answer = AssistantReply(decision.presentation,
                     committed={'candidate_status': decision.status} if decision.successful else None,
                     replayed=decision.replayed)
+            elif option_id == 'supermarket:basket' and reply_type == 'button_reply':
+                from app.services.assistant_capabilities.shopping_basket import compare_saved_basket
+                answer = AssistantReply(await compare_saved_basket(owner, context.turn.reference_day))
             else:
                 async def action_handler(action, variables, binding=None):
                     return await _bound_action(context, action, variables, binding)

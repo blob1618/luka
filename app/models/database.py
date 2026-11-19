@@ -831,3 +831,22 @@ class SepaPrice(Base):
         Index("sepa_price_description_idx", "snapshot_id", "description"),
         Index("sepa_price_zone_idx", "snapshot_id", "province", "locality"),
     )
+
+
+class ShoppingBasket(Base):
+    __tablename__ = "shopping_basket"
+
+    usuario_id = Column(Uuid(as_uuid=True), ForeignKey("usuario.id", ondelete="CASCADE"), primary_key=True)
+    locality = Column(String, nullable=False)
+    province = Column(String, nullable=True)
+
+
+class ShoppingBasketItem(Base):
+    __tablename__ = "shopping_basket_item"
+
+    usuario_id = Column(Uuid(as_uuid=True), ForeignKey("shopping_basket.usuario_id", ondelete="CASCADE"), primary_key=True)
+    ean = Column(String(13), primary_key=True)
+    product_name = Column(String, nullable=False)
+    quantity = Column(Integer, nullable=False, default=1)
+
+    __table_args__ = (CheckConstraint("quantity > 0", name="shopping_basket_quantity_positive_check"),)

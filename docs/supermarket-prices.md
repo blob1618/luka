@@ -1,4 +1,4 @@
-# Comparador de supermercados (HU-PRE-04)
+# Comparador de supermercados (HU-PRE-04 y HU-PRE-05)
 
 ## Fuente y alcance
 
@@ -6,9 +6,11 @@ La fuente primaria es el ZIP minorista diario de [SEPA / Precios Claros](https:/
 
 El contrato interno usa EAN, descripción, marca, presentación, sucursal, localidad, provincia, fecha informada por comercio, precio de lista y promociones con sus leyendas. Se busca por EAN o por nombre; si un nombre coincide con varios EAN, se pide el EAN antes de comparar. El ahorro entre sucursales se calcula para el mismo EAN, presentación y fecha informada, con la referencia mostrada. Sólo se aplica la promoción general (`promo1`) cuando se puede comprobar que su vigencia incluye el día de la consulta y la leyenda no exige varias unidades ni condiciones personales o de pago. La promoción condicionada (`promo2`) no se presenta como una oferta universal. Un producto faltante se informa sin imputar un precio. Si el último snapshot tiene más de dos días, la consulta informa indisponibilidad.
 
+La canasta frecuente se guarda por usuario con EAN, cantidad y localidad/provincia. Guardarla o reemplazarla requiere una propuesta completa y una confirmación posterior. Consultarla y pulsar «Consultar ofertas» son lecturas. Cuando un gasto confirmado cruza el 80 % de un presupuesto en la categoría Comida o un sinónimo y hay canasta guardada, la alerta ofrece el botón una sola vez para ese cruce. Las consultas y el botón no crean movimientos ni cambian presupuestos.
+
 ## Configuración y operación
 
-1. Aplicar `supabase/migrations/20261119190000_supermarket_prices.sql` mediante el proceso de migraciones del proyecto. No ejecutar cambios de esquema manuales sobre Supabase.
+1. Aplicar `supabase/migrations/20261119190000_supermarket_prices.sql` y `supabase/migrations/20261119193000_shopping_basket.sql` mediante el proceso de migraciones del proyecto. No ejecutar cambios de esquema manuales sobre Supabase.
 2. Medir espacio, tiempo de descarga y carga en el entorno previsto. Un ZIP diario ronda los 320–340 MB comprimidos y la base indexada puede ocupar bastante más; usar una o más provincias piloto antes de ampliar cobertura.
 3. Configurar `SEPA_PROVINCES` con códigos de provincia separados por comas, por ejemplo `AR-H`, y `SEPA_INGEST_ENABLED=1`. Sin provincias configuradas, la ingesta se niega a iniciar. El backend puede responder «sin precios cargados» hasta que se complete la primera carga.
 4. Para la primera carga o un reintento, ejecutar `python -m scripts.ingest_sepa` dentro del contenedor con la configuración del servicio. La tarea diaria se programa a las 17:30 de Argentina. Debe correr en un único worker, como el scheduler actual.

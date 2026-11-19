@@ -16,6 +16,7 @@ def test_prompt_has_bounded_capability_and_confirmation_rules():
 def test_prompt_domains_live_in_typed_catalog_not_global_examples():
     registry=build_tool_registry()
     assert 'commit_command' not in registry.tools
-    assert 'compare_supermarket_prices' in registry.tools
+    assert {'compare_supermarket_prices', 'show_shopping_basket', 'compare_shopping_basket',
+            'save_shopping_basket'} <= set(registry.tools)
     schema=RegisterMovement.model_json_schema()
     assert 'economic_effect' in schema['properties'] and 'cash_flow' in str(schema)
