@@ -11,9 +11,9 @@ TTL = 1800
 
 
 def key(owner_id):
-    # Stage 5 changes the prepared movement contract. Old ephemeral workspaces
-    # are never interpreted with an invented economic effect; receipts stay durable.
-    return f'assistant:v3:{owner_id}'
+    # Delivered questions and media category requirements use a new ephemeral contract.
+    # Discard old drafts rather than invent delivery; durable receipts are unchanged.
+    return f'assistant:v4:{owner_id}'
 
 
 def empty(owner_id, conversation_id='whatsapp'):

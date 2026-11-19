@@ -13,7 +13,7 @@ URL = 'https://app.example/login?token=t'
 
 def answer(**overrides):
     base = dict(text='', outbound=[], event_key=None, event_variables={}, action_binding=None,
-                confirmation_action=None, committed=None, replayed=False, preview_delivery=None,
+                confirmation_action=None, committed=None, replayed=False, preview_delivery=None, question_delivery=None,
                 trace=[], clear_memory=False)
     base.update(overrides)
     return SimpleNamespace(**base)

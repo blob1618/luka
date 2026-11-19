@@ -35,9 +35,9 @@ def movement_draft(media: ValidatedMedia, extraction: MediaExtraction, categorie
         raise ValueError('Encontré varios importes o movimientos posibles. Aclará cuál querés registrar; no hice cambios.')
     if media.kind == 'document' and extraction.payment_status == 'unpaid':
         raise ValueError('La factura figura pendiente de pago. Cuando la pagues, enviá el comprobante o los datos del pago; no registré un egreso.')
-    category_ref = next((item['ref'] for item in categories
-                         if extraction.category and item['name'].casefold() == extraction.category.casefold()), None)
-    needs_category = media.kind in {'image', 'document'} and not category_ref
+    matches = [item['ref'] for item in categories if extraction.category and
+               ' '.join(item['name'].casefold().split()) == ' '.join(extraction.category.casefold().split())]
+    category_ref = matches[0] if len(matches) == 1 else None
     return RegisterMovement(
         movement_type='egreso' if media.kind in {'image', 'document'} else extraction.movement_type,
         economic_effect=(None if media.kind == 'document' and extraction.payment_status != 'paid'
@@ -46,7 +46,8 @@ def movement_draft(media: ValidatedMedia, extraction: MediaExtraction, categorie
         currency=extraction.currency,
         description=extraction.description,
         category_ref=category_ref,
-        requested_category=(extraction.category or 'Categoría del comprobante') if needs_category else None,
+        category_required=media.kind in {'image', 'document'},
+        category_suggestion=extraction.category,
         date_spec=_date_spec(extraction.date_text,
-                             required=media.kind == 'document'),
+                             required=media.kind in {'image', 'document'}),
     )

@@ -296,11 +296,16 @@ async def test_recurring_unknown_callback_verb_cannot_reject_or_accept(ingress,a
 
 
 @pytest.mark.asyncio
-async def test_budget_feedback_and_recurring_offer_keep_amounts_and_both_actions(ingress, accounts):
+async def test_budget_feedback_and_recurring_offer_keep_amounts_and_both_actions(ingress, accounts, monkeypatch):
     from datetime import timedelta
     from app.models.database import CandidatoGastoRecurrente
     from app.services.recurring_expense import calculate_pattern_hash, normalize_description
     from app.services.webhook_idempotency import _visible_reply_text
+    from app.services.recurring_expense import RecurringExpenseService
+    eligibility = RecurringExpenseService.is_candidate_eligible_for_proposal
+    # Match the fixed ingress clock; this fixture must not expire as wall time advances.
+    monkeypatch.setattr(RecurringExpenseService, 'is_candidate_eligible_for_proposal',
+                        staticmethod(lambda candidate, as_of=None: eligibility(candidate, as_of or NOW)))
     factory, owner, _, _, category = accounts
     with factory() as session:
         session.add(LimiteCategoria(usuario_id=owner, categoria_id=category, cantidad_max=1200, moneda='ARS',

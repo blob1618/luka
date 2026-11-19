@@ -157,8 +157,10 @@ class MovementOperation:
                 missing.append(FieldRequest(field='economic_effect', reason='missing' if args.economic_effect is None else 'invalid', question=policy))
         if missing:
             return IncompleteOperation(missing_fields=tuple(missing))
-        if self.command_kind == 'register' and args.requested_category and not args.category_ref:
-            return IncompleteOperation(missing_fields=(request_field(args, 'category_ref'),))
+        if (self.command_kind == 'register' and not args.category_ref and
+                (operation.source_kind in {'image', 'document'} or args.category_required or args.requested_category)):
+            from app.services.assistant_questions import category_question
+            return IncompleteOperation(missing_fields=(await category_question(context, args),))
         evidence = operation.field_evidence.get('date_spec')
         try:
             target = args.date_spec.resolve(evidence.source_text if evidence else operation.original_text,
