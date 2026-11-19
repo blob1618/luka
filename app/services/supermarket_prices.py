@@ -23,6 +23,7 @@ def _money(value):
 def _verified_promo(price, legend, day):
     if not price or not legend or len(legend) > 180:
         return None
+    legend = " ".join(legend.split())
     match = _DATE_RANGE.search(legend)
     if not match:
         return None
@@ -131,7 +132,8 @@ async def compare_prices(queries, *, locality, province=None, today=None):
         if snapshot is None:
             return {"status": "unavailable", "reason": reason}
         snapshot_id = str(snapshot.id)
-    key = "sepa:compare:" + json.dumps([snapshot_id, locality.casefold(), province.casefold() if province else "", queries], ensure_ascii=False)
+    key = "sepa:compare:" + json.dumps([snapshot_id, today.isoformat(), locality.casefold(),
+        province.casefold() if province else "", queries], ensure_ascii=False)
     try:
         client = await assistant_state.client()
         cached = await client.get(key)

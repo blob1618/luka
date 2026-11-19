@@ -82,8 +82,9 @@ def _price(row, branches, chains, snapshot_id):
     store = branches.get((commerce, flag, branch))
     chain = chains.get((commerce, flag))
     amount = _decimal(row.get("productos_precio_lista"))
-    description = row.get("productos_descripcion", "").strip()
-    if not (commerce and flag and branch and product and store and chain and amount and description):
+    description = " ".join(row.get("productos_descripcion", "").split())
+    branch_name = " ".join((store or {}).get("sucursales_nombre", "").split())
+    if not (commerce and flag and branch and product and store and chain and amount and description and branch_name):
         return None
     quantity = _decimal(row.get("productos_cantidad_presentacion"))
     def promo(number):
@@ -101,7 +102,7 @@ def _price(row, branches, chains, snapshot_id):
         product_id=product, report_date=chain[1], is_ean=row.get("productos_ean", "").strip() == "1",
         description=description[:500], brand=(row.get("productos_marca") or "").strip()[:100],
         quantity=quantity, unit=(row.get("productos_unidad_medida_presentacion") or "").strip()[:30],
-        chain=chain[0][:120], branch=store["sucursales_nombre"][:120],
+        chain=" ".join(chain[0].split())[:120], branch=branch_name[:120],
         province=store.get("sucursales_provincia", "")[:80], locality=store.get("sucursales_localidad", "")[:120],
         latitude=coord(store.get("sucursales_latitud")), longitude=coord(store.get("sucursales_longitud")),
         list_price=amount, promo1_price=promo1, promo1_text=text1, promo2_price=promo2, promo2_text=text2)
@@ -125,7 +126,7 @@ def _ingest_archive(session, source, snapshot, provinces):
                     for row in _csv(inner, "comercio.csv"):
                         try:
                             report_date = datetime.fromisoformat(row["comercio_ultima_actualizacion"]).date()
-                        except (ValueError, KeyError):
+                        except (ValueError, TypeError, KeyError):
                             continue
                         if not 0 <= (snapshot.data_date - report_date).days <= 2:
                             continue
