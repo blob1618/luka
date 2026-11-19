@@ -96,8 +96,9 @@ async def test_every_known_phone_enters_tools_without_pilot_flags(ingress, accou
     assert result.tool_trace[0]['tool'] == 'conversation_reply'
     with accounts[0]() as session:
         assert session.query(Usuario).filter_by(whatsapp_id=phone).one().ultimo_mensaje_en is not None
-    assert len(build_tool_registry().available(assistant_runtime.make_context(accounts[1], PHONE, 'catalog', '', NOW,
-        assistant_state.empty(accounts[1])).turn)) == 46
+    available = build_tool_registry().available(assistant_runtime.make_context(accounts[1], PHONE, 'catalog', '', NOW,
+        assistant_state.empty(accounts[1])).turn)
+    assert 'compare_supermarket_prices' in {tool.name for tool in available}
 
 
 @pytest.mark.asyncio

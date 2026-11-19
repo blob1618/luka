@@ -1,0 +1,17 @@
+# Comparador de supermercados (HU-PRE-04)
+
+## Fuente y alcance
+
+La fuente primaria es el ZIP minorista diario de [SEPA / Precios Claros](https://www.argentina.gob.ar/economia/industria-y-comercio/defensadelconsumidor/precios-sepa). El catálogo oficial publica el enlace y la fecha del archivo; no ofrece una API oficial de búsqueda por producto. LUKA descarga el ZIP, lee los ZIP internos por comercio, conserva los EAN válidos de las provincias configuradas y publica un snapshot nuevo sólo cuando finaliza la carga. La consulta no descarga datos en tiempo real. Los precios se atribuyen a SEPA con fecha y sucursal, y no garantizan el precio en góndola.
+
+El contrato interno usa EAN, descripción, marca, presentación, sucursal, localidad, provincia, fecha informada por comercio, precio de lista y promociones con sus leyendas. Se busca por EAN o por nombre; si un nombre coincide con varios EAN, se pide el EAN antes de comparar. El ahorro entre sucursales se calcula para el mismo EAN, presentación y fecha informada, con la referencia mostrada. Sólo se aplica la promoción general (`promo1`) cuando se puede comprobar que su vigencia incluye el día de la consulta y la leyenda no exige varias unidades ni condiciones personales o de pago. La promoción condicionada (`promo2`) no se presenta como una oferta universal. Un producto faltante se informa sin imputar un precio. Si el último snapshot tiene más de dos días, la consulta informa indisponibilidad.
+
+## Configuración y operación
+
+1. Aplicar `supabase/migrations/20261119190000_supermarket_prices.sql` mediante el proceso de migraciones del proyecto. No ejecutar cambios de esquema manuales sobre Supabase.
+2. Medir espacio, tiempo de descarga y carga en el entorno previsto. Un ZIP diario ronda los 320–340 MB comprimidos y la base indexada puede ocupar bastante más; usar una o más provincias piloto antes de ampliar cobertura.
+3. Configurar `SEPA_PROVINCES` con códigos de provincia separados por comas, por ejemplo `AR-H`, y `SEPA_INGEST_ENABLED=1`. Sin provincias configuradas, la ingesta se niega a iniciar. El backend puede responder «sin precios cargados» hasta que se complete la primera carga.
+4. Para la primera carga o un reintento, ejecutar `python -m scripts.ingest_sepa` dentro del contenedor con la configuración del servicio. La tarea diaria se programa a las 17:30 de Argentina. Debe correr en un único worker, como el scheduler actual.
+5. Revisar `sepa_ingest_ready` (fecha, filas, descartes) o `sepa_ingest_failed` en los logs. Si falla la descarga o carga, el snapshot anterior permanece disponible sólo dentro de la ventana de dos días. Los lectores nunca usan filas de una carga incompleta. El reintento manual vuelve a descargar el archivo. Redis guarda cada comparación durante 30 minutos con el ID del snapshot en la clave; publicar uno nuevo invalida lógicamente las claves anteriores.
+
+Los tests de ingesta usan ZIP/CSV contractuales pequeños y no descargan el archivo real de cientos de MB. Antes de habilitar el servicio para usuarios finales, confirmar capacidad de base y almacenamiento, probar una carga real en staging, verificar la licencia aplicable y atribución de los datos, y validar las respuestas desde WhatsApp real. CI, simulador y migración versionada no prueban esos pasos.

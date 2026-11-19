@@ -27,6 +27,7 @@ from app.models.database import (
 )
 from app.services.recurring_expense import RecurringExpenseService
 from app.services.google_calendar import reconcile_google_calendar
+from app.services.sepa_ingest import ingest_latest
 
 logger = logging.getLogger(__name__)
 _MISSING_TEMPLATE_LOGGED: set[str] = set()
@@ -804,5 +805,23 @@ def start_scheduler():
         minute=0,
         timezone=ARGENTINA_TZ,
     )
+    if os.getenv("SEPA_INGEST_ENABLED") == "1":
+        scheduler.add_job(
+            run_sepa_ingest,
+            "cron",
+            hour=17,
+            minute=30,
+            timezone=ARGENTINA_TZ,
+            id="sepa_daily_ingest",
+            max_instances=1,
+            coalesce=True,
+        )
     scheduler.start()
     print("Scheduler iniciado (recordatorios, recordatorio proactivo cada 5 min y detección diaria 03:00).")
+
+
+async def run_sepa_ingest():
+    try:
+        await asyncio.to_thread(ingest_latest)
+    except Exception as exc:
+        logger.error("sepa_daily_ingest_failed error=%s", type(exc).__name__)
