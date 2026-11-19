@@ -1,5 +1,5 @@
 """Contractual SEPA fixture: no provider network, Redis or production database."""
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 import io
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -8,6 +8,11 @@ import pytest
 
 from app.models.database import SepaPrice, SepaSnapshot, MovimientoFinanciero
 from app.services import sepa_ingest, supermarket_prices
+from tests import test_assistant_stage5 as scenarios
+from tests.test_assistant_pilot import NOW
+
+accounts = scenarios.accounts
+ingress = scenarios.ingress
 
 
 def _csv(headers, rows):
@@ -122,3 +127,26 @@ async def test_name_ambiguity_requires_ean_and_does_not_invent_a_comparison(sepa
     assert result["items"][0]["status"] == "ambiguous"
     assert len(result["items"][0]["options"]) == 2
     assert "Indicá el EAN" in supermarket_prices.present_comparison(result, locality="Resistencia")[1]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_whatsapp_tool_compares_list_and_never_registers_a_movement(ingress, accounts):
+    day = (NOW - timedelta(hours=3)).date()
+    with accounts[0]() as session:
+        snapshot = SepaSnapshot(data_date=day, source_url="https://example.test/sepa.zip", status="ready")
+        session.add(snapshot)
+        session.flush()
+        session.add(SepaPrice(snapshot_id=snapshot.id, commerce_id="1", flag_id="1", branch_id="1",
+            product_id="7790895000997", report_date=day, is_ean=True, description="Coca Cola 2,25 L",
+            quantity=Decimal("2.25"), unit="l", chain="Coto", branch="Centro", province="AR-H",
+            locality="Resistencia", list_price=Decimal("6100")))
+        session.commit()
+        before = session.query(MovimientoFinanciero).count()
+    result = await ingress.tool("compare_supermarket_prices", {
+        "products": ["7790895000997", "9999999999999"], "locality": "Resistencia",
+        "province": "AR-H"}, "¿Cuánto cuesta Coca Cola en Resistencia?")
+    assert "Coto" in result.reply_text and "$6.100,00" in result.reply_text
+    assert "9999999999999: sin precio" in result.reply_text
+    with accounts[0]() as session:
+        assert session.query(MovimientoFinanciero).count() == before
