@@ -12,7 +12,7 @@ from app.api.whatsapp import WhatsAppReplyButton, WhatsAppReplyButtons
 from app.models.database import SepaPrice, ShoppingBasket, ShoppingBasketItem, SessionLocal
 from app.services.assistant_contracts import FieldRequest, FrozenModel, IncompleteOperation, ReferenceToken
 from app.services.assistant_capabilities.common import data, read_tool, operation_tool, prepared, committed
-from app.services.supermarket_prices import SOURCE, _money, _query_rows, _snapshot, compare_prices
+from app.services.supermarket_prices import SOURCE, _money, _query_rows, _snapshot, compare_prices, normalize_province
 
 
 class BasketSearch(FrozenModel):
@@ -99,7 +99,7 @@ def _resolve_items(owner, draft, today, choices, operation_id):
     with SessionLocal() as session:
         basket = session.query(ShoppingBasket).filter(ShoppingBasket.usuario_id == owner).first()
         locality = draft.locality or (basket.locality if basket and draft.mode == "add" else None)
-        province = draft.province or (basket.province if basket and draft.mode == "add" else None)
+        province = normalize_province(draft.province or (basket.province if basket and draft.mode == "add" else None))
         if not locality:
             return {"status": "needs_locality"}
         snapshot, reason = _snapshot(session, today)

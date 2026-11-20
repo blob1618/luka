@@ -13,7 +13,16 @@ from app.services import assistant_state
 SOURCE = "SEPA / Precios Claros"
 MAX_AGE_DAYS = 2
 CACHE_SECONDS = 1800
+_PROVINCE_ALIASES = {"chaco": "AR-H"}
 _DATE_RANGE = re.compile(r"(?:desde\s+el\s+)?(\d{1,2}/\d{1,2}/\d{2,4}).{0,100}?(?:hasta\s+el\s+)(\d{1,2}/\d{1,2}/\d{2,4})", re.I)
+
+
+def normalize_province(province):
+    if not province:
+        return None
+    value = province.strip()
+    name = re.sub(r"^provincia\s+(?:de(?:l)?\s+)?", "", value, flags=re.I)
+    return _PROVINCE_ALIASES.get(name.casefold(), value)
 
 
 def _money(value):
@@ -51,6 +60,7 @@ def _snapshot(session, today):
 
 
 def _query_rows(session, snapshot, *, ean=None, name=None, locality, province=None):
+    province = normalize_province(province)
     base = session.query(SepaPrice).filter(SepaPrice.snapshot_id == snapshot.id,
         func.lower(SepaPrice.locality) == locality.strip().lower())
     if province:
@@ -68,6 +78,10 @@ def _query_rows(session, snapshot, *, ean=None, name=None, locality, province=No
             for word in words:
                 base = base.filter(SepaPrice.description.ilike(f"%{word}%"))
     if name:
+        first_word = words[0].lower()
+        starts_with_name = func.lower(SepaPrice.description).like(f"{first_word}%")
+        if base.filter(starts_with_name).first() is not None:
+            base = base.filter(starts_with_name)
         matches = base.filter(SepaPrice.is_ean.is_(True)).with_entities(
             SepaPrice.product_id, func.min(SepaPrice.description)).group_by(SepaPrice.product_id).order_by(
                 func.min(SepaPrice.description), SepaPrice.product_id).limit(6).all()
@@ -127,6 +141,7 @@ async def compare_prices(queries, *, locality, province=None, today=None):
     if not queries:
         return {"status": "needs_products", "reason": "Decime qué productos querés comparar."}
     today = today or date.today()
+    province = normalize_province(province)
     # Snapshot id in the key ensures a new publication cannot reuse stale prices.
     with SessionLocal() as session:
         snapshot, reason = _snapshot(session, today)
