@@ -21,6 +21,10 @@ MAX_INNER_FILE = 1_500_000_000
 BATCH_SIZE = 2000
 
 
+def _cell(row, key):
+    return (row.get(key) or "").strip()
+
+
 def _decimal(value):
     try:
         result = Decimal(str(value).strip())
@@ -77,19 +81,19 @@ def _download(client, url):
 
 
 def _price(row, branches, chains, snapshot_id):
-    commerce, flag, branch = (row.get(key, "").strip() for key in ("id_comercio", "id_bandera", "id_sucursal"))
-    product = row.get("id_producto", "").strip()
+    commerce, flag, branch = (_cell(row, key) for key in ("id_comercio", "id_bandera", "id_sucursal"))
+    product = _cell(row, "id_producto")
     store = branches.get((commerce, flag, branch))
     chain = chains.get((commerce, flag))
     amount = _decimal(row.get("productos_precio_lista"))
-    description = " ".join(row.get("productos_descripcion", "").split())
-    branch_name = " ".join((store or {}).get("sucursales_nombre", "").split())
+    description = " ".join(_cell(row, "productos_descripcion").split())
+    branch_name = " ".join(_cell(store or {}, "sucursales_nombre").split())
     if not (commerce and flag and branch and product and store and chain and amount and description and branch_name):
         return None
     quantity = _decimal(row.get("productos_cantidad_presentacion"))
     def promo(number):
         price = _decimal(row.get(f"productos_precio_unitario_promo{number}"))
-        legend = (row.get(f"productos_leyenda_promo{number}") or "").strip()
+        legend = _cell(row, f"productos_leyenda_promo{number}")
         return (price, legend) if price and price < amount and legend else (None, None)
     promo1, text1 = promo(1)
     promo2, text2 = promo(2)
@@ -99,11 +103,11 @@ def _price(row, branches, chains, snapshot_id):
         except InvalidOperation:
             return None
     return dict(snapshot_id=snapshot_id, commerce_id=commerce, flag_id=flag, branch_id=branch,
-        product_id=product, report_date=chain[1], is_ean=row.get("productos_ean", "").strip() == "1",
-        description=description[:500], brand=(row.get("productos_marca") or "").strip()[:100],
-        quantity=quantity, unit=(row.get("productos_unidad_medida_presentacion") or "").strip()[:30],
+        product_id=product, report_date=chain[1], is_ean=_cell(row, "productos_ean") == "1",
+        description=description[:500], brand=_cell(row, "productos_marca")[:100],
+        quantity=quantity, unit=_cell(row, "productos_unidad_medida_presentacion")[:30],
         chain=" ".join(chain[0].split())[:120], branch=branch_name[:120],
-        province=store.get("sucursales_provincia", "")[:80], locality=store.get("sucursales_localidad", "")[:120],
+        province=_cell(store, "sucursales_provincia")[:80], locality=_cell(store, "sucursales_localidad")[:120],
         latitude=coord(store.get("sucursales_latitud")), longitude=coord(store.get("sucursales_longitud")),
         list_price=amount, promo1_price=promo1, promo1_text=text1, promo2_price=promo2, promo2_text=text2)
 
@@ -113,6 +117,9 @@ def _ingest_archive(session, source, snapshot, provinces):
     with ZipFile(source) as outer:
         for item in outer.infolist():
             if not item.filename.lower().endswith(".zip"):
+                continue
+            if item.file_size == 0:
+                logger.warning("sepa_ingest_skipped_empty_archive name=%s", item.filename)
                 continue
             if item.file_size > MAX_INNER_FILE:
                 raise ValueError("Comercio SEPA excesivo")
@@ -125,24 +132,24 @@ def _ingest_archive(session, source, snapshot, provinces):
                     chains = {}
                     for row in _csv(inner, "comercio.csv"):
                         try:
-                            report_date = datetime.fromisoformat(row["comercio_ultima_actualizacion"]).date()
+                            report_date = datetime.fromisoformat(_cell(row, "comercio_ultima_actualizacion")).date()
                         except (ValueError, TypeError, KeyError):
                             continue
                         if not 0 <= (snapshot.data_date - report_date).days <= 2:
                             continue
-                        chains[(row["id_comercio"].strip(), row["id_bandera"].strip())] = (
-                            row["comercio_bandera_nombre"].strip(), report_date)
-                    branches = {(r["id_comercio"].strip(), r["id_bandera"].strip(), r["id_sucursal"].strip()): r
+                        chains[(_cell(row, "id_comercio"), _cell(row, "id_bandera"))] = (
+                            _cell(row, "comercio_bandera_nombre"), report_date)
+                    branches = {(_cell(r, "id_comercio"), _cell(r, "id_bandera"), _cell(r, "id_sucursal")): r
                         for r in _csv(inner, "sucursales.csv")}
                     batch = []
                     for row in _csv(inner, "productos.csv"):
-                        product_id = row.get("id_producto", "").strip()
-                        if row.get("productos_ean", "").strip() != "1" or not re.fullmatch(
+                        product_id = _cell(row, "id_producto")
+                        if _cell(row, "productos_ean") != "1" or not re.fullmatch(
                                 r"\d{8}|\d{12}|\d{13}", product_id):
                             continue
-                        store = branches.get((row.get("id_comercio", "").strip(),
-                            row.get("id_bandera", "").strip(), row.get("id_sucursal", "").strip()))
-                        if store and store.get("sucursales_provincia", "").strip().upper() not in provinces:
+                        store = branches.get((_cell(row, "id_comercio"),
+                            _cell(row, "id_bandera"), _cell(row, "id_sucursal")))
+                        if store and _cell(store, "sucursales_provincia").upper() not in provinces:
                             continue
                         value = _price(row, branches, chains, snapshot.id)
                         if value is None:
@@ -217,3 +224,12 @@ def ingest_latest(*, client=None):
     finally:
         if owned_client:
             client.close()
+
+
+def ingest_if_missing():
+    """Bootstrap an empty catalog without reloading an existing ready snapshot."""
+    with SessionLocal() as session:
+        ready = session.query(SepaSnapshot.id).filter(SepaSnapshot.status == "ready").first()
+    if ready:
+        return None
+    return ingest_latest()

@@ -27,7 +27,7 @@ from app.models.database import (
 )
 from app.services.recurring_expense import RecurringExpenseService
 from app.services.google_calendar import reconcile_google_calendar
-from app.services.sepa_ingest import ingest_latest
+from app.services.sepa_ingest import ingest_if_missing, ingest_latest
 
 logger = logging.getLogger(__name__)
 _MISSING_TEMPLATE_LOGGED: set[str] = set()
@@ -807,6 +807,14 @@ def start_scheduler():
     )
     if os.getenv("SEPA_INGEST_ENABLED") == "1":
         scheduler.add_job(
+            run_sepa_bootstrap,
+            "date",
+            run_date=datetime.now(timezone.utc) + timedelta(minutes=1),
+            id="sepa_bootstrap",
+            max_instances=1,
+            replace_existing=True,
+        )
+        scheduler.add_job(
             run_sepa_ingest,
             "cron",
             hour=17,
@@ -825,3 +833,10 @@ async def run_sepa_ingest():
         await asyncio.to_thread(ingest_latest)
     except Exception as exc:
         logger.error("sepa_daily_ingest_failed error=%s", type(exc).__name__)
+
+
+async def run_sepa_bootstrap():
+    try:
+        await asyncio.to_thread(ingest_if_missing)
+    except Exception as exc:
+        logger.error("sepa_bootstrap_failed error=%s", type(exc).__name__)
