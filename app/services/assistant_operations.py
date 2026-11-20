@@ -41,6 +41,22 @@ class OperationService:
         workspace = ConversationWorkspace.model_validate(context.state['workspace'])
         if workspace.owner_id != context.turn.owner_id or workspace.conversation_id != context.turn.conversation_id:
             raise ValueError('El workspace pertenece a otra conversación')
+        # The old basket draft required user-supplied EANs. Retire those
+        # unconfirmed drafts when the name-based contract is deployed.
+        retired = {key for key, operation in workspace.operations.items()
+                   if operation.operation_key == 'save_shopping_basket' and operation.schema_version == 1}
+        if retired:
+            active_retired = workspace.active_operation_id in retired
+            workspace = revised(workspace,
+                operations={key: op for key, op in workspace.operations.items() if key not in retired},
+                active_operation_id=None if active_retired else workspace.active_operation_id,
+                last_confirmation=None if workspace.last_confirmation and workspace.last_confirmation.operation_id in retired
+                    else workspace.last_confirmation)
+            context.state['workspace'] = workspace.model_dump(mode='json')
+            if active_retired:
+                context.state.pop('pending_question', None)
+                context.state.pop('selection_options', None)
+                context.state.pop('selected_ref', None)
         for operation in workspace.operations.values():
             contract = self.registry.get_operation(operation.operation_key)
             if operation.schema_version != contract.schema_version:

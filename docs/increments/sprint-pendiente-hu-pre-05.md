@@ -11,7 +11,7 @@
 
 ## 2. Implementación y operación
 
-- El usuario guarda o reemplaza su canasta con EAN, cantidades y ubicación mediante propuesta completa y confirmación posterior. Puede verla o consultar ofertas sin haber cruzado el 80 %.
+- El usuario agrega o reemplaza productos de su canasta por nombre, cantidad y ubicación mediante propuesta completa y confirmación posterior. Si la búsqueda encuentra varias presentaciones, elige por número; el código de producto es interno. Puede verla o consultar ofertas sin haber cruzado el 80 %.
 - Un gasto confirmado que cruza el 80 % de un presupuesto de alimentos agrega «Consultar ofertas» a la alerta, una sola vez por disparo y sólo si existe canasta. El botón consulta el comparador de HU-PRE-04; si no hay promociones utilizables, lo informa sin inventar precios ni ahorros. Leer la canasta o pulsar el botón no cambia el límite, saldo ni movimientos.
 - Modelos y [migración versionada](../../supabase/migrations/20261119193000_shopping_basket.sql) para la canasta. El flujo usa la entrega y la confirmación del runtime existente. [Guía de operación](../supermarket-prices.md). No se ejecutó migración en Supabase/Render.
 - Riesgos: depende de una carga de SEPA completa y fresca, de la integración de PR #123 y de prueba en WhatsApp real. Sin canasta no se ofrece el botón. La consulta informativa no garantiza stock ni precio de góndola.

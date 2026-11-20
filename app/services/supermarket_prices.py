@@ -69,7 +69,8 @@ def _query_rows(session, snapshot, *, ean=None, name=None, locality, province=No
                 base = base.filter(SepaPrice.description.ilike(f"%{word}%"))
     if name:
         matches = base.filter(SepaPrice.is_ean.is_(True)).with_entities(
-            SepaPrice.product_id, func.min(SepaPrice.description)).group_by(SepaPrice.product_id).limit(6).all()
+            SepaPrice.product_id, func.min(SepaPrice.description)).group_by(SepaPrice.product_id).order_by(
+                func.min(SepaPrice.description), SepaPrice.product_id).limit(6).all()
         identities = {key: description for key, description in matches}
         if len(identities) != 1:
             return [], identities
@@ -158,8 +159,8 @@ def present_comparison(result, *, locality):
         if item["status"] == "missing":
             lines.append(f"{item['query']}: sin precio encontrado en esa localidad.")
         elif item["status"] == "ambiguous":
-            variants = "; ".join(f"{o['name']} (EAN {o['ean']})" for o in item["options"])
-            lines.append(f"{item['query']}: hay varias presentaciones. Indicá el EAN: {variants}.")
+            variants = "; ".join(o["name"] for o in item["options"])
+            lines.append(f"{item['query']}: encontré varias presentaciones: {variants}. Decime la marca o presentación que buscás.")
         else:
             options = item["options"]
             for option in options[:3]:
@@ -168,6 +169,6 @@ def present_comparison(result, *, locality):
                 if option.get("promotion"):
                     line += f" Promoción informada: {option['promotion']}."
                 if option.get("saving_vs_highest"):
-                    line += f" Ahorro estimado {_money(option['saving_vs_highest'])} frente a {_money(option['reference_price'])} para el mismo EAN."
+                    line += f" Ahorro estimado {_money(option['saving_vs_highest'])} frente a {_money(option['reference_price'])} para el mismo producto y presentación."
                 lines.append(line)
     return lines
