@@ -1,5 +1,5 @@
 """Contractual SEPA fixture: no provider network, Redis or production database."""
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import io
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -8,6 +8,7 @@ import pytest
 
 from app.models.database import SepaPrice, SepaSnapshot, MovimientoFinanciero
 from app.services import sepa_ingest, supermarket_prices
+from app import scheduler as scheduler_module
 from tests import test_assistant_stage5 as scenarios
 from tests.test_assistant_pilot import NOW
 
@@ -47,11 +48,12 @@ def _archive():
     ]
     data = io.BytesIO()
     with ZipFile(data, "w", ZIP_DEFLATED) as outer:
+        outer.writestr("empty_merchant.zip", b"")
         for merchant in ("1", "2"):
             nested = io.BytesIO()
             with ZipFile(nested, "w", ZIP_DEFLATED) as inner:
                 inner.writestr("comercio.csv", _csv(list(commerce[0]), [r for r in commerce if r["id_comercio"] == merchant]))
-                inner.writestr("sucursales.csv", _csv(list(branches[0]), [r for r in branches if r["id_comercio"] == merchant]))
+                inner.writestr("sucursales.csv", _csv(list(branches[0]), [r for r in branches if r["id_comercio"] == merchant]) + b"1|1\n")
                 inner.writestr("productos.csv", _csv(list(products[0]), [r for r in products if r["id_comercio"] == merchant]))
             outer.writestr(merchant + ".zip", nested.getvalue())
     data.seek(0)
@@ -72,6 +74,47 @@ def sepa_db(isolated_db, monkeypatch):
         session.commit()
         assert (count, rejected) == (3, 0)
     return isolated_db
+
+
+@pytest.mark.unit
+def test_empty_catalog_bootstraps_once_and_ready_catalog_is_left_alone(isolated_db, monkeypatch):
+    monkeypatch.setattr(sepa_ingest, "SessionLocal", isolated_db)
+    calls = []
+    monkeypatch.setattr(sepa_ingest, "ingest_latest", lambda: calls.append("load") or "loaded")
+    assert sepa_ingest.ingest_if_missing() == "loaded"
+    with isolated_db() as session:
+        session.add(SepaSnapshot(data_date=date(2026, 11, 19),
+            source_url="https://example.test/sepa.zip", status="ready"))
+        session.commit()
+    assert sepa_ingest.ingest_if_missing() is None
+    assert calls == ["load"]
+
+
+@pytest.mark.unit
+def test_enabled_ingest_schedules_bootstrap_and_daily_run(monkeypatch):
+    class RecordingScheduler:
+        def __init__(self):
+            self.jobs = []
+
+        def add_job(self, *args, **kwargs):
+            self.jobs.append((args, kwargs))
+
+        def start(self):
+            pass
+
+    fake = RecordingScheduler()
+    monkeypatch.setattr(scheduler_module, "scheduler", fake)
+    monkeypatch.setenv("SEPA_INGEST_ENABLED", "1")
+    monkeypatch.delenv("RUN_RECURRING_DETECTION_ON_STARTUP", raising=False)
+    before = datetime.now(timezone.utc)
+    scheduler_module.start_scheduler()
+    after = datetime.now(timezone.utc)
+    bootstrap = next(kwargs for (args, kwargs) in fake.jobs if args[0] is scheduler_module.run_sepa_bootstrap)
+    daily = next(kwargs for (args, kwargs) in fake.jobs if args[0] is scheduler_module.run_sepa_ingest)
+    assert before + timedelta(minutes=1) <= bootstrap["run_date"] <= after + timedelta(minutes=1)
+    assert bootstrap["id"] == "sepa_bootstrap"
+    assert daily["id"] == "sepa_daily_ingest"
+    assert (daily["hour"], daily["minute"]) == (17, 30)
 
 
 @pytest.mark.integration
