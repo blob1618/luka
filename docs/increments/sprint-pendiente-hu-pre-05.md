@@ -18,7 +18,7 @@
 
 | Hito | Fecha | Evidencia |
 | --- | --- | --- |
-| Inicio e implementación local | 2026-11-19 | Commit `93106a0` |
+| Inicio e implementación local | 2026-11-19 | Commit `d12b970` |
 | Lista para revisión | 2026-11-19 | [PR #124](https://github.com/blob1618/luka/pull/124), borrador |
 | Revisión, merge, despliegue, aceptación y cierre Jira | Pendiente | Cada hito requiere registro propio |
 
@@ -26,7 +26,8 @@
 
 | Prueba | Fecha, ambiente y versión | Resultado y evidencia |
 | --- | --- | --- |
-| Lint y suite completa de la rama combinada | 2026-11-19, local, `a6e58ce` | `ruff check .` sin hallazgos; `python -m pytest -v`: 1.358 passed, 2 warnings de dependencias. [Registro](evidencias/sprint-pendiente-hu-pre-05/2026-11-19-verificacion-local.md). CI de PR #124: backend aprobado; migraciones en reintento por colisión del puerto de Supabase. |
+| Lint y suite completa de la rama combinada | 2026-11-19, local, `a6e58ce` | `ruff check .` sin hallazgos; `python -m pytest -v`: 1.358 passed, 2 warnings de dependencias. [Registro](evidencias/sprint-pendiente-hu-pre-05/2026-11-19-verificacion-local.md). |
+| Backend y migraciones en CI | 2026-11-19, GitHub Actions, `36e5de4` antes del rebase documental | [CI Pipeline aprobado](https://github.com/blob1618/luka/actions/runs/44649171510). No acredita entorno productivo ni WhatsApp real. |
 
 | Criterio de [STK-263](https://philippem.atlassian.net/browse/STK-263) | Evidencia técnica | Conclusión humana |
 | --- | --- | --- |
@@ -35,7 +36,7 @@
 | CA3 comparación tras pulsar, sin mutaciones | Tests de acción y lectura del comparador de HU-PRE-04 | Pendiente |
 | CA4 sin ofertas | Tests de mensaje explícito sin comparativas inventadas | Pendiente |
 
-Demo humana: guardar canasta, cruzar 80 % con gasto confirmado, pulsar botón y consultar la canasta a pedido; repetir con snapshot sin ofertas. Definition of Done: pendientes revisión/CI, dependencia PR #123, ingesta real, merge, despliegue y conclusión explícita de la persona designada.
+Demo humana: guardar canasta, cruzar 80 % con gasto confirmado, pulsar botón y consultar la canasta a pedido; repetir con snapshot sin ofertas. Definition of Done: pendientes revisión humana, dependencia PR #123, ingesta real, merge, despliegue y conclusión explícita de la persona designada.
 
 ## 4. Seguimiento durante el sprint
 
