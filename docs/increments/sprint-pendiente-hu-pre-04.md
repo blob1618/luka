@@ -20,6 +20,7 @@
 - El diagnóstico del 2026-11-20 confirmó HTTP 403 del catálogo oficial desde Render, mientras que la misma URL devolvió HTTP 200 desde el entorno local. Se prueba un `User-Agent` que identifica a Luka para comprobar si el rechazo se debe a la identificación del cliente; no se asume que resuelva un bloqueo de la red de Render. [Registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-render-403.md).
 - El `User-Agent` tampoco resolvió el 403. Se agrega una ruta de lectura de las cabeceras de los siete ZIP semanales oficiales para elegir el más reciente cuando el API de metadatos responde 403, con límite de antigüedad y tamaño; la descarga real desde Render sigue pendiente de comprobarse. [Evidencia](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-recursos-semanales.md).
 - El despliegue `347d212` comprobó que Render recibe 403 también de los siete ZIP oficiales. [PR #132](https://github.com/blob1618/luka/pull/132) agrega un espejo automático en una release pública del proyecto, actualizado desde GitHub Actions, con fecha oficial y SHA-256 verificado antes de cargar. La publicación y la ingesta productiva aún deben comprobarse. [Evidencia del bloqueo](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-render-zip-403.md).
+- GitHub Actions también recibió 403 del origen oficial. Se publicó manualmente el ZIP compacto AR-H del 19/11 para iniciar la carga; Render lo descargó, pero PostgreSQL rechazó la primera inserción por prepared statements incompatibles con el pooler transaccional. El workflow ahora puede usar una copia archivada fechada con metadatos oficiales incorporados, y la conexión PostgreSQL deshabilita los prepared statements automáticos. [Evidencia](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-espejo-archivo-pooler.md). Publicación diaria y carga productiva completas: pendientes de verificar.
 - Recuperación: revisar logs `sepa_ingest_failed`, reintentar manualmente; el snapshot anterior sirve sólo dentro de dos días. Sin snapshot confiable, responder indisponibilidad. Redis expira cada comparación en 30 minutos y la clave incluye snapshot y fecha.
 - Riesgos pendientes: medir duración y tamaño de la carga en PostgreSQL productivo y probar WhatsApp real. El catálogo oficial declara CC-BY-4.0 y Luka muestra fuente y fecha. El dato diario no asegura precio de góndola ni existencia de stock.
 
@@ -34,6 +35,7 @@
 | Identificación del cliente y ruta alternativa | 2026-11-20 | Merge `e295769`, Render mantuvo 403 a las 11:33 AR; [registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-recursos-semanales.md) |
 | Comprobación de los siete ZIP oficiales | 2026-11-20 | Merge `347d212`, Render recibió 403 de los siete a las 11:43 AR; [registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-render-zip-403.md) |
 | Espejo verificable | 2026-11-20 | [PR #132](https://github.com/blob1618/luka/pull/132); lint y pruebas locales aprobadas, publicación y producción pendientes |
+| Primera release y error de PostgreSQL | 2026-11-20 | [Release](https://github.com/blob1618/luka/releases/tag/sepa-feed), bootstrap descargó el ZIP, [error del pooler](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-espejo-archivo-pooler.md); carga completa pendiente |
 | Revisión, merge, despliegue, aceptación y cierre Jira | Pendiente | Cada hito requiere registro propio |
 
 ## 3. Verificación técnica y aceptación
@@ -58,7 +60,7 @@ Demo humana: cargar un snapshot real en staging, consultar producto/canasta desd
 
 ## 4. Seguimiento durante el sprint
 
-2026-11-19: implementación y pruebas locales. 2026-11-20: piloto local con archivo diario real, PR #127 integrado y Render configurado para AR-H. La primera carga se omitió por 2,92 segundos de retraso; PR #128 corrigió el margen y el job arrancó, pero el API de metadatos y luego los siete ZIP oficiales devolvieron HTTP 403 desde Render. PR #132 prepara un espejo automático verificable; aún falta ejecutarlo y cargar Supabase. WhatsApp real, Sprint y burndown siguen pendientes; no se contabilizan 8 SP como aceptados.
+2026-11-19: implementación y pruebas locales. 2026-11-20: piloto local con archivo diario real, PR #127 integrado y Render configurado para AR-H. La primera carga se omitió por 2,92 segundos de retraso; PR #128 corrigió el margen y el job arrancó, pero el API de metadatos y los siete ZIP oficiales devolvieron HTTP 403 desde Render y GitHub Actions. Una release manual permitió descargar el ZIP compacto, pero la primera inserción falló por prepared statements del pooler. Se prepara la corrección y la automatización con copia archivada verificada. WhatsApp real, Sprint y burndown siguen pendientes; no se contabilizan 8 SP como aceptados.
 
 ## 5. Sprint Review, cierre y replanificación
 

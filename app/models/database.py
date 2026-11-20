@@ -22,11 +22,21 @@ if DATABASE_URL.startswith("postgresql"):
     # psycopg3 usa postgresql:// directamente (no requiere especificar el driver)
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
+
+def _connect_args(database_url):
+    if "sqlite" in database_url:
+        return {"check_same_thread": False}
+    if database_url.startswith("postgresql"):
+        # Supabase's transaction pooler cannot retain Psycopg prepared statements.
+        return {"prepare_threshold": None}
+    return {}
+
+
 engine = create_engine(
     DATABASE_URL,
     echo=False,
     pool_pre_ping=True,  # Verificar conexiones antes de usarlas
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+    connect_args=_connect_args(DATABASE_URL)
 )
 
 

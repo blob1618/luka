@@ -7,7 +7,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 import httpx
 
-from app.models.database import SepaPrice, SepaSnapshot, MovimientoFinanciero
+from app.models.database import SepaPrice, SepaSnapshot, MovimientoFinanciero, _connect_args
 from app.services import sepa_ingest, supermarket_prices
 from app import scheduler as scheduler_module
 from tests import test_assistant_stage5 as scenarios
@@ -15,6 +15,12 @@ from tests.test_assistant_pilot import NOW
 
 accounts = scenarios.accounts
 ingress = scenarios.ingress
+
+
+@pytest.mark.unit
+def test_postgres_connection_disables_prepared_statements_for_transaction_pooler():
+    assert _connect_args("postgresql+psycopg://example.test/db") == {"prepare_threshold": None}
+    assert _connect_args("sqlite:///local.db") == {"check_same_thread": False}
 
 
 def _csv(headers, rows):
@@ -129,7 +135,7 @@ def test_official_403_uses_dated_mirror_and_checks_archive(monkeypatch):
             return cls(2026, 11, 20, tzinfo=tz)
 
     monkeypatch.setattr(sepa_ingest, "datetime", FrozenDateTime)
-    archive = b"official archive"
+    archive = _archive().getvalue()
     digest = hashlib.sha256(archive).hexdigest()
     requests = []
 
@@ -182,7 +188,7 @@ def test_mirror_publisher_records_official_date_and_digest(tmp_path, monkeypatch
             return cls(2026, 11, 20, tzinfo=tz)
 
     monkeypatch.setattr(sepa_ingest, "datetime", FrozenDateTime)
-    archive = b"official archive"
+    archive = _archive().getvalue()
     source_url = "https://datos.produccion.gob.ar/daily.zip"
 
     def answer(request):
@@ -194,10 +200,71 @@ def test_mirror_publisher_records_official_date_and_digest(tmp_path, monkeypatch
 
     with httpx.Client(transport=httpx.MockTransport(answer)) as client:
         manifest = prepare(tmp_path, client=client)
+    compact = (tmp_path / "sepa-latest.zip").read_bytes()
     assert manifest == {"data_date": "2026-11-19", "source_url": source_url,
-        "sha256": hashlib.sha256(archive).hexdigest(), "size": len(archive)}
-    assert (tmp_path / "sepa-latest.zip").read_bytes() == archive
+        "sha256": hashlib.sha256(compact).hexdigest(), "size": len(compact),
+        "coverage": ["AR-H"]}
+    with ZipFile(io.BytesIO(compact)) as result:
+        assert len(result.namelist()) == 2
     assert json.loads((tmp_path / "sepa-latest.json").read_text()) == manifest
+
+
+@pytest.mark.unit
+def test_archive_fallback_repackages_only_requested_province(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    import tarfile
+    import zstandard
+    from scripts import publish_sepa_mirror
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 20, tzinfo=tz)
+
+    monkeypatch.setattr(publish_sepa_mirror, "datetime", FrozenDateTime)
+    resource_id = "d076720f-a7f0-4af8-b1d6-1b99d5a90c14"
+    revision_id = "f53812da-ec57-4d8b-8eda-3e75e3a204ff"
+    official_url = "https://datos.produccion.gob.ar/source.zip"
+    archive_url = publish_sepa_mirror.ARCHIVE_PREFIX + "test.tar.zst"
+    metadata = {"result": {"resources": [{"id": resource_id,
+        "revision_id": revision_id, "last_modified": "2026-11-19T16:19:56",
+        "url": official_url}]}}
+    tar_bytes = io.BytesIO()
+    with tarfile.open(fileobj=tar_bytes, mode="w") as tar:
+        body = json.dumps(metadata).encode()
+        info = tarfile.TarInfo("./dataset-info.json")
+        info.size = len(body)
+        tar.addfile(info, io.BytesIO(body))
+        with ZipFile(_archive()) as original:
+            for name in original.namelist():
+                if not name.endswith(".zip") or not original.read(name):
+                    continue
+                with ZipFile(io.BytesIO(original.read(name))) as merchant:
+                    for csv_name in ("productos.csv", "sucursales.csv", "comercio.csv"):
+                        body = merchant.read(csv_name)
+                        info = tarfile.TarInfo(f"./2026-11-19/{name.rsplit('/', 1)[-1][:-4]}/{csv_name}")
+                        info.size = len(body)
+                        tar.addfile(info, io.BytesIO(body))
+    compressed = zstandard.ZstdCompressor().compress(tar_bytes.getvalue())
+
+    def answer(request):
+        url = str(request.url)
+        if url == publish_sepa_mirror.ARCHIVE_INDEX:
+            return httpx.Response(200, json={"2026-11-19": [{
+                "id": f"{resource_id}-revID-{revision_id}", "link": archive_url}]})
+        if url == archive_url:
+            return httpx.Response(200, content=compressed)
+        return httpx.Response(403)
+
+    with httpx.Client(transport=httpx.MockTransport(answer)) as client:
+        manifest = publish_sepa_mirror.prepare(tmp_path, client=client)
+    compact = (tmp_path / "sepa-latest.zip").read_bytes()
+    assert manifest["source_url"] == official_url
+    assert manifest["archive_url"] == archive_url
+    assert manifest["sha256"] == hashlib.sha256(compact).hexdigest()
+    with ZipFile(io.BytesIO(compact)) as output:
+        assert len(output.namelist()) == 2
 
 
 @pytest.mark.unit
