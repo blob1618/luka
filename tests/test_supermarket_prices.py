@@ -131,6 +131,14 @@ async def test_name_ambiguity_requires_ean_and_does_not_invent_a_comparison(sepa
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_one_letter_name_returns_missing_instead_of_failing(sepa_db):
+    result = await supermarket_prices.compare_prices(["x"], locality="Resistencia",
+        today=date(2026, 11, 19))
+    assert result["items"][0] == {"status": "missing", "query": "x"}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_whatsapp_tool_compares_list_and_never_registers_a_movement(ingress, accounts):
     day = (NOW - timedelta(hours=3)).date()
     with accounts[0]() as session:

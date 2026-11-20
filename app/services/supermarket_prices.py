@@ -58,9 +58,9 @@ def _query_rows(session, snapshot, *, ean=None, name=None, locality, province=No
     if ean:
         base = base.filter(SepaPrice.product_id == ean, SepaPrice.is_ean.is_(True))
     elif name:
-        words = [part for part in re.findall(r"\w+", name) if len(part) >= 3]
+        words = [part for part in re.findall(r"\w+", name) if len(part) >= 2]
         if not words:
-            return []
+            return [], {}
         if session.get_bind().dialect.name == "postgresql":
             base = base.filter(func.to_tsvector("spanish", SepaPrice.description).op("@@")(
                 func.plainto_tsquery("spanish", name)))
