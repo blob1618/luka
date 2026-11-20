@@ -1,0 +1,7 @@
+# Recurso ZIP directo como alternativa al API de metadatos
+
+- Fecha: 2026-11-20, horario de Argentina. Ambiente productivo: Render, commit `e295769` de [PR #130](https://github.com/blob1618/luka/pull/130). A las 11:33:17, [los registros](https://dashboard.render.com/web/srv-d9656eeq1p3s73bgl210/logs?t=app&r=1h&q=sepa) confirmaron nuevamente HTTP 403 en `package_show` aun con el `User-Agent` de Luka.
+- Fuente: [catálogo oficial SEPA](https://datos.produccion.gob.ar/dataset/sepa-precios). Sus siete recursos ZIP corresponden a los días de la semana; los IDs y enlaces de este cambio se leyeron del API oficial desde el entorno local el 2026-11-20.
+- Comprobación local: `HEAD` a los siete ZIP devolvió HTTP 200 y `Last-Modified`. El ZIP del jueves fue el más reciente, actualizado el 2026-11-19 a las 16:19:56 UTC. La descarga completa de ese ZIP y el piloto SQLite están documentados en el [registro previo](2026-11-20-piloto-sepa-real.md).
+- Implementación: cuando `package_show` responde 403, consultar sólo cabeceras de esos siete recursos, elegir el más recientemente modificado y rechazarlo si supera tres días. La descarga sigue el mismo límite de 550 MB y el mismo proceso de publicación atómica.
+- Límite: HTTP 200 desde la red local no prueba acceso desde Render. Si Render también recibe 403 en los ZIP, no habrá carga productiva ni precios disponibles; se requiere evidencia del próximo despliegue.
