@@ -113,7 +113,7 @@ async def test_expired_promotion_and_missing_product_do_not_become_offers(sepa_d
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_name_ambiguity_asks_for_presentation_and_does_not_invent_a_comparison(sepa_db):
+async def test_name_ambiguity_requires_ean_and_does_not_invent_a_comparison(sepa_db):
     with sepa_db() as session:
         snapshot = session.query(SepaSnapshot).one()
         session.add(SepaPrice(snapshot_id=snapshot.id, commerce_id="1", flag_id="1", branch_id="1",
@@ -126,8 +126,7 @@ async def test_name_ambiguity_asks_for_presentation_and_does_not_invent_a_compar
         today=date(2026, 11, 19))
     assert result["items"][0]["status"] == "ambiguous"
     assert len(result["items"][0]["options"]) == 2
-    assert "Decime la marca o presentación" in supermarket_prices.present_comparison(result, locality="Resistencia")[1]
-    assert "EAN" not in supermarket_prices.present_comparison(result, locality="Resistencia")[1]
+    assert "Indicá el EAN" in supermarket_prices.present_comparison(result, locality="Resistencia")[1]
 
 
 @pytest.mark.integration

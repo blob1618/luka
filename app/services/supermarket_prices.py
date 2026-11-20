@@ -159,8 +159,8 @@ def present_comparison(result, *, locality):
         if item["status"] == "missing":
             lines.append(f"{item['query']}: sin precio encontrado en esa localidad.")
         elif item["status"] == "ambiguous":
-            variants = "; ".join(o["name"] for o in item["options"])
-            lines.append(f"{item['query']}: encontré varias presentaciones: {variants}. Decime la marca o presentación que buscás.")
+            variants = "; ".join(f"{o['name']} (EAN {o['ean']})" for o in item["options"])
+            lines.append(f"{item['query']}: hay varias presentaciones. Indicá el EAN: {variants}.")
         else:
             options = item["options"]
             for option in options[:3]:
@@ -169,6 +169,6 @@ def present_comparison(result, *, locality):
                 if option.get("promotion"):
                     line += f" Promoción informada: {option['promotion']}."
                 if option.get("saving_vs_highest"):
-                    line += f" Ahorro estimado {_money(option['saving_vs_highest'])} frente a {_money(option['reference_price'])} para el mismo producto y presentación."
+                    line += f" Ahorro estimado {_money(option['saving_vs_highest'])} frente a {_money(option['reference_price'])} para el mismo EAN."
                 lines.append(line)
     return lines

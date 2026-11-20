@@ -19,4 +19,4 @@ async def search(context, args):
 
 
 def supermarket_contracts():
-    return (read_tool("compare_supermarket_prices", "Consulta precios SEPA de hasta 5 productos por nombre en la localidad indicada. No registra gastos. Si hay varias presentaciones, pedir marca o presentación; nunca pedir EAN al usuario.", PriceSearch, search),)
+    return (read_tool("compare_supermarket_prices", "Consulta precios SEPA de hasta 5 productos por nombre o EAN en la localidad indicada. No registra gastos. Si hay varias presentaciones, pedir EAN antes de comparar.", PriceSearch, search),)
