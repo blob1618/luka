@@ -5,6 +5,7 @@ import io
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
+import httpx
 
 from app.models.database import SepaPrice, SepaSnapshot, MovimientoFinanciero
 from app.services import sepa_ingest, supermarket_prices
@@ -88,6 +89,49 @@ def test_empty_catalog_bootstraps_once_and_ready_catalog_is_left_alone(isolated_
         session.commit()
     assert sepa_ingest.ingest_if_missing() is None
     assert calls == ["load"]
+
+
+@pytest.mark.unit
+def test_catalog_403_uses_freshest_official_weekly_zip_without_downloading(monkeypatch):
+    monkeypatch.setattr(sepa_ingest, "WEEKLY_RESOURCES", (("thu", "jueves"), ("wed", "miercoles")))
+    monkeypatch.setattr(sepa_ingest, "RESOURCE_BASE", "https://datos.produccion.gob.ar/resource")
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 20, tzinfo=tz)
+
+    monkeypatch.setattr(sepa_ingest, "datetime", FrozenDateTime)
+    requests = []
+
+    def answer(request):
+        requests.append((request.method, str(request.url)))
+        if request.method == "GET":
+            return httpx.Response(403)
+        stamp = "Thu, 19 Nov 2026 16:19:56 GMT" if "jueves" in str(request.url) else "Wed, 18 Nov 2026 16:19:56 GMT"
+        return httpx.Response(200, headers={"Last-Modified": stamp})
+
+    with httpx.Client(transport=httpx.MockTransport(answer)) as client:
+        url, data_date = sepa_ingest._source_resource(client)
+    assert url.endswith("/thu/download/sepa_jueves.zip")
+    assert data_date == date(2026, 11, 19)
+    assert [method for method, _ in requests] == ["GET", "HEAD", "HEAD"]
+
+
+@pytest.mark.unit
+def test_weekly_zip_fallback_rejects_stale_archive(monkeypatch):
+    monkeypatch.setattr(sepa_ingest, "WEEKLY_RESOURCES", (("old", "jueves"),))
+    monkeypatch.setattr(sepa_ingest, "RESOURCE_BASE", "https://datos.produccion.gob.ar/resource")
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 20, tzinfo=tz)
+
+    monkeypatch.setattr(sepa_ingest, "datetime", FrozenDateTime)
+    with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, headers={"Last-Modified": "Thu, 12 Nov 2026 16:19:56 GMT"}))) as client:
+        with pytest.raises(ValueError, match="demasiado antiguo"):
+            sepa_ingest._source_from_published_resources(client)
 
 
 @pytest.mark.unit

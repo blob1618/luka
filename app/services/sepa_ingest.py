@@ -2,6 +2,7 @@
 import csv
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+from email.utils import parsedate_to_datetime
 import io
 import logging
 import os
@@ -17,6 +18,16 @@ from app.models.database import SepaPrice, SepaSnapshot, SessionLocal
 logger = logging.getLogger(__name__)
 CATALOG_URL = "https://datos.produccion.gob.ar/api/3/action/package_show?id=sepa-precios"
 SEPA_USER_AGENT = "Mozilla/5.0 LukaSEPA/1.0 (+https://github.com/blob1618/luka)"
+WEEKLY_RESOURCES = (
+    ("91bc072a-4726-44a1-85ec-4a8467aad27e", "viernes"),
+    ("d076720f-a7f0-4af8-b1d6-1b99d5a90c14", "jueves"),
+    ("1e92cd42-4f94-4071-a165-62c4cb2ce23c", "miercoles"),
+    ("9dc06241-cc83-44f4-8e25-c9b1636b8bc8", "martes"),
+    ("0a9069a9-06e8-4f98-874d-da5578693290", "lunes"),
+    ("f8e75128-515a-436e-bf8d-5c63a62f2005", "domingo"),
+    ("b3c3da5d-213d-41e7-8d74-f23fda0a3c30", "sabado"),
+)
+RESOURCE_BASE = "https://datos.produccion.gob.ar/dataset/6f47ec76-d1ce-4e34-a7e1-621fe9b1d0b5/resource"
 MAX_DOWNLOAD = 550_000_000
 MAX_INNER_FILE = 1_500_000_000
 BATCH_SIZE = 2000
@@ -46,6 +57,9 @@ def _csv(archive, name):
 
 def _source_resource(client):
     response = client.get(CATALOG_URL)
+    if response.status_code == 403:
+        logger.warning("sepa_catalog_forbidden_using_published_resources")
+        return _source_from_published_resources(client)
     response.raise_for_status()
     resources = response.json()["result"]["resources"]
     candidates = [item for item in resources if item.get("url", "").startswith(
@@ -61,6 +75,28 @@ def _source_resource(client):
     if int(item.get("size") or 0) > MAX_DOWNLOAD:
         raise ValueError("El archivo SEPA excede el límite de descarga")
     return item["url"], published.date()
+
+
+def _source_from_published_resources(client):
+    """Use the seven official weekly ZIP resources when the CKAN API rejects us."""
+    candidates = []
+    for resource_id, weekday in WEEKLY_RESOURCES:
+        url = f"{RESOURCE_BASE}/{resource_id}/download/sepa_{weekday}.zip"
+        try:
+            response = client.head(url, timeout=10)
+            response.raise_for_status()
+            modified = parsedate_to_datetime(response.headers["last-modified"])
+            if modified.tzinfo is None:
+                modified = modified.replace(tzinfo=timezone.utc)
+            candidates.append((modified, url))
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            logger.warning("sepa_weekly_resource_unavailable url=%s error=%s", url, exc)
+    if not candidates:
+        raise ValueError("No se pudo consultar ningún ZIP semanal oficial de SEPA")
+    published, url = max(candidates)
+    if (datetime.now(timezone.utc) - published).days > 3:
+        raise ValueError("El ZIP semanal SEPA más reciente es demasiado antiguo")
+    return url, published.date()
 
 
 def _download(client, url):
