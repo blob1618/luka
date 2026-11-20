@@ -113,7 +113,9 @@ def test_enabled_ingest_schedules_bootstrap_and_daily_run(monkeypatch):
     daily = next(kwargs for (args, kwargs) in fake.jobs if args[0] is scheduler_module.run_sepa_ingest)
     assert before + timedelta(minutes=1) <= bootstrap["run_date"] <= after + timedelta(minutes=1)
     assert bootstrap["id"] == "sepa_bootstrap"
+    assert bootstrap["misfire_grace_time"] == 300
     assert daily["id"] == "sepa_daily_ingest"
+    assert daily["misfire_grace_time"] == 300
     assert (daily["hour"], daily["minute"]) == (17, 30)
 
 

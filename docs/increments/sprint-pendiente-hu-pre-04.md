@@ -15,6 +15,7 @@
 - Ingesta asíncrona programada del ZIP oficial mediante [servicio](../../app/services/sepa_ingest.py); publica el snapshot al terminar y mantiene el previo si falla. Comparador y caché Redis en [servicio](../../app/services/supermarket_prices.py); integración conversacional en el catálogo de herramientas. [Guía de operación](../supermarket-prices.md).
 - Modelos y [migración versionada](../../supabase/migrations/20261119190000_supermarket_prices.sql) para snapshot y precios. `SEPA_PROVINCES` limita cobertura; `SEPA_INGEST_ENABLED` inicia apagado. Las tablas están presentes en Supabase pero vacías al 2026-11-20; la ingesta productiva sigue pendiente. La tarea corre en un único worker.
 - [PR #127](https://github.com/blob1618/luka/pull/127) agrega la primera carga automática al iniciar sin snapshot y tolera un ZIP interno vacío y filas CSV incompletas encontrados en el archivo oficial del 2026-11-19. El cron diario continúa a las 17:30 de Argentina.
+- La primera ejecución en Render del 2026-11-20 se descartó por un retraso de 2,92 segundos frente al margen por defecto de un segundo. La corrección amplía a cinco minutos el margen de la carga inicial y de la actualización diaria; [evidencia operativa](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-render-bootstrap-omitido.md). La carga productiva aún no se completó.
 - Recuperación: revisar logs `sepa_ingest_failed`, reintentar manualmente; el snapshot anterior sirve sólo dentro de dos días. Sin snapshot confiable, responder indisponibilidad. Redis expira cada comparación en 30 minutos y la clave incluye snapshot y fecha.
 - Riesgos pendientes: medir duración y tamaño de la carga en PostgreSQL productivo y probar WhatsApp real. El catálogo oficial declara CC-BY-4.0 y Luka muestra fuente y fecha. El dato diario no asegura precio de góndola ni existencia de stock.
 
@@ -23,6 +24,7 @@
 | Inicio e implementación local | 2026-11-19 | Commits `eea46dd`, `0011fd2`, `168253c` |
 | Lista para revisión | 2026-11-19 | [PR #123](https://github.com/blob1618/luka/pull/123), borrador |
 | Corrección operativa y piloto con archivo real | 2026-11-20 | [PR #127](https://github.com/blob1618/luka/pull/127) y [registro del piloto](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-piloto-sepa-real.md) |
+| Despliegue inicial y falla del disparo | 2026-11-20 | Merge `b41ac18`, Render desplegó la versión a las 11:06 AR; [registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-render-bootstrap-omitido.md) |
 | Revisión, merge, despliegue, aceptación y cierre Jira | Pendiente | Cada hito requiere registro propio |
 
 ## 3. Verificación técnica y aceptación
@@ -46,7 +48,7 @@ Demo humana: cargar un snapshot real en staging, consultar producto/canasta desd
 
 ## 4. Seguimiento durante el sprint
 
-2026-11-19: implementación y pruebas locales. 2026-11-20: piloto local con archivo diario real y PR para habilitar la carga automática; siguientes pasos: CI, merge, configuración de Render, carga en Supabase y consulta por WhatsApp. Sprint y burndown: Pendiente de identificación; no se contabilizan 8 SP como aceptados.
+2026-11-19: implementación y pruebas locales. 2026-11-20: piloto local con archivo diario real, PR #127 integrado y Render configurado para AR-H. La carga inicial programada se omitió por 2,92 segundos de retraso; se corrige el margen antes de validar Supabase y WhatsApp. Sprint y burndown: Pendiente de identificación; no se contabilizan 8 SP como aceptados.
 
 ## 5. Sprint Review, cierre y replanificación
 
