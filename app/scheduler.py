@@ -812,6 +812,7 @@ def start_scheduler():
             run_date=datetime.now(timezone.utc) + timedelta(minutes=1),
             id="sepa_bootstrap",
             max_instances=1,
+            misfire_grace_time=300,
             replace_existing=True,
         )
         scheduler.add_job(
@@ -823,6 +824,7 @@ def start_scheduler():
             id="sepa_daily_ingest",
             max_instances=1,
             coalesce=True,
+            misfire_grace_time=300,
         )
     scheduler.start()
     print("Scheduler iniciado (recordatorios, recordatorio proactivo cada 5 min y detección diaria 03:00).")
