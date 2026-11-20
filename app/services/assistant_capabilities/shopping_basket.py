@@ -2,15 +2,17 @@
 import asyncio
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import Field
+from sqlalchemy import func
 
 from app.api.whatsapp import WhatsAppReplyButton, WhatsAppReplyButtons
-from app.models.database import SepaPrice, SepaSnapshot, ShoppingBasket, ShoppingBasketItem, SessionLocal
-from app.services.assistant_contracts import FrozenModel
+from app.models.database import SepaPrice, ShoppingBasket, ShoppingBasketItem, SessionLocal
+from app.services.assistant_contracts import FieldRequest, FrozenModel, IncompleteOperation, ReferenceToken
 from app.services.assistant_capabilities.common import data, read_tool, operation_tool, prepared, committed
-from app.services.supermarket_prices import SOURCE, _money, compare_prices
+from app.services.supermarket_prices import SOURCE, _money, _query_rows, _snapshot, compare_prices
 
 
 class BasketSearch(FrozenModel):
@@ -20,14 +22,27 @@ class BasketSearch(FrozenModel):
 
 
 class BasketItemInput(FrozenModel):
-    ean: str = Field(pattern=r"^(?:\d{8}|\d{12}|\d{13})$")
+    product: str = Field(min_length=2, max_length=120, description="Nombre del producto dicho por el usuario, por ejemplo arroz")
     quantity: int = Field(default=1, ge=1, le=20)
+    product_ref: ReferenceToken | None = None
 
 
 class BasketDraft(FrozenModel):
     items: tuple[BasketItemInput, ...] = Field(min_length=1, max_length=10)
-    locality: str = Field(min_length=2, max_length=120)
+    locality: str | None = Field(default=None, min_length=2, max_length=120)
     province: str | None = Field(default=None, max_length=80)
+    mode: Literal["add", "replace"] = "add"
+
+
+class BasketProductChoice(FrozenModel):
+    id: str  # Internal catalog identity; never shown as a user instruction.
+    snapshot_id: str
+    operation_id: str
+    item_index: int
+    query: str
+    locality: str
+    province: str | None = None
+    visible: str
 
 
 class BasketPrepared(FrozenModel):
@@ -54,11 +69,11 @@ def has_basket(owner):
 async def show_basket(context, args):
     basket, items = await asyncio.to_thread(_basket, context.turn.owner_id)
     if not items:
-        return data(context, [], ["Todavía no tenés una canasta guardada. Decime los productos y buscá sus EAN para guardarlos."])
-    lines = [f"Tu canasta para {basket.locality}: " + "; ".join(f"{name} (EAN {ean}, {quantity} unidad/es)" for ean, name, quantity in items)]
+        return data(context, [], ["Todavía no tenés una canasta guardada. Decime qué productos querés agregar y en qué localidad comprás."])
+    lines = [f"Tu canasta para {basket.locality}: " + "; ".join(f"{name} × {quantity}" for _, name, quantity in items)]
     context.outbound.append(WhatsAppReplyButtons(body="¿Querés consultar precios de tu canasta?",
         buttons=(WhatsAppReplyButton(id="supermarket:basket", title="Consultar ofertas"),)))
-    return data(context, [{"ean": ean, "name": name, "quantity": quantity} for ean, name, quantity in items], lines)
+    return data(context, [{"name": name, "quantity": quantity} for _, name, quantity in items], lines)
 
 
 async def compare_basket(context, args):
@@ -80,30 +95,99 @@ async def compare_saved_basket(owner, today):
     return "\n".join(present_basket_offers(result, locality=basket.locality))
 
 
-def _resolve_items(items):
+def _resolve_items(owner, draft, today, choices, operation_id):
     with SessionLocal() as session:
-        snapshot = session.query(SepaSnapshot).filter(SepaSnapshot.status == "ready").order_by(
-            SepaSnapshot.data_date.desc()).first()
+        basket = session.query(ShoppingBasket).filter(ShoppingBasket.usuario_id == owner).first()
+        locality = draft.locality or (basket.locality if basket and draft.mode == "add" else None)
+        province = draft.province or (basket.province if basket and draft.mode == "add" else None)
+        if not locality:
+            return {"status": "needs_locality"}
+        snapshot, reason = _snapshot(session, today)
         if snapshot is None:
-            raise ValueError("No hay catálogo SEPA cargado para verificar los EAN")
-        if len({item.ean for item in items}) != len(items):
-            raise ValueError("La canasta contiene EAN repetidos")
-        names = []
-        for item in items:
-            row = session.query(SepaPrice.description).filter(SepaPrice.snapshot_id == snapshot.id,
-                SepaPrice.is_ean.is_(True), SepaPrice.product_id == item.ean).first()
-            if row is None:
-                raise ValueError(f"No encontré el EAN {item.ean} en el catálogo")
-            names.append({"ean": item.ean, "name": row.description, "quantity": item.quantity})
-        return names
+            return {"status": "unavailable", "reason": reason}
+        resolved = []
+        for index, item in enumerate(draft.items):
+            choice = choices.get(index)
+            if choice:
+                if (choice.snapshot_id != str(snapshot.id) or choice.operation_id != operation_id
+                        or choice.item_index != index or choice.query.casefold() != item.product.casefold()
+                        or choice.locality.casefold() != locality.casefold()
+                        or (choice.province or "").casefold() != (province or "").casefold()):
+                    return {"status": "stale_choice", "index": index}
+                query = session.query(SepaPrice).filter(SepaPrice.snapshot_id == snapshot.id,
+                    SepaPrice.product_id == choice.id, SepaPrice.is_ean.is_(True),
+                    func.lower(SepaPrice.locality) == locality.strip().lower())
+                if province:
+                    query = query.filter(func.lower(SepaPrice.province) == province.strip().lower())
+                row = query.first()
+                if row is None:
+                    return {"status": "stale_choice", "index": index}
+                resolved.append({"ean": choice.id, "name": choice.visible, "quantity": item.quantity})
+                continue
+            _, identities = _query_rows(session, snapshot, name=item.product, locality=locality, province=province)
+            if not identities:
+                return {"status": "missing", "index": index, "product": item.product, "locality": locality}
+            if len(identities) > 1:
+                return {"status": "ambiguous", "index": index, "query": item.product,
+                    "choices": list(identities.items())[:5], "snapshot_id": str(snapshot.id),
+                    "locality": locality, "province": province}
+            ean, name = next(iter(identities.items()))
+            resolved.append({"ean": ean, "name": name, "quantity": item.quantity})
+        existing = []
+        if basket and draft.mode == "add":
+            existing = [{"ean": row.ean, "name": row.product_name, "quantity": row.quantity}
+                for row in session.query(ShoppingBasketItem).filter(ShoppingBasketItem.usuario_id == owner).all()]
+        by_ean = {item["ean"]: item for item in existing}
+        for item in resolved:
+            if item["ean"] in by_ean:
+                by_ean[item["ean"]]["quantity"] += item["quantity"]
+                if by_ean[item["ean"]]["quantity"] > 20:
+                    return {"status": "too_many_units"}
+            else:
+                by_ean[item["ean"]] = item
+        if len(by_ean) > 10:
+            return {"status": "too_many_products"}
+        return {"status": "ok", "items": sorted(by_ean.values(), key=lambda item: (item["name"], item["ean"])),
+            "locality": locality, "province": province}
 
 
 async def prepare_basket(context, operation):
     draft = BasketDraft.model_validate(operation.draft_payload)
-    items = await asyncio.to_thread(_resolve_items, draft.items)
-    return prepared(BasketPrepared(items=tuple(items), locality=draft.locality, province=draft.province),
-        f"Guardaría esta canasta para {draft.locality}: " + "; ".join(
-        f"{item['name']} × {item['quantity']} (EAN {item['ean']})" for item in items))
+    choices = {}
+    for index, item in enumerate(draft.items):
+        if item.product_ref:
+            choices[index] = await context.references.resolve(context.turn, item.product_ref,
+                kind="basket_product", payload_model=BasketProductChoice)
+    result = await asyncio.to_thread(_resolve_items, context.turn.owner_id, draft,
+        context.turn.reference_day, choices, operation.operation_id)
+    if result["status"] == "needs_locality":
+        return IncompleteOperation(missing_fields=(FieldRequest(field="locality", reason="missing",
+            question="¿En qué localidad comprás? Así busco los productos para tu canasta."),))
+    if result["status"] == "unavailable":
+        return IncompleteOperation(missing_fields=(FieldRequest(field="catalog", reason="invalid",
+            question=f"Ahora no puedo buscar productos para la canasta: {result['reason']} Probá más tarde."),))
+    if result["status"] == "missing":
+        return IncompleteOperation(missing_fields=(FieldRequest(field=f"items.{result['index']}.product", reason="missing",
+            question=f"No encontré «{result['product']}» en {result['locality']}. ¿Me decís la marca o presentación?"),))
+    if result["status"] == "stale_choice":
+        return IncompleteOperation(missing_fields=(FieldRequest(field=f"items.{result['index']}.product_ref", reason="stale",
+            question="La lista de productos cambió. Volvé a indicar el producto para buscar opciones actuales."),))
+    if result["status"] in {"too_many_units", "too_many_products"}:
+        raise ValueError("La canasta admite hasta 10 productos y 20 unidades de cada uno")
+    if result["status"] == "ambiguous":
+        refs = []
+        for ean, name in result["choices"]:
+            refs.append(await context.reference("basket_product", BasketProductChoice(id=ean,
+                snapshot_id=result["snapshot_id"], operation_id=operation.operation_id,
+                item_index=result["index"], query=result["query"], locality=result["locality"],
+                province=result["province"], visible=name), expires_at=operation.expires_at))
+        return IncompleteOperation(missing_fields=(FieldRequest(field=f"items.{result['index']}.product_ref",
+            reason="ambiguous", candidate_refs=tuple(refs),
+            question=f"Encontré varias opciones de {result['query']}. ¿Cuál querés agregar? Respondé con el número o decime la marca y presentación para afinar la búsqueda."),))
+    items = result["items"]
+    return prepared(BasketPrepared(items=tuple(items), locality=result["locality"], province=result["province"]),
+        f"Guardaría esta canasta para {result['locality']}: " + "; ".join(
+        f"{item['name']} × {item['quantity']}" for item in items))
 
 
 async def commit_basket(context, operation, confirmation):
@@ -124,9 +208,9 @@ async def commit_basket(context, operation, confirmation):
 
 def shopping_basket_contracts():
     return (
-        read_tool("show_shopping_basket", "Muestra la canasta frecuente guardada y ofrece consultar ofertas. No exige alerta de presupuesto.", FrozenModel, show_basket),
+        read_tool("show_shopping_basket", "Sólo muestra la canasta existente. No usar si el usuario quiere agregar, poner o guardar un producto.", FrozenModel, show_basket),
         read_tool("compare_shopping_basket", "Compara precios de los EAN guardados en la canasta en la localidad indicada. No modifica presupuesto ni movimientos.", BasketSearch, compare_basket),
-        operation_tool("save_shopping_basket", "Reemplaza la canasta frecuente con hasta 10 EAN verificados. Requiere propuesta completa y confirmación posterior.", BasketDraft, BasketPrepared, prepare_basket, commit_basket),
+        operation_tool("save_shopping_basket", "Agrega por NOMBRE productos a la canasta frecuente, o la reemplaza si mode=replace. Para 'quiero poner arroz en mi canasta' usar esta herramienta con product='arroz'; nunca pedir EAN al usuario. Si faltan localidad u opción concreta, el backend pregunta. Requiere propuesta y confirmación posterior.", BasketDraft, BasketPrepared, prepare_basket, commit_basket, schema_version=2),
     )
 
 

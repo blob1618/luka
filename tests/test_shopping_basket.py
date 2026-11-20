@@ -7,11 +7,12 @@ import pytest
 from app.api.whatsapp import WhatsAppReplyButtons
 from app.models.database import LimiteCategoria, SepaPrice, SepaSnapshot, ShoppingBasketItem, Usuario, MovimientoFinanciero
 from app.services.assistant_capabilities.movement_effects import append_budget_threshold_alerts
+from app.services.assistant_capabilities import shopping_basket
 from app.services.assistant_capabilities.shopping_basket import present_basket_offers
 from app.services.budget import BudgetStatus
 from app.services.dispatch_contract import DispatchResult
 from app.services.supermarket_prices import compare_prices
-from tests.test_assistant_pilot import NOW
+from tests.test_assistant_pilot import NOW, PHONE
 from tests import test_assistant_stage5 as scenarios
 
 pytest_plugins = ["tests.test_supermarket_prices"]
@@ -65,13 +66,15 @@ async def test_confirmed_basket_and_button_are_read_only(ingress, accounts):
         session.commit()
         before = session.query(MovimientoFinanciero).count()
     preview = await ingress.tool("save_shopping_basket", {
-        "items": [{"ean": "7790895000997", "quantity": 2}], "locality": "Resistencia", "province": "AR-H"})
+        "items": [{"product": "Coca Cola", "quantity": 2}], "locality": "Resistencia", "province": "AR-H"})
     assert isinstance(preview.reply_message, WhatsAppReplyButtons)
+    assert "EAN" not in preview.reply_text
     with accounts[0]() as session:
         assert session.query(ShoppingBasketItem).count() == 0
     confirmed = await ingress.confirm(preview)
     assert "Guardé 1 productos" in confirmed.reply_text
     shown = await ingress.tool("show_shopping_basket")
+    assert "EAN" not in shown.reply_text
     button = next(message.buttons[0].id for message in shown.followup_messages
                   if isinstance(message, WhatsAppReplyButtons))
     offers = await ingress.send("Consultar ofertas", option_id=button)
@@ -80,6 +83,13 @@ async def test_confirmed_basket_and_button_are_read_only(ingress, accounts):
         assert session.query(MovimientoFinanciero).count() == before
         assert session.query(ShoppingBasketItem).one().quantity == 2
         assert session.query(LimiteCategoria).one().cantidad_max == Decimal("10000")
+    added = await ingress.tool("save_shopping_basket", {"items": [{"product": "Coca Cola"}]},
+        "agregá una Coca Cola a mi canasta")
+    assert "Coca Cola 2,25 L × 3" in added.reply_text
+    await ingress.confirm(added)
+    with accounts[0]() as session:
+        assert session.query(ShoppingBasketItem).one().quantity == 3
+        assert session.query(MovimientoFinanciero).count() == before
 
 
 @pytest.mark.integration
@@ -87,3 +97,73 @@ async def test_confirmed_basket_and_button_are_read_only(ingress, accounts):
 async def test_basket_without_valid_promotion_reports_no_offer(sepa_db):
     result = await compare_prices(["7790895000997"], locality="Resistencia", today=date(2026, 11, 21))
     assert "No hay ofertas verificadas" in present_basket_offers(result, locality="Resistencia")[0]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_arroz_by_name_asks_locality_then_numbered_product_and_saves_after_confirmation(
+        ingress, accounts, monkeypatch):
+    monkeypatch.setattr(shopping_basket, "SessionLocal", accounts[0])
+    day = (NOW - timedelta(hours=3)).date()
+    with accounts[0]() as session:
+        snapshot = SepaSnapshot(data_date=day, source_url="https://example.test/sepa.zip", status="ready")
+        session.add(snapshot)
+        session.flush()
+        for ean, description in [("7790000000001", "Arroz largo fino Marca A 1 kg"),
+                                 ("7790000000002", "Arroz integral Marca B 1 kg")]:
+            session.add(SepaPrice(snapshot_id=snapshot.id, commerce_id="1", flag_id="1", branch_id="1",
+                product_id=ean, report_date=day, is_ean=True, description=description,
+                chain="Coto", branch="Centro", province="AR-H", locality="Resistencia",
+                list_price=Decimal("2000")))
+        session.commit()
+    first = await ingress.tool("save_shopping_basket", {"items": [{"product": "arroz"}]},
+        "quiero poner arroz en mi canasta")
+    assert "¿En qué localidad" in first.reply_text
+    assert "EAN" not in first.reply_text
+    state = await scenarios.assistant_state.read(accounts[1])
+    operation = state["workspace"]["operations"][state["workspace"]["active_operation_id"]]
+    ref = next(ref for ref, record in state["references"].items()
+        if record["kind"] == "operation" and record["payload"]["operation_id"] == operation["operation_id"])
+    second = await ingress.tool("operation_amend", {"ref": ref, "expected_revision": operation["revision"],
+        "changes": {"locality": "Resistencia", "province": "AR-H"}}, "Resistencia, Chaco")
+    assert "1. Arroz" in second.reply_text and "2. Arroz" in second.reply_text
+    assert "EAN" not in second.reply_text
+    selected = await ingress.send("2")
+    assert "¿Confirmás esta propuesta?" in selected.reply_text
+    assert "Arroz" in selected.reply_text and "EAN" not in selected.reply_text
+    with accounts[0]() as session:
+        assert session.query(ShoppingBasketItem).count() == 0
+    await ingress.confirm(selected)
+    with accounts[0]() as session:
+        item = session.query(ShoppingBasketItem).one()
+        assert item.ean == "7790000000001"
+        assert item.quantity == 1
+    shown = await ingress.tool("show_shopping_basket")
+    assert "Arroz largo fino Marca A" in shown.reply_text and "EAN" not in shown.reply_text
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_named_basket_explains_missing_catalog_without_asking_for_codes(ingress, accounts, monkeypatch):
+    monkeypatch.setattr(shopping_basket, "SessionLocal", accounts[0])
+    result = await ingress.tool("save_shopping_basket", {"items": [{"product": "arroz"}],
+        "locality": "Resistencia", "province": "AR-H"}, "quiero poner arroz en mi canasta")
+    assert "No hay precios SEPA cargados" in result.reply_text
+    assert "EAN" not in result.reply_text
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_old_code_based_basket_draft_is_retired_without_blocking_conversation(ingress, accounts):
+    await ingress.tool("save_shopping_basket", {"items": [{"product": "arroz"}]},
+        "quiero poner arroz en mi canasta")
+    state = await scenarios.assistant_state.read(accounts[1])
+    active = state["workspace"]["active_operation_id"]
+    state["workspace"]["operations"][active]["schema_version"] = 1
+    state["workspace"]["operations"][active]["draft_payload"] = {
+        "items": [{"ean": "7790000000001", "quantity": 1}], "locality": "Resistencia", "province": "AR-H"}
+    context = scenarios.assistant_runtime.make_context(accounts[1], PHONE, "next", "hola", NOW, state)
+    workspace = context.operations.workspace(context)
+    assert active not in workspace.operations
+    assert workspace.active_operation_id is None
+    assert "pending_question" not in state

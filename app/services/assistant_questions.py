@@ -47,6 +47,14 @@ async def stage_question(context, operation, view):
             options.append(QuestionOption(ref=ref, label=entity.label))
         if options:
             context.terminal += '\n' + '\n'.join(f'{i}. {option.label}' for i, option in enumerate(options, 1))
+    elif field.field.startswith('items.') and field.field.endswith('.product_ref'):
+        from app.services.assistant_capabilities.shopping_basket import BasketProductChoice
+        for ref in field.candidate_refs:
+            product = await context.references.resolve(context.turn, ref, kind='basket_product',
+                payload_model=BasketProductChoice)
+            options.append(QuestionOption(ref=ref, label=product.visible))
+        if options:
+            context.terminal += '\n' + '\n'.join(f'{i}. {option.label}' for i, option in enumerate(options, 1))
     delivery = QuestionDelivery(operation_ref=view.ref, revision=operation.revision,
         field=field.field, options=tuple(options), source_message_id=context.turn.inbound_message_id,
         expires_at=operation.expires_at, text=context.terminal)
@@ -128,7 +136,8 @@ async def select_answer(context):
     if context.turn.source_kind != 'text':
         return None
     question = await current_question(context)
-    if question is None or question.field != 'category_ref':
+    if question is None or (question.field != 'category_ref' and
+            not (question.field.startswith('items.') and question.field.endswith('.product_ref'))):
         return None
     text = folded(context.turn.source_text)
     matches = [option for i, option in enumerate(question.options, 1)
@@ -136,12 +145,41 @@ async def select_answer(context):
     if len(matches) != 1:
         return None
     try:
+        if question.field.startswith('items.'):
+            return await answer_basket_product(context, BasketProductAnswer(
+                operation_ref=question.operation_ref, expected_revision=question.revision,
+                product_ref=matches[0].ref))
         return await answer_category(context, CategoryAnswer(operation_ref=question.operation_ref,
             expected_revision=question.revision, category_ref=matches[0].ref))
     except ValueError:
         # Stale domain options must be presented again, never silently reassigned.
         context.terminal = 'Esa categoría cambió. Retomá el comprobante para revisar las opciones vigentes.'
         return False
+
+
+class BasketProductAnswer(FrozenModel):
+    operation_ref: ReferenceToken
+    expected_revision: int = Field(ge=1)
+    product_ref: ReferenceToken
+
+
+async def answer_basket_product(context, args):
+    if not context.writable:
+        raise ValueError('No hay contexto fiable para completar el borrador')
+    question = await current_question(context)
+    if (question is None or not question.field.startswith('items.') or
+            not question.field.endswith('.product_ref') or
+            question.operation_ref != args.operation_ref or question.revision != args.expected_revision or
+            question.source_message_id == context.turn.inbound_message_id or
+            args.product_ref not in {option.ref for option in question.options}):
+        raise ValueError('La selección de producto cambió o no fue entregada; retomá la canasta')
+    operation = await context.operations.resolve(context, question.operation_ref, question.revision)
+    index = int(question.field.split('.')[1])
+    items = list(operation.draft_payload['items'])
+    items[index] = {**items[index], 'product_ref': args.product_ref}
+    view = await context.operations.amend(context, question.operation_ref,
+        expected_revision=question.revision, changes={'items': items})
+    return OperationResult(operation=view)
 
 
 class StatusQuery(FrozenModel):
@@ -179,6 +217,10 @@ async def operation_status(context, args):
 
 def question_contracts():
     return (
+        ToolContract('answer_basket_product_question',
+            'Elige una opción de producto por número o referencia de la pregunta entregada para agregarla a la canasta. Nunca pide EAN ni confirma el guardado.',
+            BasketProductAnswer, None, answer_basket_product,
+            ToolPolicy('control', facts='none', interrupt_active_operation=False, ends_turn=True)),
         ToolContract('answer_category_question',
             'Contesta la pregunta de categoría entregada (pending_question) del comprobante. '
             'Usá category_ref para una opción existente o new_name para proponer una categoría hija; '

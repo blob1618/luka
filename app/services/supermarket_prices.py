@@ -69,7 +69,8 @@ def _query_rows(session, snapshot, *, ean=None, name=None, locality, province=No
                 base = base.filter(SepaPrice.description.ilike(f"%{word}%"))
     if name:
         matches = base.filter(SepaPrice.is_ean.is_(True)).with_entities(
-            SepaPrice.product_id, func.min(SepaPrice.description)).group_by(SepaPrice.product_id).limit(6).all()
+            SepaPrice.product_id, func.min(SepaPrice.description)).group_by(SepaPrice.product_id).order_by(
+                func.min(SepaPrice.description), SepaPrice.product_id).limit(6).all()
         identities = {key: description for key, description in matches}
         if len(identities) != 1:
             return [], identities

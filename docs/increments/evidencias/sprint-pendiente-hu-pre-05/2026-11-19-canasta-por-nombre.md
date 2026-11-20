@@ -1,0 +1,7 @@
+# Seguimiento de HU-PRE-05: canasta por nombre
+
+- Fecha: 2026-11-19. Rama: `codex/stk-263-canasta-por-nombre`, commit `e9769e9` (implementación inicial del ajuste).
+- Hallazgo de WhatsApp real comunicado por la persona usuaria: «quiero poner arroz en mi canasta» obtuvo una respuesta de canasta vacía que le pedía buscar EAN y aclarar la operación. Otro intento de guardar por EAN informó que no había catálogo SEPA cargado. Estos mensajes prueban el problema de experiencia y la falta de datos en ese entorno; no prueban que el ajuste nuevo esté desplegado.
+- Corrección: el borrador de canasta acepta nombres, pide localidad si falta, busca en SEPA para esa zona y ofrece opciones numeradas cuando hay varias presentaciones. El EAN queda interno. Agregar conserva la canasta previa. La propuesta y la confirmación siguen separadas. Los borradores antiguos basados en EAN se retiran al leer el contexto.
+- Verificación local: `ruff check .` sin hallazgos; `python -m pytest -q` con 1.361 pruebas aprobadas y dos avisos de dependencias. El test del flujo «arroz» usó un catálogo contractual pequeño y entrega sintética: localidad → opciones → elección → propuesta → confirmación → persistencia. También se verificaron la suma de unidades a una canasta existente, la ausencia de EAN en las respuestas y el mensaje de catálogo faltante.
+- Pendiente: revisión de PR #125, CI, despliegue, primera carga real de SEPA en el entorno de prueba, selección de productos efectivamente presentes y validación humana por WhatsApp con fecha y enlace.
