@@ -833,12 +833,12 @@ def start_scheduler():
 async def run_sepa_ingest():
     try:
         await asyncio.to_thread(ingest_latest)
-    except Exception as exc:
-        logger.error("sepa_daily_ingest_failed error=%s", type(exc).__name__)
+    except Exception:
+        logger.exception("sepa_daily_ingest_failed")
 
 
 async def run_sepa_bootstrap():
     try:
         await asyncio.to_thread(ingest_if_missing)
-    except Exception as exc:
-        logger.error("sepa_bootstrap_failed error=%s", type(exc).__name__)
+    except Exception:
+        logger.exception("sepa_bootstrap_failed")
