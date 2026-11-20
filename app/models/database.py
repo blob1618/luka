@@ -778,3 +778,75 @@ class CronJobClaim(Base):
     job_name = Column(String, primary_key=True)
     fecha_ejecucion = Column(Date, primary_key=True)
     ejecutado_en = Column(DateTime(timezone=True), nullable=False, default=func.now())
+
+
+class SepaSnapshot(Base):
+    __tablename__ = "sepa_snapshot"
+
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    data_date = Column(Date, nullable=False)
+    source_url = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="loading")
+    row_count = Column(Integer, nullable=False, default=0)
+    rejected_count = Column(Integer, nullable=False, default=0)
+    started_at = Column(DateTime(timezone=True), nullable=False, default=func.now())
+    loaded_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('loading', 'ready', 'failed')", name="sepa_snapshot_status_check"),
+        UniqueConstraint("data_date", name="sepa_snapshot_data_date_key"),
+        Index("sepa_snapshot_ready_date_idx", "status", "data_date"),
+    )
+
+
+class SepaPrice(Base):
+    __tablename__ = "sepa_price"
+
+    snapshot_id = Column(Uuid(as_uuid=True), ForeignKey("sepa_snapshot.id", ondelete="CASCADE"), primary_key=True)
+    commerce_id = Column(String, primary_key=True)
+    flag_id = Column(String, primary_key=True)
+    branch_id = Column(String, primary_key=True)
+    product_id = Column(String, primary_key=True)
+    report_date = Column(Date, nullable=False)
+    is_ean = Column(Boolean, nullable=False)
+    description = Column(String, nullable=False)
+    brand = Column(String, nullable=True)
+    quantity = Column(Numeric(18, 4), nullable=True)
+    unit = Column(String, nullable=True)
+    chain = Column(String, nullable=False)
+    branch = Column(String, nullable=False)
+    province = Column(String, nullable=True)
+    locality = Column(String, nullable=True)
+    latitude = Column(Numeric(10, 6), nullable=True)
+    longitude = Column(Numeric(10, 6), nullable=True)
+    list_price = Column(Numeric(18, 2), nullable=False)
+    promo1_price = Column(Numeric(18, 2), nullable=True)
+    promo1_text = Column(String, nullable=True)
+    promo2_price = Column(Numeric(18, 2), nullable=True)
+    promo2_text = Column(String, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("list_price > 0", name="sepa_price_list_positive_check"),
+        Index("sepa_price_ean_idx", "snapshot_id", "product_id", "is_ean"),
+        Index("sepa_price_description_idx", "snapshot_id", "description"),
+        Index("sepa_price_zone_idx", "snapshot_id", "province", "locality"),
+    )
+
+
+class ShoppingBasket(Base):
+    __tablename__ = "shopping_basket"
+
+    usuario_id = Column(Uuid(as_uuid=True), ForeignKey("usuario.id", ondelete="CASCADE"), primary_key=True)
+    locality = Column(String, nullable=False)
+    province = Column(String, nullable=True)
+
+
+class ShoppingBasketItem(Base):
+    __tablename__ = "shopping_basket_item"
+
+    usuario_id = Column(Uuid(as_uuid=True), ForeignKey("shopping_basket.usuario_id", ondelete="CASCADE"), primary_key=True)
+    ean = Column(String(13), primary_key=True)
+    product_name = Column(String, nullable=False)
+    quantity = Column(Integer, nullable=False, default=1)
+
+    __table_args__ = (CheckConstraint("quantity > 0", name="shopping_basket_quantity_positive_check"),)
