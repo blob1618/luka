@@ -19,6 +19,7 @@
 - Tras el despliegue de esa corrección, la carga inicial sí comenzó, pero falló al solicitar el catálogo con `HTTPStatusError`. El registro sólo mostró el tipo de excepción; se añade el detalle de la respuesta HTTP para identificar y corregir la causa. [Registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-render-http-error.md).
 - El diagnóstico del 2026-11-20 confirmó HTTP 403 del catálogo oficial desde Render, mientras que la misma URL devolvió HTTP 200 desde el entorno local. Se prueba un `User-Agent` que identifica a Luka para comprobar si el rechazo se debe a la identificación del cliente; no se asume que resuelva un bloqueo de la red de Render. [Registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-render-403.md).
 - El `User-Agent` tampoco resolvió el 403. Se agrega una ruta de lectura de las cabeceras de los siete ZIP semanales oficiales para elegir el más reciente cuando el API de metadatos responde 403, con límite de antigüedad y tamaño; la descarga real desde Render sigue pendiente de comprobarse. [Evidencia](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-recursos-semanales.md).
+- El despliegue `347d212` comprobó que Render recibe 403 también de los siete ZIP oficiales. [PR #132](https://github.com/blob1618/luka/pull/132) agrega un espejo automático en una release pública del proyecto, actualizado desde GitHub Actions, con fecha oficial y SHA-256 verificado antes de cargar. La publicación y la ingesta productiva aún deben comprobarse. [Evidencia del bloqueo](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-render-zip-403.md).
 - Recuperación: revisar logs `sepa_ingest_failed`, reintentar manualmente; el snapshot anterior sirve sólo dentro de dos días. Sin snapshot confiable, responder indisponibilidad. Redis expira cada comparación en 30 minutos y la clave incluye snapshot y fecha.
 - Riesgos pendientes: medir duración y tamaño de la carga en PostgreSQL productivo y probar WhatsApp real. El catálogo oficial declara CC-BY-4.0 y Luka muestra fuente y fecha. El dato diario no asegura precio de góndola ni existencia de stock.
 
@@ -31,6 +32,8 @@
 | Ejecución de la carga y error HTTP | 2026-11-20 | Merge `ade009f`, Render desplegó la versión y ejecutó el job a las 11:14 AR; [registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-render-http-error.md) |
 | Diagnóstico de la respuesta HTTP | 2026-11-20 | Merge `dcaa823`, Render confirmó 403 a las 11:24 AR; [registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-render-403.md) |
 | Identificación del cliente y ruta alternativa | 2026-11-20 | Merge `e295769`, Render mantuvo 403 a las 11:33 AR; [registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-recursos-semanales.md) |
+| Comprobación de los siete ZIP oficiales | 2026-11-20 | Merge `347d212`, Render recibió 403 de los siete a las 11:43 AR; [registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-render-zip-403.md) |
+| Espejo verificable | 2026-11-20 | [PR #132](https://github.com/blob1618/luka/pull/132); lint y pruebas locales aprobadas, publicación y producción pendientes |
 | Revisión, merge, despliegue, aceptación y cierre Jira | Pendiente | Cada hito requiere registro propio |
 
 ## 3. Verificación técnica y aceptación
@@ -41,6 +44,7 @@
 | Backend, migraciones y trazabilidad en CI | 2026-11-19, GitHub Actions, `8243074` | [CI Pipeline aprobado](https://github.com/blob1618/luka/actions/runs/44648812473) y [Evidencia del incremento aprobada](https://github.com/blob1618/luka/actions/runs/44648808123). No acredita entorno productivo ni WhatsApp real. |
 | Ingesta del ZIP real y búsqueda por nombre | 2026-11-20, SQLite local aislada, PR #127 | 43.142 precios AR-H publicados; «rex traviata» en Resistencia ofrece dos presentaciones. [Registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-piloto-sepa-real.md). No acredita PostgreSQL productivo ni WhatsApp real. |
 | Lint y suite completa de la corrección | 2026-11-20, local, `0e53e13` | `ruff check .` sin hallazgos; `python -m pytest -v`: 1.363 aprobadas y 2 warnings de dependencias. [Registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-piloto-sepa-real.md). |
+| Espejo y verificación de integridad | 2026-11-20, local, `7fe91a6` | `ruff check .` sin hallazgos; `python -m pytest -q -m unit`: 201 aprobadas; `python -m pytest -v`: 1.368 aprobadas y 2 warnings de dependencias. PR #132. |
 
 | Criterio de [STK-262](https://philippem.atlassian.net/browse/STK-262) | Evidencia técnica | Conclusión humana |
 | --- | --- | --- |
@@ -54,7 +58,7 @@ Demo humana: cargar un snapshot real en staging, consultar producto/canasta desd
 
 ## 4. Seguimiento durante el sprint
 
-2026-11-19: implementación y pruebas locales. 2026-11-20: piloto local con archivo diario real, PR #127 integrado y Render configurado para AR-H. La primera carga se omitió por 2,92 segundos de retraso; PR #128 corrigió el margen y el job arrancó, pero el API de metadatos devolvió HTTP 403 aun con un `User-Agent` identificable. Se prueba la ruta directa a los recursos ZIP; siguen pendientes Supabase y WhatsApp. Sprint y burndown: Pendiente de identificación; no se contabilizan 8 SP como aceptados.
+2026-11-19: implementación y pruebas locales. 2026-11-20: piloto local con archivo diario real, PR #127 integrado y Render configurado para AR-H. La primera carga se omitió por 2,92 segundos de retraso; PR #128 corrigió el margen y el job arrancó, pero el API de metadatos y luego los siete ZIP oficiales devolvieron HTTP 403 desde Render. PR #132 prepara un espejo automático verificable; aún falta ejecutarlo y cargar Supabase. WhatsApp real, Sprint y burndown siguen pendientes; no se contabilizan 8 SP como aceptados.
 
 ## 5. Sprint Review, cierre y replanificación
 

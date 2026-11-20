@@ -111,10 +111,93 @@ def test_catalog_403_uses_freshest_official_weekly_zip_without_downloading(monke
         return httpx.Response(200, headers={"Last-Modified": stamp})
 
     with httpx.Client(transport=httpx.MockTransport(answer)) as client:
-        url, data_date = sepa_ingest._source_resource(client)
+        url, data_date, checksum = sepa_ingest._source_resource(client)
     assert url.endswith("/thu/download/sepa_jueves.zip")
     assert data_date == date(2026, 11, 19)
+    assert checksum is None
     assert [method for method, _ in requests] == ["GET", "HEAD", "HEAD"]
+
+
+@pytest.mark.unit
+def test_official_403_uses_dated_mirror_and_checks_archive(monkeypatch):
+    import hashlib
+
+    monkeypatch.setattr(sepa_ingest, "WEEKLY_RESOURCES", (("thu", "jueves"),))
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 20, tzinfo=tz)
+
+    monkeypatch.setattr(sepa_ingest, "datetime", FrozenDateTime)
+    archive = b"official archive"
+    digest = hashlib.sha256(archive).hexdigest()
+    requests = []
+
+    def answer(request):
+        requests.append((request.method, str(request.url)))
+        if str(request.url).endswith("sepa-latest.json"):
+            return httpx.Response(200, json={"data_date": "2026-11-19",
+                "source_url": "https://datos.produccion.gob.ar/source.zip",
+                "sha256": digest, "size": len(archive)})
+        if str(request.url).endswith("sepa-latest.zip"):
+            return httpx.Response(200, content=archive)
+        return httpx.Response(403)
+
+    with httpx.Client(transport=httpx.MockTransport(answer)) as client:
+        url, data_date, checksum = sepa_ingest._source_resource(client)
+        with sepa_ingest._download(client, url, checksum) as source:
+            assert source.read() == archive
+        with pytest.raises(ValueError, match="no coincide"):
+            sepa_ingest._download(client, url, "0" * 64)
+    assert data_date == date(2026, 11, 19)
+    assert requests[0][0] == "GET"
+    assert requests[1][0] == "HEAD"
+    assert requests[2][1].endswith("sepa-latest.json")
+
+
+@pytest.mark.unit
+def test_mirror_rejects_stale_manifest(monkeypatch):
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 20, tzinfo=tz)
+
+    monkeypatch.setattr(sepa_ingest, "datetime", FrozenDateTime)
+    with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={
+            "data_date": "2026-11-12", "source_url": "https://datos.produccion.gob.ar/source.zip",
+            "sha256": "a" * 64, "size": 123}))) as client:
+        with pytest.raises(ValueError, match="demasiado antiguo"):
+            sepa_ingest._source_from_mirror(client)
+
+
+@pytest.mark.unit
+def test_mirror_publisher_records_official_date_and_digest(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    from scripts.publish_sepa_mirror import prepare
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 20, tzinfo=tz)
+
+    monkeypatch.setattr(sepa_ingest, "datetime", FrozenDateTime)
+    archive = b"official archive"
+    source_url = "https://datos.produccion.gob.ar/daily.zip"
+
+    def answer(request):
+        if str(request.url) == source_url:
+            return httpx.Response(200, content=archive)
+        return httpx.Response(200, json={"result": {"resources": [{
+            "url": source_url, "last_modified": "2026-11-19T16:19:56Z",
+            "size": len(archive)}]}})
+
+    with httpx.Client(transport=httpx.MockTransport(answer)) as client:
+        manifest = prepare(tmp_path, client=client)
+    assert manifest == {"data_date": "2026-11-19", "source_url": source_url,
+        "sha256": hashlib.sha256(archive).hexdigest(), "size": len(archive)}
+    assert (tmp_path / "sepa-latest.zip").read_bytes() == archive
+    assert json.loads((tmp_path / "sepa-latest.json").read_text()) == manifest
 
 
 @pytest.mark.unit
