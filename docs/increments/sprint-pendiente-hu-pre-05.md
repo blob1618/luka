@@ -18,7 +18,7 @@
 
 | Hito | Fecha | Evidencia |
 | --- | --- | --- |
-| Inicio e implementación local | 2026-11-19 | Commit `b31c47b` |
+| Inicio e implementación local | 2026-11-19 | Commit `93106a0` |
 | Lista para revisión | 2026-11-19 | [PR #124](https://github.com/blob1618/luka/pull/124), borrador |
 | Revisión, merge, despliegue, aceptación y cierre Jira | Pendiente | Cada hito requiere registro propio |
 
@@ -26,7 +26,7 @@
 
 | Prueba | Fecha, ambiente y versión | Resultado y evidencia |
 | --- | --- | --- |
-| Lint y suite completa de la rama combinada | 2026-11-19, local, versión funcional `e1fda3a` antes del rebase documental | `ruff check .` sin hallazgos; `python -m pytest -v`: 1.357 passed, 2 warnings de dependencias. [Registro](evidencias/sprint-pendiente-hu-pre-05/2026-11-19-verificacion-local.md). CI de PR #124 pendiente de concluir. |
+| Lint y suite completa de la rama combinada | 2026-11-19, local, `a6e58ce` | `ruff check .` sin hallazgos; `python -m pytest -v`: 1.358 passed, 2 warnings de dependencias. [Registro](evidencias/sprint-pendiente-hu-pre-05/2026-11-19-verificacion-local.md). CI de PR #124: backend aprobado; migraciones en reintento por colisión del puerto de Supabase. |
 
 | Criterio de [STK-263](https://philippem.atlassian.net/browse/STK-263) | Evidencia técnica | Conclusión humana |
 | --- | --- | --- |
