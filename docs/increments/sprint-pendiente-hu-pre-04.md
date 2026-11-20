@@ -7,20 +7,22 @@
 - Historia y valor: [STK-262 / HU-PRE-04](https://philippem.atlassian.net/browse/STK-262), comparar precios y ofertas de un producto o canasta antes de comprar. Estimación acordada: 8 SP, sin puntos adicionales para subtareas.
 - Autor de implementación: blob1618. Persona designada para validar, release, sprint, Sprint Goal, capacidad, priorización y fecha de Planning: Pendiente de confirmar en la planificación. No se infieren del estado de Jira.
 - Fuente y dependencia: [STK-264](https://philippem.atlassian.net/browse/STK-264) seleccionó el ZIP minorista diario de SEPA/Precios Claros, sin API oficial por producto verificada. El CA4 originalmente habla de varias APIs; con esta fuente se verifica degradación por carga fallida, snapshot viejo o cobertura parcial.
-- Estado: En curso en Jira desde 2026-11-19. Implementación en [PR #123](https://github.com/blob1618/luka/pull/123), aún sin aceptación humana.
+- Estado: En curso en Jira desde 2026-11-19. Implementación inicial en [PR #123](https://github.com/blob1618/luka/pull/123) y primera carga automática en [PR #127](https://github.com/blob1618/luka/pull/127), aún sin aceptación humana.
 
 ## 2. Implementación y operación
 
 - Consulta de producto por nombre y de canasta por lista. Una coincidencia ambigua pide marca o presentación, sin exigir códigos al usuario. Se muestran comercio, sucursal, localidad, fecha del dato, precio y promoción general verificable. El ahorro entre sucursales sólo compara el mismo producto, presentación y fecha. Faltantes e indisponibilidad son explícitos. La consulta no registra gastos.
 - Ingesta asíncrona programada del ZIP oficial mediante [servicio](../../app/services/sepa_ingest.py); publica el snapshot al terminar y mantiene el previo si falla. Comparador y caché Redis en [servicio](../../app/services/supermarket_prices.py); integración conversacional en el catálogo de herramientas. [Guía de operación](../supermarket-prices.md).
-- Modelos y [migración versionada](../../supabase/migrations/20261119190000_supermarket_prices.sql) para snapshot y precios. `SEPA_PROVINCES` limita cobertura; `SEPA_INGEST_ENABLED` inicia apagado. No se ejecutó migración ni ingesta en Supabase/Render. La tarea corre en un único worker.
+- Modelos y [migración versionada](../../supabase/migrations/20261119190000_supermarket_prices.sql) para snapshot y precios. `SEPA_PROVINCES` limita cobertura; `SEPA_INGEST_ENABLED` inicia apagado. Las tablas están presentes en Supabase pero vacías al 2026-11-20; la ingesta productiva sigue pendiente. La tarea corre en un único worker.
+- [PR #127](https://github.com/blob1618/luka/pull/127) agrega la primera carga automática al iniciar sin snapshot y tolera un ZIP interno vacío y filas CSV incompletas encontrados en el archivo oficial del 2026-11-19. El cron diario continúa a las 17:30 de Argentina.
 - Recuperación: revisar logs `sepa_ingest_failed`, reintentar manualmente; el snapshot anterior sirve sólo dentro de dos días. Sin snapshot confiable, responder indisponibilidad. Redis expira cada comparación en 30 minutos y la clave incluye snapshot y fecha.
-- Riesgos pendientes: medir capacidad de almacenamiento y duración de carga con una provincia piloto, confirmar licencia/atribución y probar WhatsApp real. El dato diario no asegura precio de góndola ni existencia de stock.
+- Riesgos pendientes: medir duración y tamaño de la carga en PostgreSQL productivo y probar WhatsApp real. El catálogo oficial declara CC-BY-4.0 y Luka muestra fuente y fecha. El dato diario no asegura precio de góndola ni existencia de stock.
 
 | Hito | Fecha | Evidencia |
 | --- | --- | --- |
 | Inicio e implementación local | 2026-11-19 | Commits `eea46dd`, `0011fd2`, `168253c` |
 | Lista para revisión | 2026-11-19 | [PR #123](https://github.com/blob1618/luka/pull/123), borrador |
+| Corrección operativa y piloto con archivo real | 2026-11-20 | [PR #127](https://github.com/blob1618/luka/pull/127) y [registro del piloto](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-piloto-sepa-real.md) |
 | Revisión, merge, despliegue, aceptación y cierre Jira | Pendiente | Cada hito requiere registro propio |
 
 ## 3. Verificación técnica y aceptación
@@ -29,6 +31,8 @@
 | --- | --- | --- |
 | Lint y suite completa de la rama combinada con HU-PRE-05 | 2026-11-19, local, `a6e58ce` | `ruff check .` sin hallazgos; `python -m pytest -v`: 1.358 passed y 2 warnings de dependencias. [Registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-19-verificacion-local.md). |
 | Backend, migraciones y trazabilidad en CI | 2026-11-19, GitHub Actions, `8243074` | [CI Pipeline aprobado](https://github.com/blob1618/luka/actions/runs/44648812473) y [Evidencia del incremento aprobada](https://github.com/blob1618/luka/actions/runs/44648808123). No acredita entorno productivo ni WhatsApp real. |
+| Ingesta del ZIP real y búsqueda por nombre | 2026-11-20, SQLite local aislada, PR #127 | 43.142 precios AR-H publicados; «rex traviata» en Resistencia ofrece dos presentaciones. [Registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-piloto-sepa-real.md). No acredita PostgreSQL productivo ni WhatsApp real. |
+| Lint y suite completa de la corrección | 2026-11-20, local, `0e53e13` | `ruff check .` sin hallazgos; `python -m pytest -v`: 1.363 aprobadas y 2 warnings de dependencias. [Registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-piloto-sepa-real.md). |
 
 | Criterio de [STK-262](https://philippem.atlassian.net/browse/STK-262) | Evidencia técnica | Conclusión humana |
 | --- | --- | --- |
@@ -42,7 +46,7 @@ Demo humana: cargar un snapshot real en staging, consultar producto/canasta desd
 
 ## 4. Seguimiento durante el sprint
 
-2026-11-19: implementación y pruebas locales; siguiente paso: revisar CI y capacidad de una ingesta real. Sprint y burndown: Pendiente de identificación; no se contabilizan 8 SP como aceptados.
+2026-11-19: implementación y pruebas locales. 2026-11-20: piloto local con archivo diario real y PR para habilitar la carga automática; siguientes pasos: CI, merge, configuración de Render, carga en Supabase y consulta por WhatsApp. Sprint y burndown: Pendiente de identificación; no se contabilizan 8 SP como aceptados.
 
 ## 5. Sprint Review, cierre y replanificación
 
