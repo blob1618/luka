@@ -52,7 +52,7 @@ async def stage_question(context, operation, view):
         for ref in field.candidate_refs:
             product = await context.references.resolve(context.turn, ref, kind='basket_product',
                 payload_model=BasketProductChoice)
-            options.append(QuestionOption(ref=ref, label=product.visible))
+            options.append(QuestionOption(ref=ref, label=product.label or product.visible))
         if options:
             context.terminal += '\n' + '\n'.join(f'{i}. {option.label}' for i, option in enumerate(options, 1))
     delivery = QuestionDelivery(operation_ref=view.ref, revision=operation.revision,

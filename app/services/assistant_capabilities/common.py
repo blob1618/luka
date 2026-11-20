@@ -106,12 +106,14 @@ class DomainHandler:
     commit: object
 
 
-def operation_tool(name, description, draft_model, prepared_model, prepare, commit, *, read=False, schema_version=1):
+def operation_tool(name, description, draft_model, prepared_model, prepare, commit, *,
+        read=False, schema_version=1, timeout_seconds=15):
     contract = OperationContract(name, schema_version, draft_model, prepared_model, DomainHandler(prepare, commit), not read)
     async def open_operation(context, args):
         return OperationResult(operation=await context.operations.open(context, operation_key=name, draft=args))
     return ToolContract(name, description, draft_model, None, open_operation,
-        ToolPolicy('read' if read else 'prepare', facts='optional', interrupt_active_operation=False, ends_turn=True), contract)
+        ToolPolicy('read' if read else 'prepare', timeout_seconds=timeout_seconds, facts='optional',
+            interrupt_active_operation=False, ends_turn=True), contract)
 
 
 def read_tool(name, description, model, handler, *, terminal=False):

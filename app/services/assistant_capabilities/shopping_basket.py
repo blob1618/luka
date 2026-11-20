@@ -2,6 +2,7 @@
 import asyncio
 from datetime import date
 from decimal import Decimal
+import json
 from typing import Literal
 from uuid import UUID
 
@@ -12,7 +13,8 @@ from app.api.whatsapp import WhatsAppReplyButton, WhatsAppReplyButtons
 from app.models.database import SepaPrice, ShoppingBasket, ShoppingBasketItem, SessionLocal
 from app.services.assistant_contracts import FieldRequest, FrozenModel, IncompleteOperation, ReferenceToken
 from app.services.assistant_capabilities.common import data, read_tool, operation_tool, prepared, committed
-from app.services.supermarket_prices import SOURCE, _money, _query_rows, _snapshot, compare_prices, normalize_province
+from app.services.llm_providers import create_provider
+from app.services.supermarket_prices import SOURCE, _money, _snapshot, basket_candidates, compare_prices, normalize_province
 
 
 class BasketSearch(FrozenModel):
@@ -43,6 +45,7 @@ class BasketProductChoice(FrozenModel):
     locality: str
     province: str | None = None
     visible: str
+    label: str | None = None
 
 
 class BasketPrepared(FrozenModel):
@@ -64,6 +67,34 @@ def _basket(owner):
 def has_basket(owner):
     with SessionLocal() as session:
         return session.query(ShoppingBasketItem.ean).filter(ShoppingBasketItem.usuario_id == UUID(str(owner))).first() is not None
+
+
+async def _semantic_candidates(query, request, candidates):
+    """Use the existing LLM to select catalog names, never prices or product IDs."""
+    prompt = ("Sos un filtro de relevancia de productos de supermercado. Devolvé sólo JSON con "
+        "matching_indices (hasta cinco números) y uncertain (booleano). Identificá el tipo de "
+        "producto que la persona quiso comprar. Un ingrediente o alimento pedido por su nombre "
+        "sin más detalles se refiere al producto base, no a platos, snacks, postres, cosméticos "
+        "u otros derivados que lo contienen o lo usan como sabor. Si el pedido no permite "
+        "distinguir el tipo con seguridad, devolvé uncertain=true y matching_indices=[]. "
+        "Si ninguno de los nombres de esta lista corresponde, devolvé uncertain=false y "
+        "matching_indices=[]. "
+        "Elegí sólo números de la lista y mantené el orden de precio recibido. No inventes productos.")
+    payload = {"pedido": request, "producto": query,
+        "candidatos": [{"numero": index, "nombre": item["name"]}
+            for index, item in enumerate(candidates, 1)]}
+    try:
+        response = await asyncio.wait_for(create_provider().generate_json(
+            prompt, json.dumps(payload, ensure_ascii=False)), timeout=15)
+    except Exception:
+        return None
+    indices = response.get("matching_indices") if isinstance(response, dict) else None
+    if not isinstance(response, dict) or response.get("uncertain") is not False or not isinstance(indices, list):
+        return None
+    if any(not isinstance(index, int) or isinstance(index, bool) or not 1 <= index <= len(candidates)
+            for index in indices):
+        return None
+    return [candidates[index - 1] for index in sorted(set(indices))[:5]]
 
 
 async def show_basket(context, args):
@@ -124,15 +155,14 @@ def _resolve_items(owner, draft, today, choices, operation_id):
                     return {"status": "stale_choice", "index": index}
                 resolved.append({"ean": choice.id, "name": choice.visible, "quantity": item.quantity})
                 continue
-            _, identities = _query_rows(session, snapshot, name=item.product, locality=locality, province=province)
-            if not identities:
+            candidates = basket_candidates(session, snapshot, name=item.product,
+                locality=locality, province=province, today=today)
+            if not candidates:
                 return {"status": "missing", "index": index, "product": item.product, "locality": locality}
-            if len(identities) > 1:
-                return {"status": "ambiguous", "index": index, "query": item.product,
-                    "choices": list(identities.items())[:5], "snapshot_id": str(snapshot.id),
-                    "locality": locality, "province": province}
-            ean, name = next(iter(identities.items()))
-            resolved.append({"ean": ean, "name": name, "quantity": item.quantity})
+            return {"status": "ambiguous", "index": index, "query": item.product,
+                "choices": candidates, "snapshot_id": str(snapshot.id),
+                "date": snapshot.data_date,
+                "locality": locality, "province": province}
         existing = []
         if basket and draft.mode == "add":
             existing = [{"ean": row.ean, "name": row.product_name, "quantity": row.quantity}
@@ -160,6 +190,18 @@ async def prepare_basket(context, operation):
                 kind="basket_product", payload_model=BasketProductChoice)
     result = await asyncio.to_thread(_resolve_items, context.turn.owner_id, draft,
         context.turn.reference_day, choices, operation.operation_id)
+    while result["status"] == "ambiguous" and len(result["choices"]) == 1:
+        selected = await _semantic_candidates(result["query"], operation.original_text, result["choices"])
+        if not selected:
+            result["choices"] = []
+            break
+        candidate = selected[0]
+        choices[result["index"]] = BasketProductChoice(id=candidate["ean"],
+            snapshot_id=result["snapshot_id"], operation_id=operation.operation_id,
+            item_index=result["index"], query=result["query"], locality=result["locality"],
+            province=result["province"], visible=candidate["name"])
+        result = await asyncio.to_thread(_resolve_items, context.turn.owner_id, draft,
+            context.turn.reference_day, choices, operation.operation_id)
     if result["status"] == "needs_locality":
         return IncompleteOperation(missing_fields=(FieldRequest(field="locality", reason="missing",
             question="¿En qué localidad comprás? Así busco los productos para tu canasta."),))
@@ -175,15 +217,40 @@ async def prepare_basket(context, operation):
     if result["status"] in {"too_many_units", "too_many_products"}:
         raise ValueError("La canasta admite hasta 10 productos y 20 unidades de cada uno")
     if result["status"] == "ambiguous":
+        choices = []
+        for start in range(0, len(result["choices"]), 30):
+            selected = await _semantic_candidates(result["query"], operation.original_text,
+                result["choices"][start:start + 30])
+            if selected is None:
+                choices = []
+                break
+            choices.extend(selected)
+            if len(choices) >= 5:
+                break
+        result["choices"] = choices[:5]
+        if not result["choices"]:
+            return IncompleteOperation(missing_fields=(FieldRequest(
+                field=f"items.{result['index']}.product", reason="ambiguous",
+                question=(f"No puedo distinguir con seguridad qué tipo de {result['query']} buscás. "
+                    "Decime el tipo, la marca o la presentación para afinar la búsqueda.")),))
         refs = []
-        for ean, name in result["choices"]:
-            refs.append(await context.reference("basket_product", BasketProductChoice(id=ean,
+        for candidate in result["choices"]:
+            label = (f"{candidate['name'][:120]} — {_money(candidate['price'])} en "
+                f"{candidate['chain'][:60]}, {candidate['branch'][:60]}")
+            if candidate["promotion"]:
+                label += (f" (promoción informada; lista {_money(candidate['list_price'])}. "
+                    f"Condiciones: {candidate['promotion']})")
+            refs.append(await context.reference("basket_product", BasketProductChoice(id=candidate["ean"],
                 snapshot_id=result["snapshot_id"], operation_id=operation.operation_id,
                 item_index=result["index"], query=result["query"], locality=result["locality"],
-                province=result["province"], visible=name), expires_at=operation.expires_at))
+                province=result["province"], visible=candidate["name"], label=label),
+                expires_at=operation.expires_at))
         return IncompleteOperation(missing_fields=(FieldRequest(field=f"items.{result['index']}.product_ref",
             reason="ambiguous", candidate_refs=tuple(refs),
-            question=f"Encontré varias opciones de {result['query']}. ¿Cuál querés agregar? Respondé con el número o decime la marca y presentación para afinar la búsqueda."),))
+            question=(f"Encontré varias opciones de {result['query']}, ordenadas por el menor precio "
+                f"del paquete. Precios de {SOURCE} del {result['date']:%d/%m/%Y} en "
+                f"{result['locality']}; confirmá el precio en la sucursal. ¿Cuál querés agregar? "
+                "Respondé con el número o decime la marca y presentación para afinar la búsqueda.")),))
     items = result["items"]
     return prepared(BasketPrepared(items=tuple(items), locality=result["locality"], province=result["province"]),
         f"Guardaría esta canasta para {result['locality']}: " + "; ".join(
@@ -210,7 +277,7 @@ def shopping_basket_contracts():
     return (
         read_tool("show_shopping_basket", "Sólo muestra la canasta existente. No usar si el usuario quiere agregar, poner o guardar un producto.", FrozenModel, show_basket),
         read_tool("compare_shopping_basket", "Compara precios de los EAN guardados en la canasta en la localidad indicada. No modifica presupuesto ni movimientos.", BasketSearch, compare_basket),
-        operation_tool("save_shopping_basket", "Agrega por NOMBRE productos a la canasta frecuente, o la reemplaza si mode=replace. Para 'quiero poner arroz en mi canasta' usar esta herramienta con product='arroz'; nunca pedir EAN al usuario. Si faltan localidad u opción concreta, el backend pregunta. Requiere propuesta y confirmación posterior.", BasketDraft, BasketPrepared, prepare_basket, commit_basket, schema_version=2),
+        operation_tool("save_shopping_basket", "Agrega por NOMBRE productos a la canasta frecuente, o la reemplaza si mode=replace. Para 'quiero poner arroz en mi canasta' usar esta herramienta con product='arroz'; nunca pedir EAN al usuario. Si faltan localidad u opción concreta, el backend pregunta. Requiere propuesta y confirmación posterior.", BasketDraft, BasketPrepared, prepare_basket, commit_basket, schema_version=2, timeout_seconds=35),
     )
 
 

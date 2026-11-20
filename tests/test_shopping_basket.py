@@ -1,6 +1,7 @@
 """Saved-basket and budget-alert integration with synthetic delivery."""
 from datetime import date, timedelta
 from decimal import Decimal
+import json
 
 import pytest
 
@@ -49,7 +50,11 @@ async def test_budget_offer_only_on_food_crossing_with_saved_basket(sepa_db, mon
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_confirmed_basket_and_button_are_read_only(ingress, accounts):
+async def test_confirmed_basket_and_button_are_read_only(ingress, accounts, monkeypatch):
+    class CatalogProvider:
+        async def generate_json(self, prompt, user_message):
+            return {"matching_indices": [1], "uncertain": False}
+    monkeypatch.setattr(shopping_basket, "create_provider", CatalogProvider)
     day = (NOW - timedelta(hours=3)).date()
     with accounts[0]() as session:
         session.add(LimiteCategoria(usuario_id=accounts[1], categoria_id=accounts[4],
@@ -104,17 +109,27 @@ async def test_basket_without_valid_promotion_reports_no_offer(sepa_db):
 async def test_arroz_by_name_asks_locality_then_numbered_product_and_saves_after_confirmation(
         ingress, accounts, monkeypatch):
     monkeypatch.setattr(shopping_basket, "SessionLocal", accounts[0])
+    class CatalogProvider:
+        async def generate_json(self, prompt, user_message):
+            assert "Arroz con leche listo" in user_message
+            return {"matching_indices": [2, 3], "uncertain": False}
+    monkeypatch.setattr(shopping_basket, "create_provider", CatalogProvider)
     day = (NOW - timedelta(hours=3)).date()
     with accounts[0]() as session:
         snapshot = SepaSnapshot(data_date=day, source_url="https://example.test/sepa.zip", status="ready")
         session.add(snapshot)
         session.flush()
-        for ean, description in [("7790000000001", "Arroz largo fino Marca A 1 kg"),
-                                 ("7790000000002", "Arroz integral Marca B 1 kg")]:
-            session.add(SepaPrice(snapshot_id=snapshot.id, commerce_id="1", flag_id="1", branch_id="1",
-                product_id=ean, report_date=day, is_ean=True, description=description,
-                chain="Coto", branch="Centro", province="AR-H", locality="Resistencia",
-                list_price=Decimal("2000")))
+        for ean, description, prices in [
+                ("7790000000001", "Arroz largo fino Marca A 1 kg", (("Coto", "Centro", "2000"),
+                    ("Vea", "Norte", "2100"))),
+                ("7790000000002", "Arroz integral Marca B 1 kg", (("Maxi", "Sur", "1500"),
+                    ("Coto", "Centro", "1700"))),
+                ("7790000000003", "Arroz con leche listo 180 gr", (("Coto", "Centro", "500"),))]:
+            for index, (chain, branch, price) in enumerate(prices, 1):
+                session.add(SepaPrice(snapshot_id=snapshot.id, commerce_id=chain,
+                    flag_id="1", branch_id=str(index), product_id=ean, report_date=day,
+                    is_ean=True, description=description, chain=chain, branch=branch,
+                    province="AR-H", locality="Resistencia", list_price=Decimal(price)))
         session.commit()
     first = await ingress.tool("save_shopping_basket", {"items": [{"product": "arroz"}]},
         "quiero poner arroz en mi canasta")
@@ -126,7 +141,11 @@ async def test_arroz_by_name_asks_locality_then_numbered_product_and_saves_after
         if record["kind"] == "operation" and record["payload"]["operation_id"] == operation["operation_id"])
     second = await ingress.tool("operation_amend", {"ref": ref, "expected_revision": operation["revision"],
         "changes": {"locality": "Resistencia", "province": "AR-H"}}, "Resistencia, Chaco")
-    assert "1. Arroz" in second.reply_text and "2. Arroz" in second.reply_text
+    assert "1. Arroz integral Marca B 1 kg — $1.500,00 en Maxi, Sur" in second.reply_text
+    assert "2. Arroz largo fino Marca A 1 kg — $2.000,00 en Coto, Centro" in second.reply_text
+    assert "$1.700,00" not in second.reply_text and "$2.100,00" not in second.reply_text
+    assert "Arroz con leche" not in second.reply_text
+    assert "Precios de SEPA / Precios Claros" in second.reply_text
     assert "EAN" not in second.reply_text
     selected = await ingress.send("2")
     assert "¿Confirmás esta propuesta?" in selected.reply_text
@@ -142,11 +161,72 @@ async def test_arroz_by_name_asks_locality_then_numbered_product_and_saves_after
     assert "Arroz largo fino Marca A" in shown.reply_text and "EAN" not in shown.reply_text
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_semantic_product_filter_only_accepts_catalog_indices(monkeypatch):
+    candidates = [{"ean": "1", "name": "Banana fresca"},
+        {"ean": "2", "name": "Helado de banana"}]
+
+    class CatalogProvider:
+        async def generate_json(self, prompt, user_message):
+            assert json.loads(user_message)["candidatos"][1]["nombre"] == "Helado de banana"
+            return {"matching_indices": [1], "uncertain": False}
+
+    monkeypatch.setattr(shopping_basket, "create_provider", CatalogProvider)
+    assert await shopping_basket._semantic_candidates("banana", "quiero banana", candidates) == candidates[:1]
+
+    class InvalidProvider:
+        async def generate_json(self, prompt, user_message):
+            return {"matching_indices": [3], "uncertain": False}
+
+    monkeypatch.setattr(shopping_basket, "create_provider", InvalidProvider)
+    assert await shopping_basket._semantic_candidates("banana", "quiero banana", candidates) is None
+
+    class UnsureProvider:
+        async def generate_json(self, prompt, user_message):
+            return {"matching_indices": [], "uncertain": True}
+
+    monkeypatch.setattr(shopping_basket, "create_provider", UnsureProvider)
+    assert await shopping_basket._semantic_candidates("banana", "quiero banana", candidates[:1]) is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_single_derived_product_is_not_proposed_as_base_food(ingress, accounts, monkeypatch):
+    monkeypatch.setattr(shopping_basket, "SessionLocal", accounts[0])
+
+    class CatalogProvider:
+        async def generate_json(self, prompt, user_message):
+            return {"matching_indices": [], "uncertain": False}
+
+    monkeypatch.setattr(shopping_basket, "create_provider", CatalogProvider)
+    day = (NOW - timedelta(hours=3)).date()
+    with accounts[0]() as session:
+        snapshot = SepaSnapshot(data_date=day, source_url="https://example.test/sepa.zip", status="ready")
+        session.add(snapshot)
+        session.flush()
+        session.add(SepaPrice(snapshot_id=snapshot.id, commerce_id="1", flag_id="1", branch_id="1",
+            product_id="7790000000011", report_date=day, is_ean=True,
+            description="Arroz con leche listo 180 gr", chain="Coto", branch="Centro",
+            province="AR-H", locality="Resistencia", list_price=Decimal("500")))
+        session.commit()
+    reply = await ingress.tool("save_shopping_basket", {"items": [{"product": "arroz"}],
+        "locality": "Resistencia", "province": "AR-H"}, "quiero agregar arroz")
+    assert "No puedo distinguir con seguridad" in reply.reply_text
+    assert "Arroz con leche" not in reply.reply_text
+    with accounts[0]() as session:
+        assert session.query(ShoppingBasketItem).count() == 0
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_basket_accepts_chaco_name_and_shows_real_rice_options(ingress, accounts, monkeypatch):
     from app.models.database import ShoppingBasket
     monkeypatch.setattr(shopping_basket, "SessionLocal", accounts[0])
+    class CatalogProvider:
+        async def generate_json(self, prompt, user_message):
+            return {"matching_indices": [1, 2], "uncertain": False}
+    monkeypatch.setattr(shopping_basket, "create_provider", CatalogProvider)
     day = (NOW - timedelta(hours=3)).date()
     with accounts[0]() as session:
         snapshot = SepaSnapshot(data_date=day, source_url="https://example.test/sepa.zip", status="ready")

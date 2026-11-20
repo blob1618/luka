@@ -59,7 +59,7 @@ def _snapshot(session, today):
     return row, None
 
 
-def _query_rows(session, snapshot, *, ean=None, name=None, locality, province=None):
+def _matched_prices(session, snapshot, *, ean=None, name=None, locality, province=None):
     province = normalize_province(province)
     base = session.query(SepaPrice).filter(SepaPrice.snapshot_id == snapshot.id,
         func.lower(SepaPrice.locality) == locality.strip().lower())
@@ -70,18 +70,26 @@ def _query_rows(session, snapshot, *, ean=None, name=None, locality, province=No
     elif name:
         words = [part for part in re.findall(r"\w+", name) if len(part) >= 2]
         if not words:
-            return [], {}
+            return None
         if session.get_bind().dialect.name == "postgresql":
             base = base.filter(func.to_tsvector("spanish", SepaPrice.description).op("@@")(
                 func.plainto_tsquery("spanish", name)))
         else:
             for word in words:
                 base = base.filter(SepaPrice.description.ilike(f"%{word}%"))
-    if name:
         first_word = words[0].lower()
         starts_with_name = func.lower(SepaPrice.description).like(f"{first_word}%")
         if base.filter(starts_with_name).first() is not None:
             base = base.filter(starts_with_name)
+    return base
+
+
+def _query_rows(session, snapshot, *, ean=None, name=None, locality, province=None):
+    base = _matched_prices(session, snapshot, ean=ean, name=name,
+        locality=locality, province=province)
+    if base is None:
+        return [], {}
+    if name:
         matches = base.filter(SepaPrice.is_ean.is_(True)).with_entities(
             SepaPrice.product_id, func.min(SepaPrice.description)).group_by(SepaPrice.product_id).order_by(
                 func.min(SepaPrice.description), SepaPrice.product_id).limit(6).all()
@@ -92,6 +100,27 @@ def _query_rows(session, snapshot, *, ean=None, name=None, locality, province=No
     else:
         identities = {ean: ""} if ean else {}
     return base.order_by(SepaPrice.list_price).limit(200).all(), identities
+
+
+def basket_candidates(session, snapshot, *, name, locality, province, today):
+    """Price-ranked named presentations for semantic selection in the basket."""
+    base = _matched_prices(session, snapshot, name=name, locality=locality, province=province)
+    if base is None:
+        return []
+    names = {}
+    cheapest = {}
+    for row in base.filter(SepaPrice.is_ean.is_(True)).all():
+        names[row.product_id] = min(names.get(row.product_id, row.description), row.description)
+        promo = _verified_promo(row.promo1_price, row.promo1_text, today)
+        price = min(row.list_price, promo[0]) if promo else row.list_price
+        candidate = {"ean": row.product_id, "price": price, "list_price": row.list_price,
+            "chain": row.chain, "branch": row.branch, "promotion": promo[1] if promo and price < row.list_price else None}
+        previous = cheapest.get(row.product_id)
+        if previous is None or (candidate["price"], candidate["chain"], candidate["branch"]) < (
+                previous["price"], previous["chain"], previous["branch"]):
+            cheapest[row.product_id] = candidate
+    return [{**candidate, "name": names[ean]} for ean, candidate in sorted(cheapest.items(),
+        key=lambda item: (item[1]["price"], names[item[0]], item[0]))[:60]]
 
 
 def _lookup(session, snapshot, query, locality, province, today):
