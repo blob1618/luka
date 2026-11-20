@@ -27,7 +27,8 @@
 
 | Prueba | Fecha, ambiente y versión | Resultado y evidencia |
 | --- | --- | --- |
-| Lint y suite completa de la rama combinada con HU-PRE-05 | 2026-11-19, local, `e1fda3a` | `ruff check .` sin hallazgos; `python -m pytest -v`: 1.357 passed y 2 warnings de dependencias. [Registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-19-verificacion-local.md). CI del PR, pendiente de concluir. |
+| Lint y suite completa de la rama combinada con HU-PRE-05 | 2026-11-19, local, `a6e58ce` | `ruff check .` sin hallazgos; `python -m pytest -v`: 1.358 passed y 2 warnings de dependencias. [Registro](evidencias/sprint-pendiente-hu-pre-04/2026-11-19-verificacion-local.md). |
+| Backend, migraciones y trazabilidad en CI | 2026-11-19, GitHub Actions, `8243074` | [CI Pipeline aprobado](https://github.com/blob1618/luka/actions/runs/44648812473) y [Evidencia del incremento aprobada](https://github.com/blob1618/luka/actions/runs/44648808123). No acredita entorno productivo ni WhatsApp real. |
 
 | Criterio de [STK-262](https://philippem.atlassian.net/browse/STK-262) | Evidencia técnica | Conclusión humana |
 | --- | --- | --- |
@@ -37,7 +38,7 @@
 | CA4 degradación controlada | Tests de fallo de carga y preservación de snapshot; cobertura parcial informada | Pendiente |
 | CA5 sin resultados confiables | Tests sin precios inventados y respuesta de indisponibilidad | Pendiente |
 
-Demo humana: cargar un snapshot real en staging, consultar producto/canasta desde WhatsApp, verificar fecha, sucursal, precio, faltantes y ausencia de movimientos. Definition of Done: pendientes revisión/CI, carga real, medición, merge, despliegue y conclusión explícita de la persona designada.
+Demo humana: cargar un snapshot real en staging, consultar producto/canasta desde WhatsApp, verificar fecha, sucursal, precio, faltantes y ausencia de movimientos. Definition of Done: pendientes revisión humana, carga real, medición, merge, despliegue y conclusión explícita de la persona designada.
 
 ## 4. Seguimiento durante el sprint
 
