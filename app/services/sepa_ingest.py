@@ -1,5 +1,6 @@
 """Bounded daily SEPA download and atomic snapshot publication."""
 import csv
+import hashlib
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
@@ -28,6 +29,7 @@ WEEKLY_RESOURCES = (
     ("b3c3da5d-213d-41e7-8d74-f23fda0a3c30", "sabado"),
 )
 RESOURCE_BASE = "https://datos.produccion.gob.ar/dataset/6f47ec76-d1ce-4e34-a7e1-621fe9b1d0b5/resource"
+MIRROR_BASE = "https://github.com/blob1618/luka/releases/download/sepa-feed"
 MAX_DOWNLOAD = 550_000_000
 MAX_INNER_FILE = 1_500_000_000
 BATCH_SIZE = 2000
@@ -55,11 +57,18 @@ def _csv(archive, name):
             yield from csv.DictReader(text, delimiter="|")
 
 
-def _source_resource(client):
+def _source_resource(client, *, allow_mirror=True):
     response = client.get(CATALOG_URL)
     if response.status_code == 403:
         logger.warning("sepa_catalog_forbidden_using_published_resources")
-        return _source_from_published_resources(client)
+        try:
+            url, published = _source_from_published_resources(client)
+            return url, published, None
+        except ValueError:
+            if not allow_mirror:
+                raise
+            logger.warning("sepa_official_resources_unavailable_using_mirror")
+            return _source_from_mirror(client)
     response.raise_for_status()
     resources = response.json()["result"]["resources"]
     candidates = [item for item in resources if item.get("url", "").startswith(
@@ -74,7 +83,7 @@ def _source_resource(client):
         raise ValueError("El archivo SEPA más reciente es demasiado antiguo")
     if int(item.get("size") or 0) > MAX_DOWNLOAD:
         raise ValueError("El archivo SEPA excede el límite de descarga")
-    return item["url"], published.date()
+    return item["url"], published.date(), None
 
 
 def _source_from_published_resources(client):
@@ -99,9 +108,36 @@ def _source_from_published_resources(client):
     return url, published.date()
 
 
-def _download(client, url):
+def _source_from_mirror(client):
+    """A dated, checksummed copy of the official ZIP published by our CI job."""
+    response = client.get(f"{MIRROR_BASE}/sepa-latest.json")
+    response.raise_for_status()
+    manifest = response.json()
+    if not isinstance(manifest, dict):
+        raise ValueError("Manifiesto espejo SEPA inválido")
+    try:
+        published = datetime.fromisoformat(manifest["data_date"]).date()
+        source_url = manifest["source_url"]
+        digest = manifest["sha256"]
+        size = manifest["size"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Manifiesto espejo SEPA incompleto") from exc
+    if not (source_url.startswith("https://datos.produccion.gob.ar/")
+            and source_url.endswith(".zip") and isinstance(digest, str)
+            and re.fullmatch(r"[a-f0-9]{64}", digest)
+            and isinstance(size, int) and 0 < size <= MAX_DOWNLOAD):
+        raise ValueError("Manifiesto espejo SEPA inválido")
+    age = (datetime.now(timezone.utc).date() - published).days
+    if not 0 <= age <= 3:
+        raise ValueError("El ZIP espejo SEPA es demasiado antiguo")
+    logger.info("sepa_mirror_source date=%s official_url=%s", published, source_url)
+    return f"{MIRROR_BASE}/sepa-latest.zip", published, digest
+
+
+def _download(client, url, expected_sha256=None):
     file = TemporaryFile()
     size = 0
+    digest = hashlib.sha256() if expected_sha256 else None
     try:
         with client.stream("GET", url) as response:
             response.raise_for_status()
@@ -110,6 +146,10 @@ def _download(client, url):
                 if size > MAX_DOWNLOAD:
                     raise ValueError("El archivo SEPA excede el límite de descarga")
                 file.write(chunk)
+                if digest:
+                    digest.update(chunk)
+        if digest and digest.hexdigest() != expected_sha256:
+            raise ValueError("El ZIP espejo SEPA no coincide con su manifiesto")
         file.seek(0)
         return file
     except Exception:
@@ -217,7 +257,7 @@ def ingest_latest(*, client=None):
         headers={"User-Agent": SEPA_USER_AGENT},
     )
     try:
-        url, data_date = _source_resource(client)
+        url, data_date, expected_sha256 = _source_resource(client)
         with SessionLocal() as session:
             existing = session.query(SepaSnapshot).filter(SepaSnapshot.data_date == data_date).first()
             if existing:
@@ -236,7 +276,7 @@ def ingest_latest(*, client=None):
             session.commit()
             snapshot_id = snapshot.id
             try:
-                with _download(client, url) as source:
+                with _download(client, url, expected_sha256) as source:
                     count, rejected = _ingest_archive(session, source, snapshot, provinces)
                 if count == 0:
                     raise ValueError("El archivo SEPA no contiene precios utilizables")

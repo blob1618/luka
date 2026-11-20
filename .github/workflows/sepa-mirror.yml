@@ -1,0 +1,40 @@
+name: Publish SEPA mirror
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 19 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sepa-mirror
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Download and verify the official source
+        run: python -m scripts.publish_sepa_mirror
+      - name: Create release if absent
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view sepa-feed >/dev/null 2>&1; then
+            gh release create sepa-feed --title 'SEPA daily source mirror' --notes 'Automated copy of the official SEPA / Precios Claros daily ZIP. Source: https://datos.produccion.gob.ar/dataset/sepa-precios. Dataset license: CC-BY-4.0.' --latest=false
+          fi
+      - name: Publish archive, then dated checksum manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload sepa-feed sepa-latest.zip --clobber
+          gh release upload sepa-feed sepa-latest.json --clobber
