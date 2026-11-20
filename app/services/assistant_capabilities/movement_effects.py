@@ -12,6 +12,7 @@ from app.services.conversation_flow_contract import BUDGET_THRESHOLD_MESSAGE
 from app.services.conversation_flow_runtime import ConversationFlowRuntime
 from app.services.telemetry import track_phase
 from app.services.dispatch_contract import DispatchResult
+from app.services.categories_taxonomy import resolve_category
 logger = logging.getLogger(__name__)
 
 
@@ -115,6 +116,19 @@ async def append_budget_threshold_alerts(sender_phone: str, result: DispatchResu
             variables=variables,
         )
         alerts.append(configured or WhatsAppText(BUDGET_THRESHOLD_MESSAGE.format(**variables)))
+        food_category = any(resolve_category(part.strip()) == 'Comida'
+            for part in budget.category_name.split('/'))
+        if budget.currency == 'ARS' and food_category:
+            from app.services.assistant_capabilities.shopping_basket import has_basket
+            try:
+                available = await asyncio.to_thread(has_basket, budget.user_id)
+            except Exception as exc:
+                logger.warning('shopping_basket_offer_unavailable error=%s', type(exc).__name__)
+                available = False
+            if available:
+                alerts.append(WhatsAppReplyButtons(
+                    body='Si querés, puedo comparar los precios recientes de tu canasta guardada antes de comprar.',
+                    buttons=(WhatsAppReplyButton(id='supermarket:basket', title='Consultar ofertas'),)))
     result.followup_messages[0:0] = alerts
 
 def check_candidate_proposal(

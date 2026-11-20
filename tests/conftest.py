@@ -249,6 +249,7 @@ def isolated_db(monkeypatch):
         "app.services.limit.SessionLocal",
         "app.services.category_creation.SessionLocal",
         "app.services.budget.SessionLocal",
+        "app.services.assistant_capabilities.shopping_basket.SessionLocal",
         "app.services.supermarket_prices.SessionLocal",
         "app.services.sepa_ingest.SessionLocal",
         "app.models.database.SessionLocal",

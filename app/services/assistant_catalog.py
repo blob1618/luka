@@ -10,6 +10,7 @@ from app.services.assistant_capabilities.financial_reads import financial_read_c
 from app.services.assistant_capabilities.charts import chart_contracts
 from app.services.assistant_capabilities.wallets import wallet_contracts
 from app.services.assistant_capabilities.supermarket import supermarket_contracts
+from app.services.assistant_capabilities.shopping_basket import shopping_basket_contracts
 from app.services.assistant_registry import ToolRegistry
 from app.services import finance
 from app.services.movement_commands import receipt_result
@@ -27,6 +28,7 @@ def build_tool_registry():
     for contract in (*movement_contracts(), *insight_contracts(), *wallet_contracts(),
                      *conversation_contracts(), *reminder_management_contracts(),
                      *entity_contracts(), *budget_contracts(), *movement_management_contracts(),
-                     *financial_read_contracts(), *chart_contracts(), *supermarket_contracts()):
+                     *financial_read_contracts(), *chart_contracts(), *supermarket_contracts(),
+                     *shopping_basket_contracts()):
         registry.register(contract)
     return registry
