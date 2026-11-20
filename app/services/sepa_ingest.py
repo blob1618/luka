@@ -16,6 +16,7 @@ from app.models.database import SepaPrice, SepaSnapshot, SessionLocal
 
 logger = logging.getLogger(__name__)
 CATALOG_URL = "https://datos.produccion.gob.ar/api/3/action/package_show?id=sepa-precios"
+SEPA_USER_AGENT = "Mozilla/5.0 LukaSEPA/1.0 (+https://github.com/blob1618/luka)"
 MAX_DOWNLOAD = 550_000_000
 MAX_INNER_FILE = 1_500_000_000
 BATCH_SIZE = 2000
@@ -174,7 +175,11 @@ def ingest_latest(*, client=None):
     if not provinces:
         raise ValueError("Configurá SEPA_PROVINCES antes de cargar el catálogo")
     owned_client = client is None
-    client = client or httpx.Client(timeout=httpx.Timeout(30, connect=10), follow_redirects=True)
+    client = client or httpx.Client(
+        timeout=httpx.Timeout(30, connect=10),
+        follow_redirects=True,
+        headers={"User-Agent": SEPA_USER_AGENT},
+    )
     try:
         url, data_date = _source_resource(client)
         with SessionLocal() as session:
