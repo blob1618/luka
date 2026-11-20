@@ -144,6 +144,37 @@ async def test_arroz_by_name_asks_locality_then_numbered_product_and_saves_after
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_basket_accepts_chaco_name_and_shows_real_rice_options(ingress, accounts, monkeypatch):
+    from app.models.database import ShoppingBasket
+    monkeypatch.setattr(shopping_basket, "SessionLocal", accounts[0])
+    day = (NOW - timedelta(hours=3)).date()
+    with accounts[0]() as session:
+        snapshot = SepaSnapshot(data_date=day, source_url="https://example.test/sepa.zip", status="ready")
+        session.add(snapshot)
+        session.flush()
+        for index, description in enumerate(("ALFAJOR DE ARROZ X 28 G",
+                "ARROZ LARGO FINO MARCA A 1 KG", "ARROZ INTEGRAL MARCA B 1 KG"), 1):
+            session.add(SepaPrice(snapshot_id=snapshot.id, commerce_id="1", flag_id="1",
+                branch_id="1", product_id=f"779000000000{index}", report_date=day,
+                is_ean=True, description=description, chain="Coto", branch="Centro",
+                province="AR-H", locality="Resistencia", list_price=Decimal("2000")))
+        session.commit()
+    reply = await ingress.tool("save_shopping_basket", {"items": [{"product": "arroz"}],
+        "locality": "Resistencia", "province": "Chaco"}, "quiero poner arroz en mi canasta")
+    assert "1. ARROZ" in reply.reply_text and "2. ARROZ" in reply.reply_text
+    assert "ALFAJOR" not in reply.reply_text and "EAN" not in reply.reply_text
+    with accounts[0]() as session:
+        assert session.query(ShoppingBasketItem).count() == 0
+    selected = await ingress.send("1")
+    assert "¿Confirmás esta propuesta?" in selected.reply_text
+    await ingress.confirm(selected)
+    with accounts[0]() as session:
+        assert session.query(ShoppingBasket).one().province == "AR-H"
+        assert session.query(ShoppingBasketItem).one().product_name.startswith("ARROZ ")
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_named_basket_explains_missing_catalog_without_asking_for_codes(ingress, accounts, monkeypatch):
     monkeypatch.setattr(shopping_basket, "SessionLocal", accounts[0])
     result = await ingress.tool("save_shopping_basket", {"items": [{"product": "arroz"}],

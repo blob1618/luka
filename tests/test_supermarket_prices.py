@@ -371,6 +371,30 @@ async def test_name_ambiguity_asks_for_presentation_and_does_not_invent_a_compar
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_resistencia_chaco_finds_traviata_and_prioritizes_rice_over_rice_snacks(sepa_db):
+    with sepa_db() as session:
+        snapshot = session.query(SepaSnapshot).one()
+        for index, description in enumerate((
+                "ALFAJOR DE ARROZ DULCE DE LECHE X 28 G",
+                "ARROZ LARGO FINO MARCA A 1 KG",
+                "ARROZ INTEGRAL MARCA B 1 KG",
+                "GALLETITAS CRACKERS TRAVIATA REX 3 X 96 GRS"), 1):
+            session.add(SepaPrice(snapshot_id=snapshot.id, commerce_id="1", flag_id="1",
+                branch_id="1", product_id=f"779000000000{index}", report_date=date(2026, 11, 19),
+                is_ean=True, description=description, chain="Coto", branch="Centro",
+                province="AR-H", locality="Resistencia", list_price=Decimal("2000")))
+        session.commit()
+    result = await supermarket_prices.compare_prices(["rex traviata", "arroz"],
+        locality="Resistencia", province="Chaco", today=date(2026, 11, 19))
+    assert result["items"][0]["status"] == "ok"
+    assert "TRAVIATA REX" in result["items"][0]["options"][0]["name"]
+    assert result["items"][1]["status"] == "ambiguous"
+    assert all(option["name"].startswith("ARROZ ") for option in result["items"][1]["options"])
+    assert "ALFAJOR" not in " ".join(supermarket_prices.present_comparison(result, locality="Resistencia"))
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_one_letter_name_returns_missing_instead_of_failing(sepa_db):
     result = await supermarket_prices.compare_prices(["x"], locality="Resistencia",
         today=date(2026, 11, 19))

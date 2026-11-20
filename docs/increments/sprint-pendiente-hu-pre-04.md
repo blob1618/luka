@@ -22,7 +22,8 @@
 - El despliegue `347d212` comprobó que Render recibe 403 también de los siete ZIP oficiales. [PR #132](https://github.com/blob1618/luka/pull/132) agrega un espejo automático en una release pública del proyecto, actualizado desde GitHub Actions, con fecha oficial y SHA-256 verificado antes de cargar. En ese momento la publicación y la ingesta productiva aún debían comprobarse. [Evidencia del bloqueo](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-render-zip-403.md).
 - GitHub Actions también recibió 403 del origen oficial. Se publicó manualmente el ZIP compacto AR-H del 19/11 para iniciar la carga; Render lo descargó, pero PostgreSQL rechazó la primera inserción por prepared statements incompatibles con el pooler transaccional. El workflow nuevo publicó correctamente desde la copia archivada fechada con metadatos oficiales incorporados, y la conexión PostgreSQL deshabilita los prepared statements automáticos. El nuevo despliegue publicó 43.142 precios en Supabase. [Evidencia](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-espejo-archivo-pooler.md). La ejecución diaria programada y WhatsApp real siguen pendientes de verificar.
 - Recuperación: revisar logs `sepa_ingest_failed`, reintentar manualmente; el snapshot anterior sirve sólo dentro de dos días. Sin snapshot confiable, responder indisponibilidad. Redis expira cada comparación en 30 minutos y la clave incluye snapshot y fecha.
-- La primera carga productiva tardó 12m32s desde la lectura del espejo hasta `sepa_ingest_ready` y publicó 43.142 precios. Quedan pendientes la medición de almacenamiento, la próxima actualización diaria y WhatsApp real. El catálogo oficial declara CC-BY-4.0 y Luka muestra fuente y fecha. El dato diario no asegura precio de góndola ni existencia de stock.
+- La primera carga productiva tardó 12m32s desde la lectura del espejo hasta `sepa_ingest_ready` y publicó 43.142 precios. Quedan pendientes la medición de almacenamiento, la próxima actualización diaria y una prueba satisfactoria en WhatsApp real. El catálogo oficial declara CC-BY-4.0 y Luka muestra fuente y fecha. El dato diario no asegura precio de góndola ni existencia de stock.
+- La primera prueba real de WhatsApp aportada por la persona usuaria el 20/11/2026, 14:03–14:05, **rechazó la búsqueda por nombre**: Luka no encontró Traviata ni arroz en Resistencia aunque el snapshot contenía esos productos. La provincia «Chaco» no coincidía con el código «AR-H» del archivo, y la búsqueda genérica de arroz priorizaba alfajores. Se corrigieron ambos recorridos y se añadieron pruebas; [diagnóstico y evidencia](evidencias/sprint-pendiente-hu-pre-04/2026-11-20-whatsapp-busqueda-provincia.md). Una nueva prueba real sigue pendiente.
 
 | Hito | Fecha | Evidencia |
 | --- | --- | --- |
@@ -53,7 +54,7 @@
 
 | Criterio de [STK-262](https://philippem.atlassian.net/browse/STK-262) | Evidencia técnica | Conclusión humana |
 | --- | --- | --- |
-| CA1 producto y sin movimiento | Tests contractuales y consulta WhatsApp simulada con lista; no se persiste movimiento | Pendiente |
+| CA1 producto y sin movimiento | Tests contractuales y consulta WhatsApp simulada con lista; conversación real del 20/11 rechazó la búsqueda por nombre y motivó una corrección | Pendiente; repetir en WhatsApp |
 | CA2 canasta y faltantes | Tests de comparación por producto y faltantes explícitos | Pendiente |
 | CA3 caché y vigencia | Tests de clave por snapshot/consulta/fecha y TTL | Pendiente |
 | CA4 degradación controlada | Tests de fallo de carga y preservación de snapshot; cobertura parcial informada | Pendiente |
