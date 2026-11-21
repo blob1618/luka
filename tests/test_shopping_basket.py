@@ -1,4 +1,4 @@
-"""Saved-basket and budget-alert integration with synthetic delivery."""
+"""Saved-basket consultation and independent budget alerts with synthetic delivery."""
 from datetime import date, timedelta
 from decimal import Decimal
 import json
@@ -6,7 +6,7 @@ import json
 import pytest
 
 from app.api.whatsapp import WhatsAppReplyButtons
-from app.models.database import LimiteCategoria, SepaPrice, SepaSnapshot, ShoppingBasketItem, Usuario, MovimientoFinanciero
+from app.models.database import LimiteCategoria, SepaPrice, SepaSnapshot, ShoppingBasket, ShoppingBasketItem, Usuario, MovimientoFinanciero
 from app.services.assistant_capabilities.movement_effects import append_budget_threshold_alerts
 from app.services.assistant_capabilities import shopping_basket
 from app.services.assistant_capabilities.shopping_basket import present_basket_offers
@@ -24,9 +24,8 @@ ingress = scenarios.ingress
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_budget_offer_only_on_food_crossing_with_saved_basket(sepa_db, monkeypatch):
+async def test_budget_crossing_alert_does_not_offer_basket(sepa_db, monkeypatch):
     from uuid import uuid4
-    from app.models.database import ShoppingBasket, ShoppingBasketItem
     from app.services.assistant_capabilities import movement_effects
     owner = uuid4()
     with sepa_db() as session:
@@ -43,9 +42,34 @@ async def test_budget_offer_only_on_food_crossing_with_saved_basket(sepa_db, mon
         exceeded_amount=Decimal("0"), percentage=Decimal("80"), state="available")
     result = DispatchResult("Registrado", budget_threshold_alerts=[budget])
     await append_budget_threshold_alerts("5491111111111", result)
-    assert len(result.followup_messages) == 2
-    assert isinstance(result.followup_messages[1], WhatsAppReplyButtons)
-    assert result.followup_messages[1].buttons[0].id == "supermarket:basket"
+    assert len(result.followup_messages) == 1
+    assert "80" in result.followup_messages[0].body
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_offers_can_be_requested_without_a_budget(ingress, accounts, monkeypatch):
+    monkeypatch.setattr(shopping_basket, "SessionLocal", accounts[0])
+    day = (NOW - timedelta(hours=3)).date()
+    with accounts[0]() as session:
+        session.add(ShoppingBasket(usuario_id=accounts[1], locality="Resistencia", province="AR-H"))
+        session.add(ShoppingBasketItem(usuario_id=accounts[1], ean="7790895000997",
+            product_name="Coca Cola 2,25 L", quantity=1))
+        snapshot = SepaSnapshot(data_date=day, source_url="https://example.test/sepa.zip", status="ready")
+        session.add(snapshot)
+        session.flush()
+        session.add(SepaPrice(snapshot_id=snapshot.id, commerce_id="1", flag_id="1", branch_id="1",
+            product_id="7790895000997", report_date=day, is_ean=True,
+            description="Coca Cola 2,25 L", chain="Coto", branch="Centro", province="AR-H",
+            locality="Resistencia", list_price=Decimal("6100"), promo1_price=Decimal("5900"),
+            promo1_text=f"Descuento. Desde el {day:%d/%m/%Y} Hasta el {day:%d/%m/%Y}"))
+        session.commit()
+        before = session.query(MovimientoFinanciero).count()
+    reply = await ingress.tool("find_shopping_basket_offers", {}, "mostrame ofertas de mi canasta")
+    assert "Coto" in reply.reply_text and "ahorro estimado $200,00" in reply.reply_text
+    with accounts[0]() as session:
+        assert session.query(LimiteCategoria).count() == 0
+        assert session.query(MovimientoFinanciero).count() == before
 
 
 @pytest.mark.integration
@@ -83,15 +107,15 @@ async def test_confirmed_basket_and_button_are_read_only(ingress, accounts, monk
     assert "Tu canasta para Resistencia:\nMenor precio publicado" in shown.reply_text
     assert "1. Coca Cola 2,25 L × 2 — $5.900,00 por paquete en Coto, Centro" in shown.reply_text
     assert "no es una compra registrada" in shown.reply_text
-    button = next(message.buttons[0].id for message in shown.followup_messages
-                  if isinstance(message, WhatsAppReplyButtons))
-    assert button == "supermarket:basket_prices"
-    prices = await ingress.send("Comparar precios", option_id=button)
+    buttons = next(message.buttons for message in shown.followup_messages
+                   if isinstance(message, WhatsAppReplyButtons))
+    assert [button.title for button in buttons] == ["Comparar precios", "Consultar ofertas"]
+    prices = await ingress.send("Comparar precios", option_id=buttons[0].id)
     assert "Coto" in prices.reply_text and "$5.900,00" in prices.reply_text
     offers = await ingress.tool("find_shopping_basket_offers")
     assert "ahorro estimado $200,00" in offers.reply_text
-    alert_offers = await ingress.send("Consultar ofertas", option_id="supermarket:basket")
-    assert "ahorro estimado $200,00" in alert_offers.reply_text
+    button_offers = await ingress.send("Consultar ofertas", option_id=buttons[1].id)
+    assert "ahorro estimado $200,00" in button_offers.reply_text
     with accounts[0]() as session:
         assert session.query(MovimientoFinanciero).count() == before
         assert session.query(ShoppingBasketItem).one().quantity == 2
