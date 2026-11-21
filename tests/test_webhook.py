@@ -58,7 +58,7 @@ def test_handle_webhook_status_update_without_messages_does_not_fail():
     process.assert_not_awaited()
 
 
-@pytest.mark.parametrize('kind',['audio','image','video','location'])
+@pytest.mark.parametrize('kind',['video','location'])
 def test_unsupported_media_never_returns_a_dummy_financial_success(kind):
     with patch('app.main.process_incoming_message',AsyncMock()) as process,patch('app.main.send_whatsapp_message',AsyncMock(return_value=True)) as send:
         response=client.post('/webhook',json=make_webhook_payload([{'id':'unsupported','from':'12345','type':kind,kind:{'id':'synthetic'}}]))

@@ -203,8 +203,9 @@ def present_comparison(result, *, locality):
         if item["status"] == "missing":
             lines.append(f"{item['query']}: sin precio encontrado en esa localidad.")
         elif item["status"] == "ambiguous":
-            variants = "; ".join(o["name"] for o in item["options"])
-            lines.append(f"{item['query']}: encontré varias presentaciones: {variants}. Decime la marca o presentación que buscás.")
+            lines.append(f"{item['query']}: encontré varias presentaciones:")
+            lines.extend(f"{index}. {option['name'][:120]}" for index, option in enumerate(item["options"], 1))
+            lines.append("Decime la marca o presentación que buscás.")
         else:
             options = item["options"]
             for option in options[:3]:

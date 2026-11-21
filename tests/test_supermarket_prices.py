@@ -365,8 +365,12 @@ async def test_name_ambiguity_asks_for_presentation_and_does_not_invent_a_compar
         today=date(2026, 11, 19))
     assert result["items"][0]["status"] == "ambiguous"
     assert len(result["items"][0]["options"]) == 2
-    assert "Decime la marca o presentación" in supermarket_prices.present_comparison(result, locality="Resistencia")[1]
-    assert "EAN" not in supermarket_prices.present_comparison(result, locality="Resistencia")[1]
+    lines = supermarket_prices.present_comparison(result, locality="Resistencia")
+    assert lines[1] == "Coca Cola: encontré varias presentaciones:"
+    assert lines[2].startswith("1. Coca Cola")
+    assert lines[3].startswith("2. Coca Cola")
+    assert lines[4] == "Decime la marca o presentación que buscás."
+    assert "EAN" not in "\n".join(lines)
 
 
 @pytest.mark.integration
