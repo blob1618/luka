@@ -80,10 +80,18 @@ async def test_confirmed_basket_and_button_are_read_only(ingress, accounts, monk
     assert "Guardé 1 productos" in confirmed.reply_text
     shown = await ingress.tool("show_shopping_basket")
     assert "EAN" not in shown.reply_text
+    assert "Tu canasta para Resistencia:\nMenor precio publicado" in shown.reply_text
+    assert "1. Coca Cola 2,25 L × 2 — $5.900,00 por paquete en Coto, Centro" in shown.reply_text
+    assert "no es una compra registrada" in shown.reply_text
     button = next(message.buttons[0].id for message in shown.followup_messages
                   if isinstance(message, WhatsAppReplyButtons))
-    offers = await ingress.send("Consultar ofertas", option_id=button)
-    assert "Coto" in offers.reply_text and "$5.900,00" in offers.reply_text
+    assert button == "supermarket:basket_prices"
+    prices = await ingress.send("Comparar precios", option_id=button)
+    assert "Coto" in prices.reply_text and "$5.900,00" in prices.reply_text
+    offers = await ingress.tool("find_shopping_basket_offers")
+    assert "ahorro estimado $200,00" in offers.reply_text
+    alert_offers = await ingress.send("Consultar ofertas", option_id="supermarket:basket")
+    assert "ahorro estimado $200,00" in alert_offers.reply_text
     with accounts[0]() as session:
         assert session.query(MovimientoFinanciero).count() == before
         assert session.query(ShoppingBasketItem).one().quantity == 2
@@ -101,7 +109,9 @@ async def test_confirmed_basket_and_button_are_read_only(ingress, accounts, monk
 @pytest.mark.asyncio
 async def test_basket_without_valid_promotion_reports_no_offer(sepa_db):
     result = await compare_prices(["7790895000997"], locality="Resistencia", today=date(2026, 11, 21))
-    assert "No hay ofertas verificadas" in present_basket_offers(result, locality="Resistencia")[0]
+    message = present_basket_offers(result, locality="Resistencia")[0]
+    assert "No hay promociones verificadas" in message
+    assert "no significa que no haya precios" in message
 
 
 @pytest.mark.integration
@@ -150,6 +160,7 @@ async def test_arroz_by_name_asks_locality_then_numbered_product_and_saves_after
     selected = await ingress.send("2")
     assert "¿Confirmás esta propuesta?" in selected.reply_text
     assert "Arroz" in selected.reply_text and "EAN" not in selected.reply_text
+    assert "Guardaría esta canasta para Resistencia:\n1. Arroz largo fino Marca A 1 kg × 1" in selected.reply_text
     with accounts[0]() as session:
         assert session.query(ShoppingBasketItem).count() == 0
     await ingress.confirm(selected)
@@ -159,6 +170,7 @@ async def test_arroz_by_name_asks_locality_then_numbered_product_and_saves_after
         assert item.quantity == 1
     shown = await ingress.tool("show_shopping_basket")
     assert "Arroz largo fino Marca A" in shown.reply_text and "EAN" not in shown.reply_text
+    assert "$2.000,00 por paquete en Coto, Centro" in shown.reply_text
 
 
 @pytest.mark.unit

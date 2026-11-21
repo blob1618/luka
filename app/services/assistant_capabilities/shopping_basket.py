@@ -14,7 +14,7 @@ from app.models.database import SepaPrice, ShoppingBasket, ShoppingBasketItem, S
 from app.services.assistant_contracts import FieldRequest, FrozenModel, IncompleteOperation, ReferenceToken
 from app.services.assistant_capabilities.common import data, read_tool, operation_tool, prepared, committed
 from app.services.llm_providers import create_provider
-from app.services.supermarket_prices import SOURCE, _money, _snapshot, basket_candidates, compare_prices, normalize_province
+from app.services.supermarket_prices import SOURCE, _money, _snapshot, basket_candidates, compare_prices, normalize_province, present_comparison
 
 
 class BasketSearch(FrozenModel):
@@ -101,9 +101,27 @@ async def show_basket(context, args):
     basket, items = await asyncio.to_thread(_basket, context.turn.owner_id)
     if not items:
         return data(context, [], ["Todavía no tenés una canasta guardada. Decime qué productos querés agregar y en qué localidad comprás."])
-    lines = [f"Tu canasta para {basket.locality}: " + "; ".join(f"{name} × {quantity}" for _, name, quantity in items)]
-    context.outbound.append(WhatsAppReplyButtons(body="¿Querés consultar precios de tu canasta?",
-        buttons=(WhatsAppReplyButton(id="supermarket:basket", title="Consultar ofertas"),)))
+    result = await compare_prices([ean for ean, _, _ in items], locality=basket.locality,
+        province=basket.province, today=context.turn.reference_day)
+    lines = [f"Tu canasta para {basket.locality}:"]
+    if result["status"] == "ok":
+        lines.append(f"Menor precio publicado en {SOURCE} del "
+            f"{date.fromisoformat(result['date']):%d/%m/%Y}; no es una compra registrada.")
+    for index, (_, name, quantity) in enumerate(items, 1):
+        line = f"{index}. {name} × {quantity}"
+        if result["status"] == "ok":
+            quoted = result["items"][index - 1]
+            if quoted["status"] == "ok" and quoted["options"]:
+                option = quoted["options"][0]
+                line += (f" — {_money(option['price'])} por paquete en "
+                    f"{option['chain']}, {option['branch']}")
+            else:
+                line += " — sin precio publicado en esa localidad"
+        lines.append(line)
+    if result["status"] != "ok":
+        lines.append(f"No pude consultar precios actuales: {result['reason']}")
+    context.outbound.append(WhatsAppReplyButtons(body="¿Querés comparar precios por sucursal?",
+        buttons=(WhatsAppReplyButton(id="supermarket:basket_prices", title="Comparar precios"),)))
     return data(context, [{"name": name, "quantity": quantity} for _, name, quantity in items], lines)
 
 
@@ -114,10 +132,29 @@ async def compare_basket(context, args):
     locality = args.locality or basket.locality
     result = await compare_prices([ean for ean, _, _ in items], locality=locality,
         province=args.province or basket.province, today=context.turn.reference_day)
+    return data(context, [result], present_comparison(result, locality=locality))
+
+
+async def find_basket_offers(context, args):
+    basket, items = await asyncio.to_thread(_basket, context.turn.owner_id)
+    if not items:
+        return data(context, [], ["Todavía no tenés una canasta guardada."])
+    locality = args.locality or basket.locality
+    result = await compare_prices([ean for ean, _, _ in items], locality=locality,
+        province=args.province or basket.province, today=context.turn.reference_day)
     return data(context, [result], present_basket_offers(result, locality=locality))
 
 
 async def compare_saved_basket(owner, today):
+    basket, items = await asyncio.to_thread(_basket, owner)
+    if not items:
+        return "Todavía no tenés una canasta guardada."
+    result = await compare_prices([ean for ean, _, _ in items], locality=basket.locality,
+        province=basket.province, today=today)
+    return "\n".join(present_comparison(result, locality=basket.locality))
+
+
+async def find_saved_basket_offers(owner, today):
     basket, items = await asyncio.to_thread(_basket, owner)
     if not items:
         return "Todavía no tenés una canasta guardada."
@@ -252,9 +289,9 @@ async def prepare_basket(context, operation):
                 f"{result['locality']}; confirmá el precio en la sucursal. ¿Cuál querés agregar? "
                 "Respondé con el número o decime la marca y presentación para afinar la búsqueda.")),))
     items = result["items"]
-    return prepared(BasketPrepared(items=tuple(items), locality=result["locality"], province=result["province"]),
-        f"Guardaría esta canasta para {result['locality']}: " + "; ".join(
-        f"{item['name']} × {item['quantity']}" for item in items))
+    preview = "\n".join([f"Guardaría esta canasta para {result['locality']}:",
+        *(f"{index}. {item['name']} × {item['quantity']}" for index, item in enumerate(items, 1))])
+    return prepared(BasketPrepared(items=tuple(items), locality=result["locality"], province=result["province"]), preview)
 
 
 async def commit_basket(context, operation, confirmation):
@@ -277,6 +314,7 @@ def shopping_basket_contracts():
     return (
         read_tool("show_shopping_basket", "Sólo muestra la canasta existente. No usar si el usuario quiere agregar, poner o guardar un producto.", FrozenModel, show_basket),
         read_tool("compare_shopping_basket", "Compara precios de los EAN guardados en la canasta en la localidad indicada. No modifica presupuesto ni movimientos.", BasketSearch, compare_basket),
+        read_tool("find_shopping_basket_offers", "Consulta sólo promociones verificadas para los productos de la canasta. Usar cuando el usuario pide ofertas o descuentos, aun sin alerta de presupuesto; no confundir con comparar precios normales.", BasketSearch, find_basket_offers),
         operation_tool("save_shopping_basket", "Agrega por NOMBRE productos a la canasta frecuente, o la reemplaza si mode=replace. Usar también si pide 'agregar arroz a mi canasta, mostrame opciones con precio antes de guardar': product='arroz', locality y province si las dijo. Esta herramienta muestra opciones con precio y pide elegir antes de proponer guardar; nunca usar compare_supermarket_prices para este pedido ni pedir EAN. Si faltan localidad u opción concreta, el backend pregunta. Requiere propuesta y confirmación posterior.", BasketDraft, BasketPrepared, prepare_basket, commit_basket, schema_version=2, timeout_seconds=35),
     )
 
@@ -292,8 +330,9 @@ def present_basket_offers(result, *, locality):
             continue
         available.extend(option for option in item["options"] if option.get("promotion"))
     if not available:
-        return [f"No hay ofertas verificadas para tu canasta en {locality} con el dato SEPA del "
-                f"{date.fromisoformat(result['date']):%d/%m/%Y}."]
+        return [f"No hay promociones verificadas para tu canasta en {locality} con el dato SEPA del "
+                f"{date.fromisoformat(result['date']):%d/%m/%Y}. Esto no significa que no haya precios: "
+                "son consultas diferentes. Pedime comparar precios de mi canasta si querés verlos por sucursal."]
     lines = [f"Archivo de {SOURCE} publicado el {date.fromisoformat(result['date']):%d/%m/%Y} "
              f"para {locality}. Confirmá las condiciones y el precio en la sucursal."]
     for option in available[:10]:

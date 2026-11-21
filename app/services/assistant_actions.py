@@ -122,6 +122,9 @@ async def process_interaction(phone, message_id, option_id, reply_type):
                     committed={'candidate_status': decision.status} if decision.successful else None,
                     replayed=decision.replayed)
             elif option_id == 'supermarket:basket' and reply_type == 'button_reply':
+                from app.services.assistant_capabilities.shopping_basket import find_saved_basket_offers
+                answer = AssistantReply(await find_saved_basket_offers(owner, context.turn.reference_day))
+            elif option_id == 'supermarket:basket_prices' and reply_type == 'button_reply':
                 from app.services.assistant_capabilities.shopping_basket import compare_saved_basket
                 answer = AssistantReply(await compare_saved_basket(owner, context.turn.reference_day))
             else:
