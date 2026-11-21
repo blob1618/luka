@@ -104,7 +104,15 @@ def _query_rows(session, snapshot, *, ean=None, name=None, locality, province=No
 
 def basket_candidates(session, snapshot, *, name, locality, province, today):
     """Price-ranked named presentations for semantic selection in the basket."""
-    base = _matched_prices(session, snapshot, name=name, locality=locality, province=province)
+    # Clarifications can contain details absent from catalog names. Search the
+    # longest matching prefix, then let the semantic filter validate relevance.
+    words = name.split()
+    base = None
+    for length in range(len(words), 0, -1):
+        base = _matched_prices(session, snapshot, name=" ".join(words[:length]),
+            locality=locality, province=province)
+        if base is not None and base.filter(SepaPrice.is_ean.is_(True)).first() is not None:
+            break
     if base is None:
         return []
     names = {}

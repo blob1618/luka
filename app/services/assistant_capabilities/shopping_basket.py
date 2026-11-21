@@ -78,7 +78,8 @@ async def _semantic_candidates(query, request, candidates):
         "u otros derivados que lo contienen o lo usan como sabor. Si el pedido no permite "
         "distinguir el tipo con seguridad, devolvé uncertain=true y matching_indices=[]. "
         "Si ninguno de los nombres de esta lista corresponde, devolvé uncertain=false y "
-        "matching_indices=[]. "
+        "matching_indices=[]. Que el catálogo no incluya el producto pedido no vuelve "
+        "ambiguo el pedido; no marques uncertain=true sólo por esa ausencia. "
         "Elegí sólo números de la lista y mantené el orden de precio recibido. No inventes productos.")
     payload = {"pedido": request, "producto": query,
         "candidatos": [{"numero": index, "nombre": item["name"]}
@@ -227,9 +228,11 @@ async def prepare_basket(context, operation):
                 kind="basket_product", payload_model=BasketProductChoice)
     result = await asyncio.to_thread(_resolve_items, context.turn.owner_id, draft,
         context.turn.reference_day, choices, operation.operation_id)
+    single_candidate_uncertain = False
     while result["status"] == "ambiguous" and len(result["choices"]) == 1:
         selected = await _semantic_candidates(result["query"], operation.original_text, result["choices"])
         if not selected:
+            single_candidate_uncertain = selected is None
             result["choices"] = []
             break
         candidate = selected[0]
@@ -247,7 +250,9 @@ async def prepare_basket(context, operation):
             question=f"Ahora no puedo buscar productos para la canasta: {result['reason']} Probá más tarde."),))
     if result["status"] == "missing":
         return IncompleteOperation(missing_fields=(FieldRequest(field=f"items.{result['index']}.product", reason="missing",
-            question=f"No encontré «{result['product']}» en {result['locality']}. ¿Me decís la marca o presentación?"),))
+            question=(f"No encontré «{result['product']}» entre los productos publicados para "
+                f"{result['locality']}. No agregué nada a tu canasta. "
+                "Podés probar con otro nombre o presentación.")),))
     if result["status"] == "stale_choice":
         return IncompleteOperation(missing_fields=(FieldRequest(field=f"items.{result['index']}.product_ref", reason="stale",
             question="La lista de productos cambió. Volvé a indicar el producto para buscar opciones actuales."),))
@@ -255,11 +260,12 @@ async def prepare_basket(context, operation):
         raise ValueError("La canasta admite hasta 10 productos y 20 unidades de cada uno")
     if result["status"] == "ambiguous":
         choices = []
+        uncertain = single_candidate_uncertain
         for start in range(0, len(result["choices"]), 30):
             selected = await _semantic_candidates(result["query"], operation.original_text,
                 result["choices"][start:start + 30])
             if selected is None:
-                choices = []
+                uncertain = True
                 break
             choices.extend(selected)
             if len(choices) >= 5:
@@ -267,9 +273,12 @@ async def prepare_basket(context, operation):
         result["choices"] = choices[:5]
         if not result["choices"]:
             return IncompleteOperation(missing_fields=(FieldRequest(
-                field=f"items.{result['index']}.product", reason="ambiguous",
-                question=(f"No puedo distinguir con seguridad qué tipo de {result['query']} buscás. "
-                    "Decime el tipo, la marca o la presentación para afinar la búsqueda.")),))
+                field=f"items.{result['index']}.product", reason="ambiguous" if uncertain else "missing",
+                question=((f"No puedo distinguir con seguridad qué tipo de {result['query']} buscás. "
+                    "Decime el tipo, la marca o la presentación para afinar la búsqueda.") if uncertain else
+                    (f"No encontré una presentación de «{result['query']}» que corresponda "
+                    f"a tu pedido en el catálogo de {result['locality']}. "
+                    "No agregué otro producto a tu canasta."))),))
         refs = []
         for candidate in result["choices"]:
             label = (f"{candidate['name'][:120]} — {_money(candidate['price'])} en "
