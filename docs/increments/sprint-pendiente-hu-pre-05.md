@@ -36,7 +36,7 @@
 | --- | --- | --- |
 | Lint y suite completa de la rama combinada | 2026-11-19, local, `a6e58ce` | `ruff check .` sin hallazgos; `python -m pytest -v`: 1.358 passed, 2 warnings de dependencias. [Registro](evidencias/sprint-pendiente-hu-pre-05/2026-11-19-verificacion-local.md). |
 | Backend y migraciones en CI | 2026-11-19, GitHub Actions, `36e5de4` antes del rebase documental | [CI Pipeline aprobado](https://github.com/blob1618/luka/actions/runs/44649171510). No acredita entorno productivo ni WhatsApp real. |
-| Ofertas a pedido: tests locales y CI | 2026-11-21, local y GitHub Actions, PR #140 | `ruff check .` y 1.373 tests locales aprobados en `199cb09`; [Backend y migraciones aprobados en CI](https://github.com/blob1618/luka/actions/runs/44958730648) para `cf8d1c3`. La integración posterior de `main` requiere repetir los checks. |
+| Ofertas a pedido: tests locales y CI | 2026-11-21, local y GitHub Actions, PR #140 | `ruff check .` y 1.373 tests locales aprobados en `199cb09`; [Backend y migraciones aprobados en CI](https://github.com/blob1618/luka/actions/runs/44958730648) para `cf8d1c3`. Los [checks del PR #140](https://github.com/blob1618/luka/pull/140/checks) verifican también la integración posterior de `main`. |
 
 | Criterio de [STK-263](https://philippem.atlassian.net/browse/STK-263) | Evidencia técnica | Conclusión humana |
 | --- | --- | --- |
