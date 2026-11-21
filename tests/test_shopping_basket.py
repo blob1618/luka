@@ -12,7 +12,7 @@ from app.services.assistant_capabilities import shopping_basket
 from app.services.assistant_capabilities.shopping_basket import present_basket_offers
 from app.services.budget import BudgetStatus
 from app.services.dispatch_contract import DispatchResult
-from app.services.supermarket_prices import compare_prices
+from app.services.supermarket_prices import basket_candidates, compare_prices
 from tests.test_assistant_pilot import NOW, PHONE
 from tests import test_assistant_stage5 as scenarios
 
@@ -224,10 +224,28 @@ async def test_single_derived_product_is_not_proposed_as_base_food(ingress, acco
         session.commit()
     reply = await ingress.tool("save_shopping_basket", {"items": [{"product": "arroz"}],
         "locality": "Resistencia", "province": "AR-H"}, "quiero agregar arroz")
-    assert "No puedo distinguir con seguridad" in reply.reply_text
+    assert "No encontré una presentación de «arroz»" in reply.reply_text
     assert "Arroz con leche" not in reply.reply_text
     with accounts[0]() as session:
         assert session.query(ShoppingBasketItem).count() == 0
+
+
+@pytest.mark.integration
+def test_basket_search_keeps_base_product_when_clarification_has_extra_words(accounts):
+    day = (NOW - timedelta(hours=3)).date()
+    with accounts[0]() as session:
+        snapshot = SepaSnapshot(data_date=day, source_url="https://example.test/sepa.zip", status="ready")
+        session.add(snapshot)
+        session.flush()
+        session.add(SepaPrice(snapshot_id=snapshot.id, commerce_id="1", flag_id="1", branch_id="1",
+            product_id="7790000000012", report_date=day, is_ean=True,
+            description="Banana fresca ecuatoriana", chain="Coto", branch="Centro",
+            province="AR-H", locality="Resistencia", list_price=Decimal("1500")))
+        session.commit()
+        candidates = basket_candidates(session, snapshot,
+            name="banana de la naturaleza de las granjas ecuatoriana para comer",
+            locality="Resistencia", province="AR-H", today=day)
+    assert [item["name"] for item in candidates] == ["Banana fresca ecuatoriana"]
 
 
 @pytest.mark.integration
