@@ -4,7 +4,6 @@ from datetime import date
 from decimal import Decimal
 import json
 from typing import Literal
-from uuid import UUID
 
 from pydantic import Field
 from sqlalchemy import func
@@ -64,11 +63,6 @@ def _basket(owner):
         return basket, items
 
 
-def has_basket(owner):
-    with SessionLocal() as session:
-        return session.query(ShoppingBasketItem.ean).filter(ShoppingBasketItem.usuario_id == UUID(str(owner))).first() is not None
-
-
 async def _semantic_candidates(query, request, candidates):
     """Use the existing LLM to select catalog names, never prices or product IDs."""
     prompt = ("Sos un filtro de relevancia de productos de supermercado. Devolvé sólo JSON con "
@@ -120,8 +114,9 @@ async def show_basket(context, args):
         lines.append(line)
     if result["status"] != "ok":
         lines.append(f"No pude consultar precios actuales: {result['reason']}")
-    context.outbound.append(WhatsAppReplyButtons(body="¿Querés comparar precios por sucursal?",
-        buttons=(WhatsAppReplyButton(id="supermarket:basket_prices", title="Comparar precios"),)))
+    context.outbound.append(WhatsAppReplyButtons(body="¿Qué querés consultar de tu canasta?",
+        buttons=(WhatsAppReplyButton(id="supermarket:basket_prices", title="Comparar precios"),
+            WhatsAppReplyButton(id="supermarket:basket", title="Consultar ofertas"))))
     return data(context, [{"name": name, "quantity": quantity} for _, name, quantity in items], lines)
 
 
@@ -314,7 +309,7 @@ def shopping_basket_contracts():
     return (
         read_tool("show_shopping_basket", "Sólo muestra la canasta existente. No usar si el usuario quiere agregar, poner o guardar un producto.", FrozenModel, show_basket),
         read_tool("compare_shopping_basket", "Compara precios de los EAN guardados en la canasta en la localidad indicada. No modifica presupuesto ni movimientos.", BasketSearch, compare_basket),
-        read_tool("find_shopping_basket_offers", "Consulta sólo promociones verificadas para los productos de la canasta. Usar cuando el usuario pide ofertas o descuentos, aun sin alerta de presupuesto; no confundir con comparar precios normales.", BasketSearch, find_basket_offers),
+        read_tool("find_shopping_basket_offers", "Consulta a pedido las promociones verificadas para los productos de la canasta, sin depender de alertas o límites de presupuesto; no confundir con comparar precios normales.", BasketSearch, find_basket_offers),
         operation_tool("save_shopping_basket", "Agrega por NOMBRE productos a la canasta frecuente, o la reemplaza si mode=replace. Usar también si pide 'agregar arroz a mi canasta, mostrame opciones con precio antes de guardar': product='arroz', locality y province si las dijo. Esta herramienta muestra opciones con precio y pide elegir antes de proponer guardar; nunca usar compare_supermarket_prices para este pedido ni pedir EAN. Si faltan localidad u opción concreta, el backend pregunta. Requiere propuesta y confirmación posterior.", BasketDraft, BasketPrepared, prepare_basket, commit_basket, schema_version=2, timeout_seconds=35),
     )
 
