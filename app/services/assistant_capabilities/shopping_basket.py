@@ -277,7 +277,7 @@ def shopping_basket_contracts():
     return (
         read_tool("show_shopping_basket", "Sólo muestra la canasta existente. No usar si el usuario quiere agregar, poner o guardar un producto.", FrozenModel, show_basket),
         read_tool("compare_shopping_basket", "Compara precios de los EAN guardados en la canasta en la localidad indicada. No modifica presupuesto ni movimientos.", BasketSearch, compare_basket),
-        operation_tool("save_shopping_basket", "Agrega por NOMBRE productos a la canasta frecuente, o la reemplaza si mode=replace. Para 'quiero poner arroz en mi canasta' usar esta herramienta con product='arroz'; nunca pedir EAN al usuario. Si faltan localidad u opción concreta, el backend pregunta. Requiere propuesta y confirmación posterior.", BasketDraft, BasketPrepared, prepare_basket, commit_basket, schema_version=2, timeout_seconds=35),
+        operation_tool("save_shopping_basket", "Agrega por NOMBRE productos a la canasta frecuente, o la reemplaza si mode=replace. Usar también si pide 'agregar arroz a mi canasta, mostrame opciones con precio antes de guardar': product='arroz', locality y province si las dijo. Esta herramienta muestra opciones con precio y pide elegir antes de proponer guardar; nunca usar compare_supermarket_prices para este pedido ni pedir EAN. Si faltan localidad u opción concreta, el backend pregunta. Requiere propuesta y confirmación posterior.", BasketDraft, BasketPrepared, prepare_basket, commit_basket, schema_version=2, timeout_seconds=35),
     )
 
 
